@@ -14,6 +14,23 @@ A desktop tool for extracting structured financial report tables from text-based
 - **Data verification** — Built-in financial cross-verification rules for bank annual reports
 - **Batch processing** — Process multi-page PDFs with page-level filtering
 
+## 界面预览
+
+### 1. PDF自动解析
+支持文本型PDF和图片型PDF双模式解析，自动检测表格区域并提取数据。
+
+![PDF自动解析](screenshots/1_PDF自动解析.png)
+
+### 2. 数据对比预览
+PDF原图与提取的表格数据并排展示，支持页级筛选、单元格编辑和批量导出。
+
+![数据对比预览](screenshots/2_数据对比预览.png)
+
+### 3. 解析历史记录
+管理历史解析任务，支持状态筛选、重新加载和一键清理。
+
+![解析历史记录](screenshots/3_解析历史记录.png)
+
 ## Tech Stack
 
 | Component | Technology |
