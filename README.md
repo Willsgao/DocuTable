@@ -1,5 +1,7 @@
 # DocuTable
 
+> Author: 高玉伟 (Wills)
+
 A desktop tool for extracting structured financial report tables from text-based PDFs, powered by PyQt5 and PyMuPDF.
 
 ## Features
