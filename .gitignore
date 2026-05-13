@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+
+# Local config (contains API keys)
+config/
+
+# Data and cache
+data/
+cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# WorkBuddy plans
+.codebuddy/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and backups
+*.log
+*.bak
+*.tmp
+run_output.txt
+ori_main.py
+refactor_main.py
+refactor_main_v2.py
+refactor_export.py
+
+# Build output
+*.spec
+
+# User data
+pdf_history.json

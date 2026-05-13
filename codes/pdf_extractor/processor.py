@@ -1,0 +1,1584 @@
+# -*- coding: utf-8 -*-
+"""
+处理模块 - PDF处理、LLM识别、Excel导出、工作线程
+"""
+
+import os
+import time
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+from PyQt5.QtCore import QThread, pyqtSignal
+
+from .utils import (
+    load_config, TEMP_DIR
+)
+
+
+# ============================================================
+# PDF处理器
+# ============================================================
+class PDFProcessor:
+    """PDF处理器"""
+
+    # === v2 表格提取算法参数配置 ===
+    V2_CONFIG = {
+        # 行分组
+        "y_threshold_factor": 0.4,       # 动态阈值：中位gap × 因子
+        "y_threshold_min": 2.0,          # 最小值
+        "y_threshold_max": 15.0,          # 最大值
+
+        # 列检测
+        "align_tolerance": 4.0,          # 对齐聚簇容差(pt)
+        "gap_factor": 0.3,               # gap阈值：中位gap + stdev × 因子
+        "gap_min": 10.0,                 # gap最小值
+
+        # 表格区域
+        "table_min_width_ratio": 0.3,    # 表格最小宽度/页宽
+        "table_min_height": 20.0,        # 表格最小高度
+        "density_grid": 10,              # 文本密度网格数
+        "density_threshold": 0.8,        # 密度阈值(×平均值倍数)
+
+        # 单元格分配
+        "row_margin_factor": 0.2,        # 行分配允许越界比例
+
+        # 置信度
+        "confidence_col_weight": 0.35,   # 列数一致性权重
+        "confidence_empty_weight": 0.25, # 空值率权重
+        "confidence_num_weight": 0.25,   # 数值占比权重
+        "confidence_line_bonus": 0.15,   # 表格线加分
+
+        # 过滤
+        "financial_keywords": [           # 金融关键词
+            "万元", "元", "百万", "十亿", "%", "比率",
+            "资产", "负债", "收入", "利润", "现金", "股东",
+            "资本", "充足率", "率", "额", "数"
+        ],
+        "min_text_length": 50,           # 最小文本长度(用于关键词过滤)
+
+        # pdfplumber降级
+        "pdfplumber_min_words": 20,      # 单页最低word数
+        "pdfplumber_min_row_words": 3,   # 每行最低word数
+    }
+
+    def __init__(self):
+        self.config = load_config()
+
+    def is_image_pdf(self, pdf_path):
+        """检测是否为图片型PDF（扫描件）"""
+        import fitz  # PyMuPDF
+        doc = fitz.open(pdf_path)
+
+        # 检查前5页是否主要是图片
+        image_pages = 0
+        text_pages = 0
+
+        for page_num in range(min(5, len(doc))):
+            page = doc[page_num]
+            text = page.get_text().strip()
+            images = page.get_images()
+
+            # 如果文字很少但有图片，认为是扫描件
+            if len(text) < 100 and len(images) > 0:
+                image_pages += 1
+            elif len(text) > 100:
+                text_pages += 1
+
+        doc.close()
+
+        # 如果大部分页面是图片型，则认为是图片型PDF
+        return image_pages > text_pages
+
+    def extract_text_tables(self, pdf_path, max_pages=None):
+        """提取文本型PDF中的表格，保留位置信息"""
+        import fitz
+
+        version = self.config.get("extraction_version", "v2")
+        if version == "v2":
+            return self._extract_text_tables_v2(pdf_path, max_pages)
+
+        # ========== v1 逻辑（原有代码，完全不动）==========
+        import re
+        import pdfplumber
+
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+
+        if max_pages:
+            total_pages = min(max_pages, total_pages)
+
+        results = []
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            page_rect = page.rect
+
+            # 方法1: 使用PyMuPDF直接获取页面的完整文本和位置信息（确保不丢失边缘数据）
+            try:
+                text_dict = page.get_text("dict")
+                blocks = text_dict.get("blocks", [])
+
+                page_x0 = page_rect.x0
+                page_x1 = page_rect.x1
+                page_y0 = page_rect.y0
+                page_y1 = page_rect.y1
+
+                words = []
+                for block in blocks:
+                    if block.get("type") == 0:  # 文本块
+                        for line in block.get("lines", []):
+                            for span in line.get("spans", []):
+                                text = span.get("text", "").strip()
+                                if text:
+                                    bbox = span.get("bbox", [0, 0, 0, 0])
+                                    words.append({
+                                        "text": text,
+                                        "x0": bbox[0],
+                                        "y0": bbox[1],
+                                        "x1": bbox[2],
+                                        "y1": bbox[3],
+                                    })
+
+                if words:
+                    full_text = " ".join([w["text"] for w in words])
+                    financial_keywords = ["万元", "元", "百万", "十亿", "%", "比率", "资产", "负债", "收入", "利润",
+                                         "现金", "股东", "资本", "充足率", "率", "额", "数"]
+                    has_financial = any(kw in full_text for kw in financial_keywords)
+
+                    if has_financial and len(full_text) > 50:
+                        table_data = self._reconstruct_table_from_blocks_improved(words, page_rect)
+                        if table_data and len(table_data) > 1:
+                            table_data = self._normalize_table_columns(table_data)
+                            results.append({
+                                "page": page_num + 1,
+                                "type": "table",
+                                "data": table_data,
+                                "text": full_text,
+                                "extractor": "pymupdf_position"
+                            })
+            except Exception as e:
+                print(f"  PyMuPDF位置提取第{page_num + 1}页失败: {e}")
+
+            # 方法2: 使用pdfplumber的表格检测获取行边界
+            pdfplumber_page = None
+            try:
+                with pdfplumber.open(pdf_path) as pdf:
+                    if page_num < len(pdf.pages):
+                        pdfplumber_page = pdf.pages[page_num]
+                        # 新版本pdfplumber直接调用find_tables()，不需要settings参数
+                        found_tables = pdfplumber_page.find_tables()
+                        all_words = pdfplumber_page.extract_words()
+
+                        if all_words and found_tables:
+                            full_text = " ".join([w.get("text", "") for w in all_words])
+                            financial_keywords = ["万元", "元", "百万", "十亿", "%", "比率", "资产", "负债", "收入",
+                                                 "利润", "现金", "股东", "资本", "充足率", "率", "额", "数"]
+                            has_financial = any(kw in full_text for kw in financial_keywords)
+
+                            if has_financial and len(full_text) > 50:
+                                table_data = self._reconstruct_table_with_pdfplumber_rows(
+                                    pdfplumber_page, found_tables, all_words
+                                )
+                                if table_data and len(table_data) > 1:
+                                    table_data = self._normalize_table_columns(table_data)
+                                    results.append({
+                                        "page": page_num + 1,
+                                        "type": "table",
+                                        "data": table_data,
+                                        "text": full_text,
+                                        "extractor": "pdfplumber_hybrid"
+                                    })
+            except Exception as e:
+                print(f"  pdfplumber提取第{page_num + 1}页失败: {e}")
+
+            # 方法3: 使用PyMuPDF BLOCK模式提取带位置的文本
+            if not any(r.get("page") == page_num + 1 and r.get("type") == "table" for r in results):
+                text_dict = page.get_text("dict")
+                blocks = text_dict.get("blocks", [])
+
+                text_blocks = []
+                for block in blocks:
+                    if block.get("type") == 0:
+                        for line in block.get("lines", []):
+                            for span in line.get("spans", []):
+                                text = span.get("text", "").strip()
+                                if text:
+                                    text_blocks.append({
+                                        "text": text,
+                                        "x0": span.get("bbox", [0, 0, 0, 0])[0],
+                                        "y0": span.get("bbox", [0, 0, 0, 0])[1],
+                                        "x1": span.get("bbox", [0, 0, 0, 0])[2],
+                                        "y1": span.get("bbox", [0, 0, 0, 0])[3],
+                                    })
+
+                if text_blocks:
+                    full_text = " ".join([b["text"] for b in text_blocks])
+                    financial_keywords = ["万元", "元", "百万", "十亿", "%", "比率", "资产", "负债", "收入", "利润",
+                                         "现金", "股东", "资本", "充足率"]
+                    has_financial = any(kw in full_text for kw in financial_keywords)
+
+                    if has_financial and len(full_text) > 50:
+                        table_data = self._reconstruct_table_from_blocks_improved(text_blocks, page_rect)
+                        if table_data and len(table_data) > 1:
+                            table_data = self._normalize_table_columns(table_data)
+                            results.append({
+                                "page": page_num + 1,
+                                "type": "table",
+                                "data": table_data,
+                                "text": full_text,
+                                "extractor": "position_based"
+                            })
+                        else:
+                            table_data = self._reconstruct_table_from_blocks(text_blocks, page_rect.width)
+                            if table_data and len(table_data) > 1:
+                                table_data = self._normalize_table_columns(table_data)
+                                results.append({
+                                    "page": page_num + 1,
+                                    "type": "table",
+                                    "data": table_data,
+                                    "text": full_text,
+                                    "extractor": "position_based_fallback"
+                                })
+
+        doc.close()
+
+        results = self._merge_tables_on_same_page(results)
+        return results
+
+    def _merge_tables_on_same_page(self, results):
+        """合并同一页的多个表格"""
+        if not results:
+            return results
+
+        page_groups = {}
+        for table in results:
+            page = table.get("page", 0)
+            if page not in page_groups:
+                page_groups[page] = []
+            page_groups[page].append(table)
+
+        merged_results = []
+        for page in sorted(page_groups.keys()):
+            tables = page_groups[page]
+
+            if len(tables) == 1:
+                merged_results.append(tables[0])
+            else:
+                merged_data = []
+                merged_extractors = []
+
+                # 先计算所有表格的最大列数
+                all_max_cols = 0
+                for table in tables:
+                    data = table.get("data", [])
+                    if data:
+                        all_max_cols = max(all_max_cols, max(len(row) for row in data))
+
+                # 再合并表格
+                for i, table in enumerate(tables):
+                    data = table.get("data", [])
+                    if not data:
+                        continue
+
+                    if merged_data:
+                        separator_row = ["--- 表格" + str(i) + " ---"] + [""] * (all_max_cols - 1)
+                        merged_data.append(separator_row)
+
+                    for row in data:
+                        padded_row = list(row) + [None] * (all_max_cols - len(row))
+                        merged_data.append(padded_row)
+
+                    merged_extractors.append(table.get("extractor", "unknown"))
+
+                merged_results.append({
+                    "page": page,
+                    "type": "table",
+                    "data": merged_data,
+                    "text": "",
+                    "extractor": "+".join(merged_extractors)
+                })
+
+        return merged_results
+
+    def _normalize_table_columns(self, table_data):
+        """规范化表格"""
+        if not table_data or not isinstance(table_data, list):
+            return table_data
+
+        if len(table_data) == 0:
+            return table_data
+
+        max_cols = max((len(row) for row in table_data if row), default=0)
+
+        if max_cols == 0:
+            return table_data
+
+        def is_empty_row(row):
+            if not row:
+                return True
+            return all(cell is None or str(cell).strip() == "" for cell in row)
+
+        normalized = []
+        for row in table_data:
+            if not row:
+                row = []
+            while len(row) < max_cols:
+                row.append(None)
+            row = row[:max_cols]
+            normalized.append(row)
+
+        start_idx = 0
+        while start_idx < len(normalized) and is_empty_row(normalized[start_idx]):
+            start_idx += 1
+
+        end_idx = len(normalized)
+        while end_idx > start_idx and is_empty_row(normalized[end_idx - 1]):
+            end_idx -= 1
+
+        return normalized[start_idx:end_idx]
+
+    def _reconstruct_table_from_blocks(self, text_blocks, page_width):
+        """根据文本块位置信息重建表格结构"""
+        if not text_blocks:
+            return None
+
+        rows = []
+        current_row = []
+        current_y = None
+        y_threshold = 5
+
+        sorted_blocks = sorted(text_blocks, key=lambda b: (round(b["y0"] / y_threshold), b["x0"]))
+
+        for block in sorted_blocks:
+            y = round(block["y0"] / y_threshold)
+            if current_y is None or abs(y - current_y) <= 1:
+                current_row.append(block)
+                current_y = y
+            else:
+                if current_row:
+                    rows.append(current_row)
+                current_row = [block]
+                current_y = y
+
+        if current_row:
+            rows.append(current_row)
+
+        table_data = []
+        for row in rows:
+            sorted_row = sorted(row, key=lambda b: b["x0"])
+            row_data = [span["text"] for span in sorted_row]
+            row_text = "".join(row_data)
+            if len(row_text.strip()) > 0:
+                table_data.append(row_data)
+
+        return table_data
+
+    def _reconstruct_table_from_blocks_improved(self, text_blocks, page_rect):
+        """改进的表格重建方法"""
+        if not text_blocks:
+            return None
+
+        if hasattr(page_rect, 'width'):
+            page_width = page_rect.width
+            page_x0 = page_rect.x0 if hasattr(page_rect, 'x0') else 0
+        else:
+            page_width = page_rect[2] if len(page_rect) > 2 else page_rect[0]
+            page_x0 = page_rect[0] if len(page_rect) > 0 else 0
+
+        all_x0 = [b["x0"] for b in text_blocks]
+        all_x1 = [b["x1"] for b in text_blocks]
+
+        if not all_x0:
+            return None
+
+        min_x = min(all_x0)
+        max_x = max(all_x1)
+
+        x_points = sorted(set(all_x0 + all_x1))
+        if len(x_points) < 2:
+            return None
+
+        # 计算自适应列边界阈值（基于x坐标分布）
+        gaps = []
+        for i in range(len(x_points) - 1):
+            gap = x_points[i + 1] - x_points[i]
+            gaps.append((x_points[i], x_points[i + 1], gap))
+
+        # 自适应阈值：取gap的中位数*1.5，更能适应不同PDF
+        if gaps:
+            all_gaps = [g[2] for g in gaps if g[2] > 0]
+            if all_gaps:
+                import statistics
+                median_gap = statistics.median(all_gaps)
+                gap_threshold = max(median_gap * 1.5, 10)  # 最小10pt
+            else:
+                gap_threshold = 15
+        else:
+            gap_threshold = 15
+
+        column_boundaries = []
+
+        for x_start, x_end, gap in gaps:
+            if gap > gap_threshold:
+                column_boundaries.append((x_start + x_end) / 2)
+
+        if not column_boundaries:
+            column_boundaries = [min_x, max_x]
+        else:
+            column_boundaries = sorted(set(column_boundaries))
+            # 确保左右边界包含所有内容
+            if column_boundaries[0] > min_x:
+                column_boundaries.insert(0, (min_x + column_boundaries[0]) / 2)
+            if column_boundaries[-1] < max_x:
+                column_boundaries.append((column_boundaries[-1] + max_x) / 2)
+
+        y_threshold = 5
+        sorted_blocks = sorted(text_blocks, key=lambda b: b["y0"])
+
+        rows = []
+        current_row = []
+        current_y = None
+
+        for block in sorted_blocks:
+            y = round(block["y0"] / y_threshold)
+            if current_y is None or abs(y - current_y) <= 1:
+                current_row.append(block)
+                current_y = y
+            else:
+                if current_row:
+                    rows.append(current_row)
+                current_row = [block]
+                current_y = y
+
+        if current_row:
+            rows.append(current_row)
+
+        table_data = []
+        for row_blocks in rows:
+            sorted_row = sorted(row_blocks, key=lambda b: b["x0"])
+            row_data = [""] * (len(column_boundaries) - 1)
+
+            for block in sorted_row:
+                col_idx = self._find_column_index(block["x0"], block["x1"], column_boundaries)
+                if 0 <= col_idx < len(row_data):
+                    if row_data[col_idx]:
+                        row_data[col_idx] += " " + block["text"]
+                    else:
+                        row_data[col_idx] = block["text"]
+
+            if any(cell.strip() for cell in row_data):
+                table_data.append(row_data)
+
+        return table_data if table_data else None
+
+    def _reconstruct_table_with_pdfplumber_rows(self, pdfplumber_page, pdfplumber_tables, words):
+        """使用pdfplumber的表格检测获取精确的行列边界"""
+        if not pdfplumber_tables or not words:
+            return None
+
+        table_data = []
+
+        for table in pdfplumber_tables:
+            table_bbox = table.bbox
+            if not table_bbox:
+                continue
+
+            table_top = table_bbox[1]
+            table_bottom = table_bbox[3]
+            table_left = table_bbox[0]
+            table_right = table_bbox[2]
+
+            table_rows = table.rows
+            if not table_rows:
+                continue
+
+            # 获取列数：Row对象是可迭代的，但不支持len()，转换为列表
+            first_row = list(table_rows[0]) if table_rows else []
+            num_cols = len(first_row)
+
+            for row_cells in table_rows:
+                row_data = []
+
+                for cell in row_cells:
+                    cell_bbox = cell.bbox
+                    if not cell_bbox:
+                        row_data.append("")
+                        continue
+
+                    cell_left = cell_bbox[0]
+                    cell_right = cell_bbox[2]
+                    cell_top = cell_bbox[1]
+                    cell_bottom = cell_bbox[3]
+
+                    cell_texts = []
+                    for w in words:
+                        word_x0 = w.get("x0", 0)
+                        word_x1 = w.get("x1", 0)
+                        word_top = w.get("top", 0)
+                        word_bottom = w.get("bottom", 0)
+                        word_mid_y = (word_top + word_bottom) / 2
+
+                        if cell_top <= word_mid_y <= cell_bottom:
+                            if word_x0 < cell_right and word_x1 > cell_left:
+                                cell_texts.append(w)
+
+                    if cell_texts:
+                        cell_texts.sort(key=lambda w: w.get("x0", 0))
+                        cell_text = " ".join([w.get("text", "") for w in cell_texts])
+                    else:
+                        cell_text = ""
+
+                    row_data.append(cell_text)
+
+                if any(cell.strip() for cell in row_data):
+                    table_data.append(row_data)
+
+        return table_data if table_data else None
+
+    def _detect_column_boundaries_by_spacing(self, text_blocks, page_width):
+        """根据文本间距检测列边界"""
+        if not text_blocks:
+            return [0, page_width]
+
+        x_coords = [b["x0"] for b in text_blocks] + [b["x1"] for b in text_blocks]
+
+        bucket_size = 20
+        max_x = max(x_coords) if x_coords else page_width
+        buckets = {}
+
+        for x in x_coords:
+            bucket = int(x / bucket_size)
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+
+        if len(buckets) < 2:
+            return [0, page_width]
+
+        avg_density = sum(buckets.values()) / len(buckets)
+
+        gaps = []
+        sorted_buckets = sorted(buckets.keys())
+
+        for i in range(len(sorted_buckets) - 1):
+            bucket1, bucket2 = sorted_buckets[i], sorted_buckets[i + 1]
+            mid_buckets = range(bucket1 + 1, bucket2)
+            gap_density = sum(buckets.get(b, 0) for b in mid_buckets)
+
+            if gap_density < avg_density * 0.3:
+                gaps.append((bucket1 * bucket_size + bucket_size / 2, bucket2 * bucket_size))
+
+        boundaries = [0]
+        for start, end in sorted(gaps, key=lambda x: x[0]):
+            boundaries.append((start + end) / 2)
+        boundaries.append(page_width)
+
+        if len(boundaries) < 3:
+            boundaries = [0, page_width * 0.3, page_width * 0.6, page_width]
+
+        return sorted(set(boundaries))
+
+    def _find_column_index(self, x0, x1, column_boundaries):
+        """找到文本块属于哪一列"""
+        center_x = (x0 + x1) / 2
+
+        for i in range(len(column_boundaries) - 1):
+            if column_boundaries[i] <= center_x < column_boundaries[i + 1]:
+                return i
+
+        if center_x < column_boundaries[0]:
+            return 0
+        elif center_x >= column_boundaries[-1]:
+            return len(column_boundaries) - 2
+        else:
+            min_dist = float('inf')
+            closest_col = 0
+            for i in range(len(column_boundaries) - 1):
+                mid = (column_boundaries[i] + column_boundaries[i + 1]) / 2
+                dist = abs(center_x - mid)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_col = i
+            return closest_col
+
+    def _parse_text_to_table(self, text):
+        """将文本解析为表格格式"""
+        import re
+
+        lines = text.split('\n')
+        table_data = []
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = re.split(r'\s{2,}|\t', line)
+            parts = [p.strip() for p in parts if p.strip()]
+
+            if parts and (any(c.isdigit() for p in parts for c in p) or
+                         any(kw in line for kw in ["资产", "负债", "收入", "利润", "合计", "小计"])):
+                table_data.append(parts)
+
+        return table_data if table_data else [[text]]
+
+    def pdf_to_images(self, pdf_path, output_dir=None):
+        """将PDF转换为图片"""
+        import fitz
+
+        if output_dir is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = Path(TEMP_DIR) / f"pdf_images_{timestamp}"
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        doc = fitz.open(pdf_path)
+        image_paths = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            mat = fitz.Matrix(2, 2)
+            pix = page.get_pixmap(matrix=mat)
+
+            output_path = output_dir / f"page_{page_num + 1}.png"
+            pix.save(str(output_path))
+            image_paths.append(str(output_path))
+
+        doc.close()
+        return image_paths
+
+
+
+
+# ============================================================
+# v2 表格提取算法
+# ============================================================
+
+    # ---- v2 入口 ----
+
+    def _extract_text_tables_v2(self, pdf_path, max_pages=None):
+        """v2 表格提取入口"""
+        import fitz
+        import statistics
+
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+        if max_pages:
+            total_pages = min(max_pages, total_pages)
+
+        results = []
+        cfg = self.V2_CONFIG
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            page_rect = page.rect
+
+            # 1. 提取 words + drawings
+            words_raw = page.get_text("words")
+            words = []
+            for w in words_raw:
+                words.append({
+                    "x0": w[0], "y0": w[1],
+                    "x1": w[2], "y1": w[3],
+                    "text": w[4],
+                    "baseline": w[3],
+                })
+
+            drawings_raw = page.get_drawings()
+            drawings = []
+            for d in drawings_raw:
+                rect = d["rect"]
+                w = rect.width
+                h = rect.height
+                direction = None
+                if w > h * 5:
+                    direction = "h"
+                elif h > w * 5:
+                    direction = "v"
+                drawings.append({
+                    "type": "line" if (w < h * 0.3 or h < w * 0.3) else "rect",
+                    "direction": direction,
+                    "x0": rect.x0, "y0": rect.y0,
+                    "x1": rect.x1, "y1": rect.y1,
+                    "color": d.get("color"),
+                    "width": d.get("width", 1),
+                    "fill": d.get("fill"),
+                })
+
+            # 2. 金融关键词过滤
+            full_text = " ".join(w["text"] for w in words)
+            if not any(kw in full_text for kw in cfg["financial_keywords"]):
+                continue
+            if len(full_text) < cfg["min_text_length"]:
+                continue
+
+            # 3. 表格区域定位
+            table_regions = self._detect_table_region(drawings, page_rect.width, page_rect.height)
+            if not table_regions:
+                table_regions = self._detect_table_region_by_text(words, page_rect.width, page_rect.height)
+            if not table_regions:
+                continue
+
+            # 4. 为每个表格区域提取数据
+            for region in table_regions:
+                rx0, ry0, rx1, ry1 = region
+                region_words = [w for w in words
+                                if rx0 <= w["x0"] <= rx1 and ry0 <= w["y0"] <= ry1]
+
+                if len(region_words) < 3:
+                    continue
+
+                # 行边界
+                row_bounds = self._detect_horizontal_lines(page, region_words, drawings)
+                if len(row_bounds) < 2:
+                    continue
+
+                # 列边界
+                col_bounds = self._detect_vertical_lines(page, region_words, drawings)
+                if len(col_bounds) < 3:
+                    continue
+
+                # 网格填充
+                table_data = self._assign_words_to_grid(region_words, row_bounds, col_bounds)
+                if not table_data or len(table_data) < 2:
+                    continue
+
+                # 规范化
+                table_data = self._normalize_table_columns(table_data)
+
+                # 置信度
+                has_border = bool([d for d in drawings if d["direction"] in ("h", "v")])
+                confidence = self._compute_table_confidence(table_data, has_border, words)
+
+                results.append({
+                    "page": page_num + 1,
+                    "type": "table",
+                    "data": table_data,
+                    "text": full_text,
+                    "extractor": "v2_position_based",
+                    "confidence": confidence,
+                    "rows": len(table_data),
+                    "cols": len(col_bounds) - 1,
+                    "has_border": has_border,
+                })
+
+        doc.close()
+        results = self._merge_tables_on_same_page(results)
+        return results
+
+    # ---- 表格区域检测 ----
+
+    def _detect_table_region(self, drawings, page_width, page_height):
+        """从 drawing 中检测表格外框区域"""
+        cfg = self.V2_CONFIG
+
+        rectangles = [
+            d for d in drawings
+            if d["type"] == "rect"
+            and d["x1"] - d["x0"] > page_width * cfg["table_min_width_ratio"]
+            and d["y1"] - d["y0"] > cfg["table_min_height"]
+        ]
+
+        h_lines = [
+            d for d in drawings
+            if d["type"] == "line" and d["direction"] == "h"
+            and d["x1"] - d["x0"] > page_width * cfg["table_min_width_ratio"]
+        ]
+        v_lines = [
+            d for d in drawings
+            if d["type"] == "line" and d["direction"] == "v"
+            and d["y1"] - d["y0"] > cfg["table_min_height"]
+        ]
+
+        regions = []
+
+        for rect in rectangles:
+            regions.append((rect["x0"], rect["y0"], rect["x1"], rect["y1"]))
+
+        if len(h_lines) >= 2 and len(v_lines) >= 2:
+            x0 = min(l["x0"] for l in v_lines)
+            x1 = max(l["x1"] for l in v_lines)
+            y0 = min(l["y0"] for l in h_lines)
+            y1 = max(l["y1"] for l in h_lines)
+            if x1 - x0 > page_width * cfg["table_min_width_ratio"] and y1 - y0 > cfg["table_min_height"]:
+                if not any(self._has_overlap((x0, y0, x1, y1), [r]) for r in regions):
+                    regions.append((x0, y0, x1, y1))
+
+        return regions
+
+    def _has_overlap(self, rect, regions):
+        """检测两个区域是否重叠"""
+        rx0, ry0, rx1, ry1 = rect
+        for gx0, gy0, gx1, gy1 in regions:
+            if not (rx1 <= gx0 or rx0 >= gx1 or ry1 <= gy0 or ry0 >= gy1):
+                return True
+        return False
+
+    def _detect_table_region_by_text(self, words, page_width, page_height):
+        """无框表格区域检测（文本密度法）- 恢复原逻辑"""
+        cfg = self.V2_CONFIG
+        if not words or len(words) < 20:
+            return []
+
+        grid_rows = cfg["density_grid"]
+        grid_cols = cfg["density_grid"]
+        cell_h = page_height / grid_rows
+        cell_w = page_width / grid_cols
+
+        density = [[0] * grid_cols for _ in range(grid_rows)]
+        for w in words:
+            col = int((w["x0"] + w["x1"]) / 2 / cell_w)
+            row = int((w["y0"] + w["y1"]) / 2 / cell_h)
+            if 0 <= row < grid_rows and 0 <= col < grid_cols:
+                density[row][col] += 1
+
+        row_density = [sum(density[r]) for r in range(grid_rows)]
+        avg = sum(row_density) / max(len(row_density), 1)
+        avg = max(avg, 3)
+
+        table_row_indices = [
+            r for r in range(grid_rows)
+            if row_density[r] > avg * cfg["density_threshold"]
+        ]
+
+        if not table_row_indices:
+            return []
+
+        # 合并连续行
+        table_row_ranges = self._merge_consecutive(table_row_indices)
+
+        # 恢复原逻辑：只检测上下边界（行），左右边界交给列检测处理
+        regions = []
+        for start, end in table_row_ranges:
+            y0 = start * cell_h
+            y1 = (end + 1) * cell_h
+            # 左右边界使用整个页面宽度，让列检测算法决定真正的边界
+            regions.append((0, y0, page_width, y1))
+
+        return regions
+
+    def _merge_consecutive(self, indices):
+        """合并连续整数索引为 [(start, end), ...]"""
+        if not indices:
+            return []
+        indices = sorted(set(indices))
+        ranges = []
+        start = indices[0]
+        end = indices[0]
+        for i in indices[1:]:
+            if i == end + 1:
+                end = i
+            else:
+                ranges.append((start, end))
+                start = i
+                end = i
+        ranges.append((start, end))
+        return ranges
+
+    # ---- 行边界检测 ----
+
+    def _detect_horizontal_lines(self, page, words, page_drawings):
+        """检测行边界，返回 [(y_top, y_bottom), ...]"""
+        cfg = self.V2_CONFIG
+
+        h_lines = sorted(set(
+            d["y0"] for d in page_drawings
+            if d["type"] == "line" and d["direction"] == "h"
+            and d["x1"] - d["x0"] > page.rect.width * cfg["table_min_width_ratio"]
+        ))
+
+        if len(h_lines) >= 2:
+            row_bounds = []
+            for i in range(len(h_lines) - 1):
+                row_bounds.append((h_lines[i], h_lines[i + 1]))
+            return row_bounds
+
+        # 无水平线 → 动态阈值分组
+        y_threshold = self._compute_dynamic_y_threshold(words)
+        rows = self._group_words_into_rows(words, y_threshold)
+
+        row_bounds = []
+        for row_words in rows:
+            if row_words:
+                y_top = min(w["y0"] for w in row_words)
+                y_bot = max(w["y1"] for w in row_words)
+                row_bounds.append((y_top, y_bot))
+
+        return row_bounds
+
+    def _compute_dynamic_y_threshold(self, words):
+        """动态计算行分组阈值"""
+        import statistics
+        cfg = self.V2_CONFIG
+
+        if not words or len(words) < 3:
+            return 5.0
+
+        y_positions = sorted(set(w["y0"] for w in words if w["text"].strip()))
+        if len(y_positions) < 5:
+            return 5.0
+
+        gaps = []
+        for i in range(len(y_positions) - 1):
+            gap = y_positions[i + 1] - y_positions[i]
+            if 0.5 < gap < 50:
+                gaps.append(gap)
+
+        if len(gaps) < 3:
+            return 5.0
+
+        median_gap = statistics.median(gaps)
+        threshold = median_gap * cfg["y_threshold_factor"]
+        return max(cfg["y_threshold_min"], min(cfg["y_threshold_max"], threshold))
+
+    def _group_words_into_rows(self, words, y_threshold):
+        """按 y 坐标对 words 进行行分组"""
+        if not words:
+            return []
+
+        sorted_words = sorted(words, key=lambda w: w["y0"])
+        rows = []
+        current_row = [sorted_words[0]]
+        current_y = sorted_words[0]["y0"]
+
+        for w in sorted_words[1:]:
+            if abs(w["y0"] - current_y) <= y_threshold:
+                current_row.append(w)
+                current_y = (current_y + w["y0"]) / 2
+            else:
+                rows.append(sorted(current_row, key=lambda ww: ww["x0"]))
+                current_row = [w]
+                current_y = w["y0"]
+
+        if current_row:
+            rows.append(sorted(current_row, key=lambda ww: ww["x0"]))
+
+        return rows
+
+    # ---- 列边界检测 ----
+
+    def _detect_vertical_lines(self, page, words, page_drawings):
+        """
+        检测列边界（v2规格：三指令融合）
+        返回值：[x0, x1, x2, ...] 列分割线位置
+        """
+        import statistics
+        cfg = self.V2_CONFIG
+
+        # ----- 指令1：垂直线（最精确） -----
+        v_lines = sorted(set(
+            d["x0"] for d in page_drawings
+            if d["type"] == "line" and d["direction"] == "v"
+        ))
+
+        if len(v_lines) >= 3:
+            # 有3条以上垂直线 → ≥2列
+            # 检查是否有两条线在页面中间（排除左右边框）
+            inner_lines = [x for x in v_lines
+                           if page.rect.width * 0.05 < x < page.rect.width * 0.95]
+            if len(inner_lines) >= 2:
+                return v_lines  # 直接用垂直线坐标
+
+        # ----- 指令2：文本对齐聚簇 -----
+        x0_list = [w["x0"] for w in words if w["text"].strip()]
+        x1_list = [w["x1"] for w in words if w["text"].strip()]
+
+        if x0_list:
+            # x0对齐点检测
+            left_aligns = self._cluster_1d(x0_list, cfg["align_tolerance"])
+            right_aligns = self._cluster_1d(x1_list, cfg["align_tolerance"])
+
+            # 合并左右对齐点
+            all_aligns = sorted(set(left_aligns + right_aligns))
+
+            # 如果对齐点多于2个，用对齐点作为列边界
+            if len(all_aligns) >= 3:
+                return all_aligns
+
+        # ----- 指令3：gap检测（兜底） -----
+        all_x = sorted(set(x0_list + x1_list))
+
+        if len(all_x) < 3:
+            return [0, page.rect.width]
+
+        # 计算gap
+        gaps = []
+        gap_positions = []
+        for i in range(len(all_x) - 1):
+            gap = all_x[i + 1] - all_x[i]
+            if gap > 0:
+                gaps.append(gap)
+                gap_positions.append((all_x[i], all_x[i + 1]))
+
+        if not gaps:
+            return [0, page.rect.width]
+
+        # 用中位数 + 标准差作为阈值
+        median_gap = statistics.median(gaps)
+        stdev_gap = statistics.stdev(gaps) if len(gaps) >= 2 else median_gap * 0.5
+        gap_threshold = max(median_gap + stdev_gap * cfg["gap_factor"], cfg["gap_min"])
+
+        # 找到gap大于阈值的位置
+        boundaries = [0]
+        for (left, right), gap in zip(gap_positions, gaps):
+            if gap > gap_threshold:
+                boundaries.append((left + right) / 2)
+        boundaries.append(page.rect.width)
+
+        return boundaries
+
+    def _cluster_1d(self, values, tolerance=4):
+        """一维坐标聚簇，找出文本对齐位置（v2规格：最小簇大小=3）"""
+        if not values:
+            return []
+
+        sorted_vals = sorted(values)
+        clusters = []
+        current_cluster = [sorted_vals[0]]
+
+        for v in sorted_vals[1:]:
+            if v - current_cluster[-1] <= tolerance:
+                current_cluster.append(v)
+            else:
+                if len(current_cluster) >= 3:
+                    clusters.append(sum(current_cluster) / len(current_cluster))
+                current_cluster = [v]
+
+        if len(current_cluster) >= 3:
+            clusters.append(sum(current_cluster) / len(current_cluster))
+
+        return clusters
+
+    # ---- 网格填充 ----
+
+    def _assign_words_to_grid(self, words, row_bounds, col_bounds):
+        """将 words 分配到行列网格中（v2规格：重叠面积法）"""
+        cfg = self.V2_CONFIG
+        n_rows = len(row_bounds)
+        n_cols = len(col_bounds) - 1
+
+        if n_rows == 0 or n_cols == 0:
+            return []
+
+        grid = [[[] for _ in range(n_cols)] for _ in range(n_rows)]
+
+        for w in words:
+            wx0, wy0, wx1, wy1 = w["x0"], w["y0"], w["x1"], w["y1"]
+            text = w["text"]
+
+            if not text.strip():
+                continue
+
+            # 行分配
+            row_idx = None
+            center_y = (wy0 + wy1) / 2
+            margin = (row_bounds[0][1] - row_bounds[0][0]) * cfg["row_margin_factor"] if row_bounds else 0
+            for r, (y_top, y_bot) in enumerate(row_bounds):
+                if (y_top - margin) <= center_y <= (y_bot + margin):
+                    row_idx = r
+                    break
+
+            # 列分配：简单重叠法
+            col_idx = None
+            max_overlap = 0
+
+            for c in range(n_cols):
+                col_left = col_bounds[c]
+                col_right = col_bounds[c + 1]
+                
+                overlap = max(0.0, min(wx1, col_right) - max(wx0, col_left))
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    col_idx = c
+            
+            # 兜底：如果没有任何重叠，使用最近列中心
+            if col_idx is None:
+                center_x = (wx0 + wx1) / 2
+                min_dist = float('inf')
+                for c in range(n_cols):
+                    col_center = (col_bounds[c] + col_bounds[c + 1]) / 2
+                    dist = abs(center_x - col_center)
+                    if dist < min_dist:
+                        min_dist = dist
+                        col_idx = c
+
+            if row_idx is not None and col_idx is not None:
+                grid[row_idx][col_idx].append(text)
+
+        # 合并单元格文本
+        result = []
+        for r in range(n_rows):
+            row_data = []
+            for c in range(n_cols):
+                cell_texts = grid[r][c]
+                if cell_texts:
+                    row_data.append(" ".join(cell_texts))
+                else:
+                    row_data.append("")
+            result.append(row_data)
+
+        return result
+
+    # ---- 置信度评分 ----
+
+    def _compute_table_confidence(self, table_data, has_border, page_words):
+        """计算表格提取结果的置信度"""
+        import statistics
+        cfg = self.V2_CONFIG
+
+        if not table_data or len(table_data) < 2:
+            return 0.0
+
+        scores = []
+
+        # 因子1: 列数一致性
+        col_counts = [len(row) for row in table_data if row]
+        if col_counts and len(col_counts) >= 2:
+            mean_cols = statistics.mean(col_counts)
+            cv = statistics.stdev(col_counts) / mean_cols if mean_cols > 0 else 1.0
+            col_consistency = max(0.0, 1.0 - cv * 2)
+            scores.append((col_consistency, cfg["confidence_col_weight"]))
+        else:
+            scores.append((0.5, cfg["confidence_col_weight"]))
+
+        # 因子2: 空值率
+        total_cells = sum(len(row) for row in table_data)
+        empty_cells = sum(1 for row in table_data for cell in row if not str(cell).strip())
+        empty_ratio = empty_cells / max(total_cells, 1)
+        if empty_ratio < 0.05:
+            empty_score = 0.7
+        elif empty_ratio > 0.5:
+            empty_score = 0.3
+        else:
+            empty_score = 1.0 - empty_ratio
+        scores.append((empty_score, cfg["confidence_empty_weight"]))
+
+        # 因子3: 数值占比
+        def is_numeric(text):
+            text = str(text).strip().replace(",", "").replace("(", "-").replace(")", "")
+            if not text:
+                return False
+            try:
+                float(text)
+                return True
+            except:
+                if text.endswith("%"):
+                    try:
+                        float(text[:-1])
+                        return True
+                    except:
+                        return False
+                return False
+
+        numeric_count = sum(1 for row in table_data for cell in row
+                            if is_numeric(str(cell).strip()))
+        numeric_ratio = numeric_count / max(total_cells, 1)
+        numeric_score = min(numeric_ratio * 2, 1.0) if numeric_ratio < 0.5 else 1.0
+        scores.append((numeric_score, cfg["confidence_num_weight"]))
+
+        # 加权综合
+        weighted_sum = sum(s * w for s, w in scores)
+        weighted_total = sum(w for _, w in scores)
+        confidence = weighted_sum / weighted_total
+        if has_border:
+            confidence += cfg["confidence_line_bonus"]
+
+        return min(1.0, max(0.0, confidence))
+
+
+# ============================================================
+# LLM视觉识别模块
+# ============================================================
+class VisionLLM:
+    """视觉大模型接口"""
+
+    def __init__(self, api_key=None, endpoint=None, model=None):
+        self.config = load_config()
+        self.api_key = api_key or self.config.get("doubao_api_key", "")
+        self.endpoint = endpoint or self.config.get("doubao_endpoint", "ark.cn-beijing.volces.com")
+        self.model = model or self.config.get("doubao_model", "doubao-pro-32k")
+
+    def test_connection(self):
+        """测试API连接"""
+        import requests
+        api_url = f"https://{self.endpoint}/api/v3/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        data = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 10
+        }
+        try:
+            resp = requests.post(api_url, headers=headers, json=data, timeout=15)
+            resp.raise_for_status()
+            return True, "API连接成功！"
+        except requests.exceptions.Timeout:
+            return False, "连接超时，请检查网络或API地址"
+        except requests.exceptions.RequestException as e:
+            return False, f"连接失败: {str(e)}"
+
+    def recognize_table(self, image_path):
+        """识别图片中的表格"""
+        if not self.api_key:
+            return {"success": False, "error": "未配置API Key"}
+
+        import base64
+        import requests
+
+        with open(image_path, 'rb') as f:
+            img_data = base64.b64encode(f.read()).decode()
+
+        api_url = f"https://{self.endpoint}/api/v3/chat/completions"
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        prompt = """请识别这张银行年报截图中的财务表格，以JSON数组格式输出。
+
+要求：
+1. 只输出JSON数组，不要其他文字
+2. 每行数据是一个数组，格式如：["项目名称", "2023年", "2022年", "同比增减"]
+3. 保持原表格的行列结构
+4. 数字去掉逗号，保留原数值
+5. 表头也要包含在结果中
+
+输出示例格式：
+[["项目", "2023年末", "2022年末", "变动率"], ["流动资产", "100,000", "90,000", "11.11%"], ...]"""
+
+        data = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_data}"}}
+                    ]
+                }
+            ],
+            "max_tokens": 4000,
+            "temperature": 0.1
+        }
+
+        try:
+            resp = requests.post(api_url, headers=headers, json=data, timeout=120)
+            resp.raise_for_status()
+            result = resp.json()
+
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                return {"success": True, "data": content}
+            else:
+                return {"success": False, "error": "API返回格式错误"}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def batch_recognize(self, image_paths, progress_callback=None):
+        """批量识别图片"""
+        results = []
+
+        for i, img_path in enumerate(image_paths):
+            if progress_callback:
+                progress_callback(i + 1, len(image_paths))
+
+            result = self.recognize_table(img_path)
+            results.append({
+                "page": i + 1,
+                "image": img_path,
+                "result": result
+            })
+
+            if i < len(image_paths) - 1:
+                time.sleep(1)
+
+        return results
+
+
+# ============================================================
+# Excel导出模块
+# ============================================================
+class ExcelExporter:
+    """Excel导出器"""
+
+    @staticmethod
+    def parse_json_table(json_str):
+        """解析LLM返回的JSON字符串"""
+        import json
+        import re
+
+        try:
+            return json.loads(json_str)
+        except:
+            pass
+
+        match = re.search(r'\[.*\]', json_str, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+
+        return None
+
+    @staticmethod
+    def export_tables(tables_data, output_path):
+        """将表格数据导出为Excel"""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+        wb = Workbook()
+
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        page_groups = {}
+        for table_info in tables_data:
+            page = table_info.get("page", 0)
+            if page not in page_groups:
+                page_groups[page] = []
+            page_groups[page].append(table_info)
+
+        sorted_pages = sorted(page_groups.keys())
+
+        for idx, page in enumerate(sorted_pages):
+            tables_on_page = page_groups[page]
+
+            if idx == 0:
+                ws = wb.active
+            else:
+                ws = wb.create_sheet()
+
+            ws.title = f"第{page}页"
+
+            row_num = 1
+
+            for table_idx, table_info in enumerate(tables_on_page):
+                table_data = table_info.get("data", [])
+
+                if not table_data:
+                    continue
+
+                if table_idx > 0:
+                    ws.cell(row=row_num, column=1, value=f"【表格 {table_idx + 1}】")
+                    ws.cell(row=row_num, column=1).font = Font(bold=True, color="808080")
+                    row_num += 1
+
+                max_cols = 0
+                for row in table_data:
+                    max_cols = max(max_cols, len(row))
+                    for col, value in enumerate(row, 1):
+                        cell = ws.cell(row=row_num, column=col, value=str(value))
+                        cell.border = thin_border
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+                    # 增加2列空白数据，让excel区域更宽
+                    for col in range(len(row) + 1, len(row) + 3):
+                        cell = ws.cell(row=row_num, column=col, value="")
+                        cell.border = thin_border
+                    row_num += 1
+
+                # 在表格末尾增加2行空白数据
+                extra_col_count = max(max_cols, 1) + 2
+                for _ in range(2):
+                    for col in range(1, extra_col_count + 1):
+                        cell = ws.cell(row=row_num, column=col, value="")
+                        cell.border = thin_border
+                    row_num += 1
+
+                row_num += 1
+
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if cell.value:
+                            max_length = max(max_length, len(str(cell.value)))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+
+        wb.save(output_path)
+        return True
+
+
+# ============================================================
+# 工作线程：PDF处理
+# ============================================================
+class ProcessingWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    warning = pyqtSignal(str)  # 添加警告信号
+
+    def __init__(self, pdf_path, mode="auto", max_pages=100):
+        super().__init__()
+        self.pdf_path = pdf_path
+        self.mode = mode
+        self.max_pages = max_pages
+        self.pdf_processor = PDFProcessor()
+        self.llm = VisionLLM()
+
+    def run(self):
+        try:
+            self.progress.emit(5, "正在检测PDF类型...")
+
+            is_image = self.pdf_processor.is_image_pdf(self.pdf_path)
+
+            import fitz
+            doc = fitz.open(self.pdf_path)
+            total_pages = len(doc)
+            doc.close()
+
+            if self.max_pages:
+                total_pages = min(self.max_pages, total_pages)
+
+            results = []
+            failed_pages = []
+            image_cache_dir = ""  # 初始化图片缓存目录
+            image_paths = []  # 初始化图片路径列表
+
+            if self.mode == "text_only" or (self.mode == "auto" and not is_image):
+                self.progress.emit(20, "正在提取文本和表格...")
+                tables = self.pdf_processor.extract_text_tables(
+                    self.pdf_path,
+                    max_pages=self.max_pages
+                )
+
+                for t in tables:
+                    results.append({
+                        "page": t["page"],
+                        "type": "text",
+                        "data": t.get("data", []),
+                        "extractor": t.get("extractor", "pdfplumber"),
+                        "parse_status": "success" if t.get("data") else "failed",
+                        "parse_message": "成功提取" if t.get("data") else "未检测到表格"
+                    })
+
+                extracted_pages = {t["page"] for t in tables}
+                for page_num in range(1, total_pages + 1):
+                    if page_num not in extracted_pages:
+                        failed_pages.append(page_num)
+
+            elif self.mode == "ai_only" or (self.mode == "auto" and is_image):
+                # 图片型PDF处理
+                self.progress.emit(20, "正在转换为图片...")
+
+                # 即使没有API Key，也要转图片缓存
+                image_paths = self.pdf_processor.pdf_to_images(self.pdf_path)
+                
+                # 获取图片缓存目录（从第一个图片路径提取）
+                image_cache_dir = str(Path(image_paths[0]).parent) if image_paths else ""
+
+                if not self.llm.api_key:
+                    # 没有API Key时，给每页生成空数据
+                    self.warning.emit("未配置API Key，已将PDF转为图片缓存，每页生成空数据")
+                    for img_path in image_paths:
+                        page_num = int(os.path.basename(img_path).split('_')[1].split('.')[0])
+                        results.append({
+                            "page": page_num,
+                            "type": "ai",
+                            "data": [],
+                            "parse_status": "empty",
+                            "parse_message": "未配置API Key（空数据）"
+                        })
+                    results.sort(key=lambda x: x["page"])
+                    self.progress.emit(95, "正在整理数据...")
+                    self.finished.emit({
+                        "success": True,
+                        "is_image_pdf": True,
+                        "image_cache_dir": image_cache_dir,  # 保存图片缓存目录
+                        "tables": results,
+                        "total_tables": len(results),
+                        "success_count": 0,
+                        "empty_count": len(results),
+                        "failed_count": len(results),  # 空数据也算作需要人工处理的
+                        "total_pages": total_pages
+                    })
+                    return
+
+                self.progress.emit(40, "正在调用AI识别表格...")
+                llm_results = self.llm.batch_recognize(
+                    image_paths,
+                    progress_callback=lambda x, y: self.progress.emit(
+                        40 + int(x / y * 50),
+                        f"正在识别第 {x}/{y} 页..."
+                    )
+                )
+
+                successful_pages = set()
+                for res in llm_results:
+                    if res["result"]["success"]:
+                        table_data = ExcelExporter.parse_json_table(res["result"]["data"])
+                        if table_data:
+                            results.append({
+                                "page": res["page"],
+                                "type": "ai",
+                                "data": table_data,
+                                "parse_status": "success",
+                                "parse_message": "AI识别成功"
+                            })
+                            successful_pages.add(res["page"])
+                        else:
+                            results.append({
+                                "page": res["page"],
+                                "type": "ai",
+                                "data": [],
+                                "parse_status": "failed",
+                                "parse_message": "AI返回数据解析失败"
+                            })
+                            successful_pages.add(res["page"])
+                    else:
+                        results.append({
+                            "page": res["page"],
+                            "type": "ai",
+                            "data": [],
+                            "parse_status": "failed",
+                            "parse_message": res["result"].get("error", "AI识别失败")
+                        })
+                        successful_pages.add(res["page"])
+
+                for page_num in range(1, total_pages + 1):
+                    if page_num not in successful_pages:
+                        failed_pages.append(page_num)
+
+            for page_num in failed_pages:
+                results.append({
+                    "page": page_num,
+                    "type": "failed",
+                    "data": [],
+                    "parse_status": "failed",
+                    "parse_message": "未提取到表格数据"
+                })
+
+            results.sort(key=lambda x: x["page"])
+
+            self.progress.emit(95, "正在整理数据...")
+            
+            # 获取图片缓存目录（如果之前没有设置）
+            if not image_cache_dir and image_paths:
+                image_cache_dir = str(Path(image_paths[0]).parent) if image_paths else ""
+            
+            self.finished.emit({
+                "success": True,
+                "is_image_pdf": is_image,
+                "image_cache_dir": image_cache_dir,  # 保存图片缓存目录
+                "tables": results,
+                "total_tables": len(results),
+                "success_count": len([r for r in results if r.get("parse_status") == "success"]),
+                "failed_count": len([r for r in results if r.get("parse_status") == "failed"]),
+                "total_pages": total_pages
+            })
+
+        except Exception as e:
+            traceback.print_exc()
+            self.error.emit(str(e))
