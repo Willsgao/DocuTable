@@ -199,38 +199,41 @@ class TableCompareManager(QObject):
         btn_layout = QHBoxLayout(btn_widget)
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_widget.setFixedHeight(40)
-        
-        # 插入/删除行按钮
-        self.insert_row_btn = QPushButton("➕ 插入行")
-        self.insert_row_btn.setToolTip("在选中位置插入新行")
-        self.insert_row_btn.clicked.connect(self.insert_row)
-        
-        self.delete_row_btn = QPushButton("🗑️ 删除行")
-        self.delete_row_btn.setToolTip("删除选中的行")
-        self.delete_row_btn.clicked.connect(self.delete_row)
-        
-        self.insert_col_btn = QPushButton("➕ 插入列")
-        self.insert_col_btn.setToolTip("在选中位置插入新列")
-        self.insert_col_btn.clicked.connect(self.insert_column)
-        
-        self.delete_col_btn = QPushButton("🗑️ 删除列")
-        self.delete_col_btn.setToolTip("删除选中的列")
-        self.delete_col_btn.clicked.connect(self.delete_column)
-        
-        btn_layout.addWidget(self.insert_row_btn)
-        btn_layout.addWidget(self.delete_row_btn)
-        btn_layout.addWidget(self.insert_col_btn)
-        btn_layout.addWidget(self.delete_col_btn)
-        
+
+        # 删除空格按钮
+        self.remove_spaces_btn = QPushButton("🧹 删除空格")
+        self.remove_spaces_btn.setToolTip("清除当前表格中所有单元格的前后及中间空格，并左对齐")
+        self.remove_spaces_btn.setFocusPolicy(Qt.NoFocus)
+        self.remove_spaces_btn.clicked.connect(self.remove_spaces)
+        btn_layout.addWidget(self.remove_spaces_btn)
+
+        # 清洗数据按钮
+        self.clean_data_btn = QPushButton("🧼 清洗数据")
+        self.clean_data_btn.setToolTip("选中区域只保留数值、千分位、小数点、负号、括号、百分号")
+        self.clean_data_btn.setFocusPolicy(Qt.NoFocus)
+        self.clean_data_btn.clicked.connect(self.clean_data)
+        btn_layout.addWidget(self.clean_data_btn)
+
+        # 向前合并按钮
+        self.merge_prev_btn = QPushButton("⬅️ 向前合并")
+        self.merge_prev_btn.setToolTip("将当前表格数据追加到前一个表格的左下方，然后删除当前表格")
+        self.merge_prev_btn.setFocusPolicy(Qt.NoFocus)
+        self.merge_prev_btn.clicked.connect(self.merge_to_previous)
+        btn_layout.addWidget(self.merge_prev_btn)
+
+        btn_layout.addSpacing(10)
+
         # 批量插入按钮
         self.batch_insert_btn = QPushButton("📦 批量插入")
         self.batch_insert_btn.setToolTip("一次性插入多行或多列")
+        self.batch_insert_btn.setFocusPolicy(Qt.NoFocus)
         self.batch_insert_btn.clicked.connect(self.batch_insert)
         btn_layout.addWidget(self.batch_insert_btn)
         
         # 统计按钮
         self.calc_sum_btn = QPushButton("📊 计算选中区域")
         self.calc_sum_btn.setToolTip("计算选中单元格的总和、平均值、数量")
+        self.calc_sum_btn.setFocusPolicy(Qt.NoFocus)
         self.calc_sum_btn.clicked.connect(self.calculate_selected)
         btn_layout.addWidget(self.calc_sum_btn)
         
@@ -239,12 +242,14 @@ class TableCompareManager(QObject):
         # 撤销/重做按钮
         self.undo_btn = QPushButton("↩️ 撤销")
         self.undo_btn.setToolTip("撤销上一步操作 (Ctrl+Z)")
+        self.undo_btn.setFocusPolicy(Qt.NoFocus)
         self.undo_btn.clicked.connect(self.undo_change)
         self.undo_btn.setMaximumWidth(60)
         btn_layout.addWidget(self.undo_btn)
         
         self.redo_btn = QPushButton("↪️ 重做")
         self.redo_btn.setToolTip("重做操作 (Ctrl+Y)")
+        self.redo_btn.setFocusPolicy(Qt.NoFocus)
         self.redo_btn.clicked.connect(self.redo_change)
         self.redo_btn.setMaximumWidth(60)
         btn_layout.addWidget(self.redo_btn)
@@ -949,71 +954,113 @@ class TableCompareManager(QObject):
         redo_action.setEnabled(len(self.redo_stack) > 0)
         
         menu.addSeparator()
-        
+
         menu.addAction("⬆️ 上方插入行").triggered.connect(self.insert_row_above)
         menu.addAction("⬇️ 下方插入行").triggered.connect(self.insert_row_below)
         menu.addAction("⬅️ 左侧插入列").triggered.connect(self.insert_col_left)
         menu.addAction("➡️ 右侧插入列").triggered.connect(self.insert_col_right)
         menu.addSeparator()
         menu.addAction("📦 批量插入行/列...").triggered.connect(self.batch_insert)
-        
+
         menu.addSeparator()
-        
+
         # 删除操作 - 根据选中情况显示不同选项
         selected_items = self.table_widget.selectedItems()
         selected_rows = set(item.row() for item in selected_items)
         selected_cols = set(item.column() for item in selected_items)
-        
+
         if len(selected_rows) > 1:
-            # 多行选中时显示"删除所有选中行"
             delete_all_rows_action = menu.addAction(f"🗑️ 删除所有选中行 ({len(selected_rows)}行)")
             delete_all_rows_action.triggered.connect(self.delete_selected_rows)
         elif len(selected_rows) == 1:
             menu.addAction("🗑️ 删除行").triggered.connect(self.delete_row)
-        
+
         if len(selected_cols) > 1:
-            # 多列选中时显示"删除所有选中列"
             delete_all_cols_action = menu.addAction(f"🗑️ 删除所有选中列 ({len(selected_cols)}列)")
             delete_all_cols_action.triggered.connect(self.delete_selected_columns)
         elif len(selected_cols) == 1:
             menu.addAction("🗑️ 删除列").triggered.connect(self.delete_column)
-        
+
         menu.addSeparator()
         menu.addAction("📋 复制").triggered.connect(self.copy_from_table)
         menu.addAction("📄 粘贴").triggered.connect(self.paste_to_table)
         menu.addAction("✂️ 剪切").triggered.connect(self.cut_from_table)
         menu.addAction("⬇️ 向下填充").triggered.connect(self.fill_down_from_table)
-        
+
         menu.exec_(self.table_widget.mapToGlobal(position))
-    
+
+    def insert_row(self):
+        """插入行（工具栏用，在选中位置上方插入）"""
+        self.save_current_table_state()
+        current_row = self.table_widget.currentRow()
+        self.table_widget.insertRow(current_row if current_row >= 0 else 0)
+        self.table_widget.resizeColumnsToContents()
+
+    def delete_row(self):
+        """删除选中行"""
+        self.save_current_table_state()
+        current_row = self.table_widget.currentRow()
+        if current_row >= 0:
+            self.table_widget.removeRow(current_row)
+
+    def insert_column(self):
+        """插入列（工具栏用，在选中位置左侧插入）"""
+        self.save_current_table_state()
+        current_col = self.table_widget.currentColumn()
+        self.table_widget.insertColumn(current_col if current_col >= 0 else 0)
+        self.table_widget.resizeColumnsToContents()
+
+    def delete_column(self):
+        """删除选中列"""
+        self.save_current_table_state()
+        current_col = self.table_widget.currentColumn()
+        if current_col >= 0:
+            self.table_widget.removeColumn(current_col)
+
     def insert_row_above(self):
         """上方插入行"""
         self.save_current_table_state()
         current_row = self.table_widget.currentRow()
         self.table_widget.insertRow(current_row if current_row >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
     def insert_row_below(self):
         """下方插入行"""
         self.save_current_table_state()
         current_row = self.table_widget.currentRow()
         self.table_widget.insertRow(current_row + 1 if current_row >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
     def insert_col_left(self):
         """左侧插入列"""
         self.save_current_table_state()
         current_col = self.table_widget.currentColumn()
         self.table_widget.insertColumn(current_col if current_col >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
     def insert_col_right(self):
         """右侧插入列"""
         self.save_current_table_state()
         current_col = self.table_widget.currentColumn()
         self.table_widget.insertColumn(current_col + 1 if current_col >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
+    def delete_selected_rows(self):
+        """删除所有选中的行"""
+        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
+        if selected_rows:
+            self.save_current_table_state()
+            for row in sorted(selected_rows, reverse=True):
+                self.table_widget.removeRow(row)
+
+    def delete_selected_columns(self):
+        """删除所有选中的列"""
+        selected_cols = set(item.column() for item in self.table_widget.selectedItems())
+        if selected_cols:
+            self.save_current_table_state()
+            for col in sorted(selected_cols, reverse=True):
+                self.table_widget.removeColumn(col)
+
     def save_current_table_state(self):
         """保存当前表格状态到撤销栈和数据源"""
         row = self.table_list_widget.currentRow()
@@ -1185,33 +1232,186 @@ class TableCompareManager(QObject):
         
         self.table_widget.resizeColumnsToContents()
     
-    def insert_row(self):
-        """插入行"""
+    def remove_spaces(self):
+        """删除空单元格：每行内，非空单元格向左移动对齐，空单元格移到右侧"""
         self.save_current_table_state()
-        current_row = self.table_widget.currentRow()
-        self.table_widget.insertRow(current_row if current_row >= 0 else 0)
-        self.table_widget.resizeColumnsToContents()
-    
-    def delete_row(self):
-        """删除行"""
+        table = self.table_widget
+        removed_count = 0
+        for row in range(table.rowCount()):
+            # 收集当前行所有非空单元格内容
+            cells = []
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                text = item.text().strip() if item else ""
+                if text:  # 非空，保留
+                    cells.append(text)
+                else:
+                    removed_count += 1
+
+            # 将非空内容左对齐填充，右侧留空
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                if item is None:
+                    item = QTableWidgetItem()
+                    table.setItem(row, col, item)
+                if col < len(cells):
+                    item.setText(cells[col])
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                else:
+                    item.setText("")
+
+        table.resizeColumnsToContents()
+        QMessageBox.information(
+            self.main_window, "删除空格",
+            f"已处理完成，共清理 {removed_count} 个空单元格，各行已左对齐。"
+        )
+
+    def clean_data(self):
+        """清洗选中区域数据：只保留数值、千分位、小数点、负号、括号、百分号"""
+        table = self.table_widget
+
+        # 优先使用 selectedItems，避免因焦点丢失导致 selectedRanges 为空
+        selected = table.selectedItems()
+        if not selected:
+            QMessageBox.information(
+                self.main_window, "清洗数据",
+                "请先选中要清洗的单元格区域。"
+            )
+            return
+
         self.save_current_table_state()
-        current_row = self.table_widget.currentRow()
-        if current_row >= 0:
-            self.table_widget.removeRow(current_row)
-    
-    def insert_column(self):
-        """插入列"""
-        self.save_current_table_state()
-        current_col = self.table_widget.currentColumn()
-        self.table_widget.insertColumn(current_col if current_col >= 0 else 0)
-        self.table_widget.resizeColumnsToContents()
-    
-    def delete_column(self):
-        """删除列"""
-        self.save_current_table_state()
-        current_col = self.table_widget.currentColumn()
-        if current_col >= 0:
-            self.table_widget.removeColumn(current_col)
+        import re
+
+        # 匹配要保留的字符：数字、逗号、小数点、负号、括号、百分号
+        pattern = re.compile(r'[^0-9,\.\-\(\)\%\s]')
+
+        cleaned_count = 0
+        seen = set()
+        for item in selected:
+            row = item.row()
+            col = item.column()
+            key = (row, col)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            text = item.text()
+            if not text:
+                continue
+            # 去掉不允许的字符，然后去除前后空白
+            cleaned = pattern.sub('', text)
+            cleaned = cleaned.strip()
+            if cleaned != text.strip():
+                cleaned_count += 1
+            item.setText(cleaned)
+            item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        table.resizeColumnsToContents()
+        QMessageBox.information(
+            self.main_window, "清洗数据",
+            f"已处理完成，共清洗 {cleaned_count} 个单元格。"
+        )
+
+    def merge_to_previous(self):
+        """将当前表格数据追加到前一个同类别表格的左下方，然后删除当前表格"""
+        current_row = self.table_list_widget.currentRow()
+        if current_row < 0 or current_row >= len(self.filtered_indices):
+            return
+
+        # 获取当前表格的原始索引和类别
+        current_table_idx = self.filtered_indices[current_row]
+        tables = self.main_window.processed_results.get('tables', [])
+        if current_table_idx >= len(tables):
+            return
+
+        current_table = tables[current_table_idx]
+        current_is_success = current_table.get('parse_status') == 'success'
+        current_is_manual = current_table.get('is_manual', False)
+
+        # 在同类别表格中，找到当前表格的前一个表格（按原始顺序向前查找）
+        prev_table_idx = None
+        for i in range(current_table_idx - 1, -1, -1):
+            t = tables[i]
+            t_is_success = t.get('parse_status') == 'success'
+            t_is_manual = t.get('is_manual', False)
+
+            # 判断是否是同类别（parse_status 和 is_manual 都相同）
+            if t_is_success == current_is_success and t_is_manual == current_is_manual:
+                prev_table_idx = i
+                break
+
+        if prev_table_idx is None:
+            QMessageBox.information(
+                self.main_window, "向前合并",
+                "当前已是同类别中的第一个表格，无法向前合并。"
+            )
+            return
+
+        # 找到 prev_table_idx 在 filtered_indices 中的位置（用于显示序号）
+        prev_row_in_filtered = None
+        for i, idx in enumerate(self.filtered_indices):
+            if idx == prev_table_idx:
+                prev_row_in_filtered = i
+                break
+
+        prev_table = tables[prev_table_idx]
+        current_data = current_table.get('data', [])
+        prev_data = prev_table.get('data', [])
+
+        if not current_data:
+            QMessageBox.information(
+                self.main_window, "向前合并",
+                "当前表格没有数据，无需合并。"
+            )
+            return
+
+        # 确认对话框（显示同类别中的序号）
+        display_current = current_row + 1
+        display_prev = prev_row_in_filtered + 1 if prev_row_in_filtered is not None else prev_table_idx + 1
+        reply = QMessageBox.question(
+            self.main_window, "确认合并",
+            f"确定将当前表格（同类别第{display_current}个）合并到前一个同类别表格（同类别第{display_prev}个）吗？\n\n"
+            f"当前表格 {len(current_data)} 行数据将追加到前一个表格下方。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 数据合并：将当前表格数据追加到前一个表格的左下方
+        # 左对齐：以前一个表格的列数为准，不足的列补空
+        prev_cols = max((len(row) for row in prev_data), default=0) if prev_data else 0
+        if prev_cols == 0:
+            # 前一个表格没有数据，直接用当前表格的数据
+            prev_data = [list(row) for row in current_data]
+        else:
+            for row in current_data:
+                new_row = list(row)
+                while len(new_row) < prev_cols:
+                    new_row.append("")
+                prev_data.append(new_row[:prev_cols])  # 截断多余的列
+
+        # 更新前一个表格的数据和行数
+        prev_table['data'] = prev_data
+        prev_table['rows'] = len(prev_data)
+        prev_table['parse_status'] = 'success'
+
+        # 删除当前表格（使用原始索引）
+        # 因为 prev_table_idx < current_table_idx，删除 current_table_idx 不影响 prev_table_idx
+        tables.pop(current_table_idx)
+        self.main_window.processed_results['tables'] = tables
+        self.main_window.processed_results['total_tables'] = len(tables)
+
+        # 同步到文件
+        if self.main_window.current_file:
+            from codes.pdf_extractor import save_mid_data
+            save_mid_data(self.main_window.current_file, self.main_window.processed_results)
+
+        # 刷新列表并选中前一个（使用原始索引）
+        self.apply_table_filter(preserve_selection=prev_table_idx)
+        QMessageBox.information(
+            self.main_window, "向前合并",
+            f"合并完成！已追加 {len(current_data)} 行数据到前一个表格。"
+        )
 
     def batch_insert(self):
         """批量插入多行或多列"""
@@ -1312,36 +1512,11 @@ class TableCompareManager(QObject):
                     self.table_widget.insertColumn(self.table_widget.columnCount())
 
         self.table_widget.resizeColumnsToContents()
-        """删除所有选中的行"""
-        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
-        if selected_rows:
-            self.save_current_table_state()
-            # 从大到小排序，避免删除后索引变化
-            for row in sorted(selected_rows, reverse=True):
-                self.table_widget.removeRow(row)
-    
-    def delete_selected_rows(self):
-        """删除所有选中的行"""
-        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
-        if selected_rows:
-            self.save_current_table_state()
-            # 从大到小排序，避免删除后索引变化
-            for row in sorted(selected_rows, reverse=True):
-                self.table_widget.removeRow(row)
-
-    def delete_selected_columns(self):
-        """删除所有选中的列"""
-        selected_cols = set(item.column() for item in self.table_widget.selectedItems())
-        if selected_cols:
-            self.save_current_table_state()
-            # 从大到小排序，避免删除后索引变化
-            for col in sorted(selected_cols, reverse=True):
-                self.table_widget.removeColumn(col)
     
     def calculate_selected(self):
         """计算选中区域"""
-        selection = self.table_widget.selectedRanges()
-        if not selection:
+        selected = self.table_widget.selectedItems()
+        if not selected:
             self.stats_label.setText("请先选择单元格区域")
             return
         
@@ -1349,18 +1524,15 @@ class TableCompareManager(QObject):
         count = 0
         values = []
         
-        for range_ in selection:
-            for row in range(range_.topRow(), range_.bottomRow() + 1):
-                for col in range(range_.leftColumn(), range_.rightColumn() + 1):
-                    item = self.table_widget.item(row, col)
-                    if item:
-                        try:
-                            val = float(item.text().replace(',', '').replace('%', ''))
-                            total_sum += val
-                            values.append(val)
-                            count += 1
-                        except ValueError:
-                            pass
+        for item in selected:
+            if item:
+                try:
+                    val = float(item.text().replace(',', '').replace('%', ''))
+                    total_sum += val
+                    values.append(val)
+                    count += 1
+                except ValueError:
+                    pass
         
         if count > 0:
             avg = total_sum / count
