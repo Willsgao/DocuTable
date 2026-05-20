@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import json
 import shutil
 import tempfile
@@ -56,8 +57,13 @@ def cleanup_temp_files():
 # 项目根目录 - 向上两级到达项目根目录
 # ============================================================
 def get_project_root():
-    """获取项目根目录"""
-    return Path(__file__).parent.parent.parent
+    """获取项目根目录（兼容开发模式和 PyInstaller 打包模式）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包模式：exe 所在目录
+        return Path(sys.executable).parent
+    else:
+        # 开发模式：向上两级到达项目根目录
+        return Path(__file__).parent.parent.parent
 
 
 def get_config_dir():
@@ -80,9 +86,9 @@ def get_history_file():
     return get_project_root() / "pdf_history.json"
 
 
-# 确保目录存在
-get_config_dir().mkdir(exist_ok=True)
-get_mid_data_dir().mkdir(exist_ok=True)
+# 确保目录存在（parents=True 支持多层目录创建）
+get_config_dir().mkdir(parents=True, exist_ok=True)
+get_mid_data_dir().mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -94,7 +100,15 @@ def get_pdf_cache_dir(pdf_path):
     # 移除Windows文件名非法字符: \ / : * ? " < > |
     for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
         pdf_name = pdf_name.replace(ch, '_')
-    return get_mid_data_dir() / pdf_name
+    # strip 首尾空格和点号，Windows 不允许末尾空格/点号
+    pdf_name = pdf_name.strip().rstrip('.')
+    # 处理文件名乱码或无效字符：仅保留中文、英文、数字、下划线、连字符
+    sanitized = ''.join(c if c == '_' or c == '-' or c.isalnum() or '\u4e00' <= c <= '\u9fff' else '_' for c in pdf_name)
+    # 如果 sanitize 后为空或与原文件名差异很大（乱码），用文件 hash 作为目录名
+    if not sanitized.strip('_'):
+        file_hash = get_pdf_file_hash(pdf_path)
+        sanitized = file_hash[:16]
+    return get_mid_data_dir() / sanitized
 
 
 def get_pdf_preview_dir(pdf_path):

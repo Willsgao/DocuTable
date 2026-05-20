@@ -26,6 +26,8 @@ from .processor import (
     ProcessingWorker
 )
 
+from .pdf_context import PDFContext
+
 __all__ = [
     # utils
     'cleanup_temp_files', 'TEMP_DIR',
@@ -44,4 +46,6 @@ __all__ = [
     'VisionLLM',
     'ExcelExporter',
     'ProcessingWorker',
+    # pdf context
+    'PDFContext',
 ]

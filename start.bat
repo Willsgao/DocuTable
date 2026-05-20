@@ -6,5 +6,5 @@ echo   银行年报PDF解析工具
 echo ====================================
 echo.
 echo 正在启动...
-python main.py
+venv\Scripts\python.exe main.py
 pause

@@ -204,36 +204,32 @@ class PreviewManager:
         # 如果没有预览图也没有图片缓存，尝试生成预览图
         print(f"[DEBUG] 准备用PyMuPDF生成预览图")
         if not cached_files:
-            # 获取PDF总页数
+            # 降级：缓存未命中时才逐页渲染（一次打开，避免重复 open）
+            print(f"[DEBUG] 预览缓存未命中，降级渲染...")
             try:
                 import fitz
                 doc = fitz.open(self.mw.current_file)
                 total_pages = len(doc)
-                doc.close()
                 print(f"[DEBUG] PDF总页数: {total_pages}")
             except Exception as e:
                 self.mw.status_bar.showMessage(f"获取PDF页数失败: {e}")
                 print(f"[DEBUG] 获取页数失败: {e}")
                 return
 
-        self.mw.preview_images = []
-
-        for page_num in range(total_pages):
-            image_path = os.path.join(preview_dir, f"preview_{page_num}.png")
-
-            try:
-                import fitz
-                doc = fitz.open(self.mw.current_file)
-                page = doc.load_page(page_num)
-                mat = fitz.Matrix(2.0, 2.0)
-                pix = page.get_pixmap(matrix=mat)
-                pix.save(image_path)
-                doc.close()
-                self.mw.preview_images.append(image_path)
-                print(f"[DEBUG] 第{page_num}页生成成功: {image_path}")
-            except Exception as e:
-                self.mw.preview_images.append(None)
-                print(f"[WARN] 生成第{page_num + 1}页预览失败: {e}")
+            self.mw.preview_images = []
+            mat = fitz.Matrix(2.0, 2.0)
+            for page_num in range(total_pages):
+                image_path = os.path.join(preview_dir, f"preview_{page_num}.png")
+                try:
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(matrix=mat)
+                    pix.save(image_path)
+                    self.mw.preview_images.append(image_path)
+                    print(f"[DEBUG] 第{page_num}页生成成功: {image_path}")
+                except Exception as e:
+                    self.mw.preview_images.append(None)
+                    print(f"[WARN] 生成第{page_num + 1}页预览失败: {e}")
+            doc.close()
 
         print(f"[DEBUG] 最终 preview_images 数量: {len(self.mw.preview_images)}")
         print(f"[DEBUG] === generate_pdf_preview_images 结束 ===\n")

@@ -133,10 +133,17 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.tabs)
 
-        # 进度条
+        # 进度条 + 耗时计时器
+        progress_layout = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        main_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_bar)
+        self.progress_timer_label = QLabel("")
+        self.progress_timer_label.setVisible(False)
+        self.progress_timer_label.setFixedWidth(80)
+        self.progress_timer_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        progress_layout.addWidget(self.progress_timer_label)
+        main_layout.addLayout(progress_layout)
 
         # 状态栏
         self.status_bar = QStatusBar()

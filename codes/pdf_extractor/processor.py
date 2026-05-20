@@ -14,6 +14,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from .utils import (
     load_config, TEMP_DIR
 )
+from .pdf_context import PDFContext
 
 
 # ============================================================
@@ -49,13 +50,13 @@ class PDFProcessor:
         "confidence_num_weight": 0.25,   # 数值占比权重
         "confidence_line_bonus": 0.15,   # 表格线加分
 
-        # 过滤
-        "financial_keywords": [           # 金融关键词
+        # 过滤（严格模式：V2宁缺毋滥，漏掉的表格由docx通道补充）
+        "financial_keywords": [
             "万元", "元", "百万", "十亿", "%", "比率",
             "资产", "负债", "收入", "利润", "现金", "股东",
             "资本", "充足率", "率", "额", "数"
         ],
-        "min_text_length": 50,           # 最小文本长度(用于关键词过滤)
+        "min_text_length": 50,           # 最小文本长度
 
         # pdfplumber降级
         "pdfplumber_min_words": 20,      # 单页最低word数
@@ -65,44 +66,103 @@ class PDFProcessor:
     def __init__(self):
         self.config = load_config()
 
-    def is_image_pdf(self, pdf_path):
-        """检测是否为图片型PDF（扫描件）"""
+    def is_image_pdf(self, pdf_path=None, context=None):
+        """检测是否为图片型PDF（扫描件）
+        使用 get_text('dict') 检测实际文本块，比字符数判断更可靠；
+        采样前5页+中部若干页，避免封面/签章页导致全局误判
+        
+        Args:
+            pdf_path: PDF 文件路径（向后兼容，context 为 None 时使用）
+            context: PDFContext 共享上下文（优先使用）
+        """
         import fitz  # PyMuPDF
-        doc = fitz.open(pdf_path)
 
-        # 检查前5页是否主要是图片
+        if context:
+            doc = context.doc
+            close_doc = False
+        else:
+            doc = fitz.open(pdf_path)
+            close_doc = True
+
+        total = len(doc)
+        # 采样页：前5页 + 中部区域（避免仅靠封面判断）
+        sample_pages = list(range(min(5, total)))
+        if total > 10:
+            mid = total // 2
+            for p in range(mid - 2, min(mid + 3, total)):
+                if p not in sample_pages:
+                    sample_pages.append(p)
+
         image_pages = 0
         text_pages = 0
+        details = []
 
-        for page_num in range(min(5, len(doc))):
+        for page_num in sample_pages:
             page = doc[page_num]
-            text = page.get_text().strip()
+            text_dict = page.get_text("dict")
+            blocks = text_dict.get("blocks", [])
+
+            # 统计有实际文本内容的 span 数量（比字符数更可靠）
+            text_spans = 0
+            total_chars = 0
+            for block in blocks:
+                if block.get("type") == 0:  # 文本块
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            t = span.get("text", "").strip()
+                            if t:
+                                total_chars += len(t)
+                                text_spans += 1
+
             images = page.get_images()
 
-            # 如果文字很少但有图片，认为是扫描件
-            if len(text) < 100 and len(images) > 0:
+            # 真正扫描件：没有任何文本 span 但有图片
+            # 有文本 span(>=1)就认为是文本页，不再用字符数阈值（CJK 文本容易误判）
+            if text_spans == 0 and len(images) > 0:
                 image_pages += 1
-            elif len(text) > 100:
+                details.append(f"p{page_num+1}=图片")
+            elif text_spans > 0:
                 text_pages += 1
+                details.append(f"p{page_num+1}=文本({text_spans}span/{total_chars}字)")
+            else:
+                details.append(f"p{page_num+1}=空白")
 
-        doc.close()
+        if close_doc:
+            doc.close()
 
-        # 如果大部分页面是图片型，则认为是图片型PDF
-        return image_pages > text_pages
+        result = image_pages > text_pages
+        print(f"  [PDF检测] 采样{len(sample_pages)}页: {', '.join(details)}")
+        print(f"  [PDF检测] 文本页={text_pages}, 图片页={image_pages} → {'图片型PDF' if result else '文本型PDF'}")
+        return result
 
-    def extract_text_tables(self, pdf_path, max_pages=None):
-        """提取文本型PDF中的表格，保留位置信息"""
+    def extract_text_tables(self, pdf_path=None, max_pages=None, context=None, progress_callback=None, progress_base=20, skip_drawings=False):
+        """提取文本型PDF中的表格，保留位置信息
+        
+        Args:
+            pdf_path: PDF 文件路径（向后兼容）
+            max_pages: 最大处理页数
+            context:  PDFContext 共享上下文（优先使用）
+            progress_callback: callback(value, message) 逐页进度
+            progress_base: 进度条起始值（默认20）
+            skip_drawings: 跳过 drawings（避免 PyMuPDF 崩溃）
+        """
         import fitz
 
         version = self.config.get("extraction_version", "v2")
         if version == "v2":
-            return self._extract_text_tables_v2(pdf_path, max_pages)
+            return self._extract_text_tables_v2(pdf_path, max_pages, context, progress_callback, progress_base, skip_drawings)
 
         # ========== v1 逻辑（原有代码，完全不动）==========
         import re
         import pdfplumber
 
-        doc = fitz.open(pdf_path)
+        if context:
+            doc = context.doc
+            close_doc = False
+        else:
+            doc = fitz.open(pdf_path)
+            close_doc = True
+
         total_pages = len(doc)
 
         if max_pages:
@@ -113,6 +173,10 @@ class PDFProcessor:
         for page_num in range(total_pages):
             page = doc[page_num]
             page_rect = page.rect
+
+            if progress_callback:
+                pct = progress_base + int((page_num + 1) / total_pages * 10)
+                progress_callback(pct, f"V1提取表格: 第{page_num + 1}/{total_pages}页...")
 
             # 方法1: 使用PyMuPDF直接获取页面的完整文本和位置信息（确保不丢失边缘数据）
             try:
@@ -241,9 +305,11 @@ class PDFProcessor:
                                     "extractor": "position_based_fallback"
                                 })
 
-        doc.close()
+        if close_doc:
+            doc.close()
 
-        results = self._merge_tables_on_same_page(results)
+        # V1 不再合并同一页的多个表格，每个表格独立保留
+        # results = self._merge_tables_on_same_page(results)
         return results
 
     def _merge_tables_on_same_page(self, results):
@@ -621,8 +687,14 @@ class PDFProcessor:
 
         return table_data if table_data else [[text]]
 
-    def pdf_to_images(self, pdf_path, output_dir=None):
-        """将PDF转换为图片"""
+    def pdf_to_images(self, pdf_path=None, output_dir=None, context=None):
+        """将PDF转换为图片
+        
+        Args:
+            pdf_path: PDF 文件路径（向后兼容）
+            output_dir:  输出目录
+            context:     PDFContext 共享上下文（优先使用）
+        """
         import fitz
 
         if output_dir is None:
@@ -631,6 +703,10 @@ class PDFProcessor:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if context:
+            return context.generate_all_llm_images(output_dir)
+
+        # 向后兼容：无 context 时自己打开 PDF
         doc = fitz.open(pdf_path)
         image_paths = []
 
@@ -655,12 +731,27 @@ class PDFProcessor:
 
     # ---- v2 入口 ----
 
-    def _extract_text_tables_v2(self, pdf_path, max_pages=None):
-        """v2 表格提取入口"""
+    def _extract_text_tables_v2(self, pdf_path=None, max_pages=None, context=None, progress_callback=None, progress_base=20, skip_drawings=False):
+        """v2 表格提取入口
+        
+        Args:
+            pdf_path: PDF 文件路径（向后兼容）
+            max_pages: 最大处理页数
+            context:  PDFContext 共享上下文（优先使用）
+            progress_callback:  callback(value, message) 用于推送逐页进度
+            progress_base: 进度条起始值（默认20，auto模式下为40）
+            skip_drawings:  跳过 get_drawings()（auto模式为True，避免PyMuPDF崩溃）
+        """
         import fitz
         import statistics
 
-        doc = fitz.open(pdf_path)
+        if context:
+            doc = context.doc
+            close_doc = False
+        else:
+            doc = fitz.open(pdf_path)
+            close_doc = True
+
         total_pages = len(doc)
         if max_pages:
             total_pages = min(max_pages, total_pages)
@@ -671,6 +762,11 @@ class PDFProcessor:
         for page_num in range(total_pages):
             page = doc[page_num]
             page_rect = page.rect
+
+            # 逐页进度回调
+            if progress_callback:
+                pct = progress_base + int((page_num + 1) / total_pages * 10)
+                progress_callback(pct, f"V2扫描: 第{page_num + 1}/{total_pages}页")
 
             # 1. 提取 words + drawings
             words_raw = page.get_text("words")
@@ -683,32 +779,50 @@ class PDFProcessor:
                     "baseline": w[3],
                 })
 
-            drawings_raw = page.get_drawings()
+            # PyMuPDF get_drawings() 存在 C 扩展 refcount bug(pdf2docx 后崩溃)
+            # auto 模式下完全跳过 drawings，仅用纯文本密度检测表格区域
             drawings = []
-            for d in drawings_raw:
-                rect = d["rect"]
-                w = rect.width
-                h = rect.height
-                direction = None
-                if w > h * 5:
-                    direction = "h"
-                elif h > w * 5:
-                    direction = "v"
-                drawings.append({
-                    "type": "line" if (w < h * 0.3 or h < w * 0.3) else "rect",
-                    "direction": direction,
-                    "x0": rect.x0, "y0": rect.y0,
-                    "x1": rect.x1, "y1": rect.y1,
-                    "color": d.get("color"),
-                    "width": d.get("width", 1),
-                    "fill": d.get("fill"),
-                })
+            if not skip_drawings:
+                try:
+                    drawings_raw = page.get_drawings()
+                    for d in drawings_raw:
+                        rect = d["rect"]
+                        w = rect.width
+                        h = rect.height
+                        direction = None
+                        if w > h * 5:
+                            direction = "h"
+                        elif h > w * 5:
+                            direction = "v"
+                        drawings.append({
+                            "type": "line" if (w < h * 0.3 or h < w * 0.3) else "rect",
+                            "direction": direction,
+                            "x0": rect.x0, "y0": rect.y0,
+                            "x1": rect.x1, "y1": rect.y1,
+                            "color": d.get("color"),
+                            "width": d.get("width", 1),
+                            "fill": d.get("fill"),
+                        })
+                except Exception:
+                    print(f"  [V2] 第{page_num+1}页: get_drawings() 失败，使用纯文本检测")
+
+            # 回退：如果 get_text("words") 返回空，尝试 get_text("dict")
+            if not words:
+                print(f"  [V2] 第{page_num+1}页: get_text('words')返回空，尝试dict回退...")
+                words = PDFProcessor._extract_words_from_dict(page)
+                if words:
+                    print(f"  [V2] 第{page_num+1}页: dict回退成功，提取到{len(words)}个文本片段")
+                else:
+                    print(f"  [V2] 第{page_num+1}页: dict回退也失败，跳过该页")
+                    continue
 
             # 2. 金融关键词过滤
             full_text = " ".join(w["text"] for w in words)
             if not any(kw in full_text for kw in cfg["financial_keywords"]):
+                print(f"  [V2] 第{page_num+1}页: 未匹配金融关键词，跳过 (文本长度={len(full_text)}, 预览={full_text[:60]!r})")
                 continue
             if len(full_text) < cfg["min_text_length"]:
+                print(f"  [V2] 第{page_num+1}页: 文本长度{len(full_text)}不满足最低{cfg['min_text_length']}要求，跳过")
                 continue
 
             # 3. 表格区域定位
@@ -716,6 +830,7 @@ class PDFProcessor:
             if not table_regions:
                 table_regions = self._detect_table_region_by_text(words, page_rect.width, page_rect.height)
             if not table_regions:
+                print(f"  [V2] 第{page_num+1}页: 未检测到表格区域，跳过")
                 continue
 
             # 4. 为每个表格区域提取数据
@@ -761,9 +876,500 @@ class PDFProcessor:
                     "has_border": has_border,
                 })
 
-        doc.close()
-        results = self._merge_tables_on_same_page(results)
+        if close_doc:
+            doc.close()
+        # V2 不再合并同一页的多个表格，每个表格区域独立保留
+        # results = self._merge_tables_on_same_page(results)
         return results
+
+    @staticmethod
+    def _extract_words_from_dict(page):
+        """当 get_text('words') 返回空时的回退方案
+        从 get_text('dict') 的 blocks/lines/spans 中提取文本和坐标
+        """
+        text_dict = page.get_text("dict")
+        blocks = text_dict.get("blocks", [])
+        words = []
+        for block in blocks:
+            if block.get("type") == 0:  # 文本块
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").strip()
+                        if text:
+                            bbox = span.get("bbox", [0, 0, 0, 0])
+                            words.append({
+                                "x0": bbox[0],
+                                "y0": bbox[1],
+                                "x1": bbox[2],
+                                "y1": bbox[3],
+                                "text": text,
+                            "baseline": bbox[3],
+                        })
+        return words
+
+    # ---- docx 表格提取（pdf2docx 通道） ----
+
+    def _extract_tables_via_docx(self, pdf_path=None, context=None, progress_callback=None):
+        """通过 pdf2docx 将 PDF 转为 Word，从 Word 表格结构中提取数据。
+
+        全内存操作（BytesIO），不落盘。
+        输出格式与 V1/V2 统一。
+
+        Args:
+            pdf_path: PDF 文件路径（向后兼容）
+            context:  PDFContext 共享上下文（优先使用）
+            progress_callback: callback(value, message) 推送进度
+        Returns:
+            [{page, type, data, extractor, confidence, ...}]
+        """
+        from io import BytesIO
+
+        if context:
+            _pdf_path = context.pdf_path
+        else:
+            _pdf_path = pdf_path
+
+        print(f"  [docx] 开始 pdf2docx 全内存转换...")
+        t0 = time.time()
+        total_hint = context.page_count if context else "?"
+        if progress_callback:
+            progress_callback(22, f"docx: PDF转Word中({total_hint}页,约2-5分钟)...")
+
+        # 步骤1：pdf2docx → 内存 BytesIO
+        # 注意：cv.convert() 是阻塞调用，内部无进度回调，此阶段进度条会停留约2-5分钟
+        try:
+            from pdf2docx import Converter
+        except ImportError:
+            print(f"  [docx] 错误：未安装 pdf2docx 库，请执行 pip install pdf2docx")
+            return []
+
+        buf = BytesIO()
+        cv = Converter(_pdf_path)
+        cv.convert(
+            buf,
+            start=0,
+            end=None,
+            layout=False,           # 流式模式：表格识别更准
+            table_deduction=False,  # 保守策略
+        )
+        cv.close()
+        buf.seek(0)
+
+        elapsed = time.time() - t0
+        print(f"  [docx] pdf2docx 转换完成，耗时 {elapsed:.1f}s")
+        if progress_callback:
+            progress_callback(30, f"docx: 转换完成({elapsed:.0f}s),解析表格...")
+
+        # 步骤2：python-docx 解析
+        try:
+            from docx import Document
+        except ImportError:
+            print(f"  [docx] 错误：未安装 python-docx 库，请执行 pip install python-docx")
+            return []
+
+        doc = Document(buf)
+        buf.close()
+
+        # 步骤3：遍历文档 body 子元素，通过分页符推算每个表格的真实页码
+        W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+        body = doc.element.body
+
+        # 先扫描所有 body 子元素，建立 page_table_map：{表格XML元素: PDF页码}
+        current_page = 1
+        page_table_map = {}  # tbl_element -> page_number
+
+        for child in body:
+            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+
+            if tag == 'p':
+                # 检查段落中是否包含分页符
+                for br in child.iter(f'{W}br'):
+                    br_type = br.get(f'{W}type')
+                    if br_type == 'page':
+                        current_page += 1
+                        break
+                # 也检查 lastRenderedPageBreak
+                for lrpb in child.iter(f'{W}lastRenderedPageBreak'):
+                    current_page += 1
+                    break
+
+            elif tag == 'tbl':
+                page_table_map[child] = current_page
+
+        if not page_table_map:
+            print(f"  [docx] Word 中未检测到任何表格")
+            return []
+
+        # 通过 python-docx 的 Table 对象处理表格数据
+        tables = doc.tables
+        results = []
+        for tbl_idx, table in enumerate(tables):
+            try:
+                tbl_elem = table._tbl
+                page_num = page_table_map.get(tbl_elem, tbl_idx + 1)
+
+                # 提取表格级列宽
+                tblGrid = tbl_elem.find(f'{W}tblGrid')
+                col_widths = []
+                if tblGrid is not None:
+                    for gridCol in tblGrid.findall(f'{W}gridCol'):
+                        w = float(gridCol.get(f'{W}w', 0))
+                        col_widths.append(w)
+
+                # 逐行解析
+                rows_data = []
+                merge_tracker = {}  # {(row, col): True} 被垂直合并占用的单元格
+
+                for r, tr in enumerate(table.rows):
+                    row_cells = []
+                    col_idx = 0
+
+                    for cell in tr.cells:
+                        # 跳过被垂直合并占用的位置
+                        while merge_tracker.get((r, col_idx)):
+                            row_cells.append("")
+                            col_idx += 1
+
+                        tc = cell._tc
+                        tcPr = tc.find(f'{W}tcPr')
+                        col_span = 1
+                        row_start = True
+
+                        if tcPr is not None:
+                            # gridSpan：跨列
+                            gridSpan = tcPr.find(f'{W}gridSpan')
+                            if gridSpan is not None:
+                                col_span = int(gridSpan.get(f'{W}val', 1))
+
+                            # vMerge：垂直合并
+                            vMerge = tcPr.find(f'{W}vMerge')
+                            if vMerge is not None:
+                                val = vMerge.get(f'{W}val')
+                                if val != 'restart':
+                                    # 被合并的后续行
+                                    row_start = False
+
+                        if row_start:
+                            text = cell.text.strip()
+                            for span in range(col_span):
+                                if span == 0:
+                                    row_cells.append(text)
+                                else:
+                                    row_cells.append("")
+
+                            if vMerge is not None:
+                                # 标记下方被合并的行
+                                for rr in range(r + 1, len(table.rows)):
+                                    merge_tracker[(rr, col_idx)] = True
+                                    for s in range(1, col_span):
+                                        merge_tracker[(rr, col_idx + s)] = True
+                        else:
+                            # 垂直合并的延续行：占位
+                            for span in range(col_span):
+                                row_cells.append("")
+
+                        col_idx += col_span
+
+                    if row_cells:
+                        rows_data.append(row_cells)
+
+                if rows_data:
+                    results.append({
+                        "page": page_num,
+                        "type": "table",
+                        "data": rows_data,
+                        "text": "",
+                        "extractor": "docx_based",
+                        "confidence": 0.85,
+                        "rows": len(rows_data),
+                        "cols": max(len(r) for r in rows_data) if rows_data else 0,
+                        "has_border": True,
+                    })
+                    print(f"  [docx] 表格{tbl_idx+1}(PDF第{page_num}页): {len(rows_data)}行{results[-1]['cols']}列表格")
+
+            except Exception as e:
+                print(f"  [docx] 表格{tbl_idx+1}解析失败: {e}")
+                continue
+
+        # 步骤4：用 PDF 文本匹配校验页码（兜底：分页符不可靠时用文本指纹）
+        if context and results:
+            if progress_callback:
+                progress_callback(33, "docx: 校验表格页码...")
+            results = self._verify_docx_page_numbers(results, context)
+            # 按页码排序
+            results.sort(key=lambda x: x.get("page", 0))
+
+        if progress_callback:
+            progress_callback(36, f"docx提取完成: {len(results)}个表格")
+        print(f"  [docx] 共提取 {len(results)} 个表格")
+        return results
+
+    def _verify_docx_page_numbers(self, results, context):
+        """为每个 docx 表格匹配真实 PDF 页码。
+
+        策略：提取表格前 N 个非空单元格拼接成"签名文本"，
+        在 PDF 各页中搜索最长连续匹配，确定表格属于哪一页。
+        """
+        if not results or not context:
+            return results
+
+        total_pages = context.page_count
+        if total_pages <= 1:
+            return results
+
+        # 预加载所有页面文本（只做一次，避免重复页访问）
+        page_texts = {}
+        for pn in range(total_pages):
+            try:
+                page_texts[pn] = context.get_page_text(pn)
+            except Exception:
+                page_texts[pn] = ""
+
+        assigned = 0
+        assigned_indices = set()  # 成功赋值的表格索引
+        for idx, r in enumerate(results):
+            rows = r.get("data", [])
+            if not rows:
+                continue
+
+            # 提取签名：前两行非空文本拼接
+            sig_parts = []
+            for row in rows[:2]:
+                for cell in row:
+                    if cell and str(cell).strip():
+                        s = str(cell).strip()
+                        if len(s) >= 3 and s not in sig_parts:
+                            sig_parts.append(s)
+                            if len(sig_parts) >= 4:
+                                break
+                if len(sig_parts) >= 4:
+                    break
+
+            if len(sig_parts) < 2:
+                continue
+
+            # 用最长连续匹配找最佳页码
+            best_page = 1
+            best_len = 0
+            best_detail = ""
+
+            for pn in range(total_pages):
+                pt = page_texts.get(pn, "")
+                if not pt:
+                    continue
+
+                # 计算该页匹配的签名片段数
+                matched = [sp for sp in sig_parts if sp in pt]
+                match_count = len(matched)
+
+                if match_count > best_len:
+                    best_len = match_count
+                    best_page = pn + 1
+                    best_detail = f"{match_count}/{len(sig_parts)}"
+                elif match_count == best_len and match_count > 0:
+                    # 平票：选更靠前的页（表格通常不会在前置页面完整复现）
+                    pass
+
+            old_page = r.get("page", 0)
+            if best_len >= 2:  # 至少匹配 2 个签名片段才采信
+                r["page"] = best_page
+                assigned += 1
+                assigned_indices.add(idx)
+                if old_page != best_page:
+                    print(f"  [docx] 页码纠正: P{old_page}→P{best_page}(命中{best_detail})")
+
+        # ---- 兜底：签名未匹配的表格用位置插值分配页码 ----
+        all_indices = set(range(len(results)))
+        unassigned = [i for i in all_indices if i not in assigned_indices and results[i].get("data")]
+        if unassigned and assigned_indices:
+            # 已分配表格： (index, page) 对
+            known = [(i, results[i]["page"]) for i in sorted(assigned_indices)]
+            print(f"  [docx] 插值兜底: {len(unassigned)} 个表格通过位置推算页码...")
+
+            for ui in unassigned:
+                prev_page = None
+                next_page = None
+                for ki, kp in known:
+                    if ki < ui:
+                        prev_page = kp
+                    elif ki > ui:
+                        next_page = kp
+                        break
+
+                if prev_page and next_page:
+                    estimated = prev_page if prev_page == next_page else (prev_page + next_page) // 2
+                elif prev_page:
+                    estimated = prev_page
+                elif next_page:
+                    estimated = next_page
+                else:
+                    continue
+
+                results[ui]["page"] = max(1, estimated)
+                assigned += 1
+
+        print(f"  [docx] 页码分配完成: {assigned}/{len(results)} 个表格已定位(含插值)")
+        return results
+
+    # ---- 表格去重与标题提取 ----
+
+    @staticmethod
+    def _table_fingerprint(table_data, sample_cells=6):
+        """生成表格的轻量指纹：前 sample_cells 个非空单元格文本"""
+        cells = []
+        for row in table_data[:2]:  # 只看前两行
+            for cell in row:
+                if cell and str(cell).strip():
+                    s = str(cell).strip()
+                    if len(s) >= 2:
+                        cells.append(s)
+                        if len(cells) >= sample_cells:
+                            break
+            if len(cells) >= sample_cells:
+                break
+        return frozenset(cells) if cells else None
+
+    @staticmethod
+    def _deduplicate_v2_docx(v2_tables, docx_tables):
+        """去重合并：docx 为主力通道，V2 补漏 docx 未覆盖的表格。
+
+        原则：docx(pdf2word) 从 PDF 内容流重建表格结构，准确度高。
+        V2 基于视觉坐标推测，存在合并单元格错位风险。
+
+        规则：
+        1. docx 所有表格无条件保留(主力通道)
+        2. 同一页中 V2 表格与任一 docx 表格指纹命中 >= 2 个公共词则丢弃 V2(避免重复)
+        3. V2 独有的表格(docx 漏掉的无框表/小表)作为补充保留
+        """
+        if not docx_tables:
+            return list(v2_tables)
+
+        merged = []
+        # 收集所有已匹配的 V2 表格（用于后续排除）
+        matched_v2_ids = set()
+
+        # 对每个 docx 表格，找同页 V2 匹配项
+        for di, dt in enumerate(docx_tables):
+            dt_page = dt.get("page", 0)
+            dt_data = dt.get("data", [])
+            dt_fp = PDFProcessor._table_fingerprint(dt_data)
+
+            # 添加到结果
+            merged.append(dt)
+
+            # 在同页 V2 表格中找匹配
+            if dt_fp:
+                for vi, vt in enumerate(v2_tables):
+                    if vi in matched_v2_ids:
+                        continue
+                    if vt.get("page") != dt_page:
+                        continue
+                    vt_data = vt.get("data", [])
+                    vt_fp = PDFProcessor._table_fingerprint(vt_data)
+                    if vt_fp and dt_fp:
+                        common = dt_fp & vt_fp
+                        if len(common) >= 2 and len(common) >= min(len(dt_fp), len(vt_fp)) * 0.5:
+                            matched_v2_ids.add(vi)
+                            print(f"  [去重] P{dt_page}: docx表{di+1} ← V2表{vi+1}(匹配{len(common)}个公共词)")
+
+        # 添加未被匹配的 V2 表格
+        for vi, vt in enumerate(v2_tables):
+            if vi not in matched_v2_ids:
+                merged.append(vt)
+
+        # 稳定排序：按页码分组，页内保持 docx 提取顺序（阅读顺序）
+        merged.sort(key=lambda x: x.get("page", 0))
+        v2_supplement = len(v2_tables) - len(matched_v2_ids)
+        print(f"  [去重] 汇总: docx主力={len(docx_tables)}个 + V2补漏={v2_supplement}个 = 共{len(merged)}个表格")
+        return merged
+
+    @staticmethod
+    def _filter_table_quality(tables):
+        """过滤低质量表格。
+
+        规则：
+        1. 只有 1 行数据的跳过，除非是该页第一个表且含 >= 2 个数值
+        2. 没有数值类型数据的跳过（纯文本块，不是表格）
+        """
+        import re
+
+        def count_numbers(data):
+            """数有多少个含数字的单元格"""
+            cnt = 0
+            for row in data:
+                for cell in row:
+                    if cell and re.search(r'\d', str(cell)):
+                        cnt += 1
+            return cnt
+
+        def has_any_number(data):
+            return count_numbers(data) > 0
+
+        filtered = []
+        removed = 0
+        kept_exceptions = 0
+        last_page = None
+
+        for t in tables:
+            data = t.get("data", [])
+            page = t.get("page", 0)
+            is_first_on_page = (page != last_page)
+            last_page = page
+
+            # 规则1：至少 2 行（例外：页首表 + 单行 + 2个以上数值）
+            if len(data) < 2:
+                if is_first_on_page and count_numbers(data) >= 2:
+                    # 例外：页首关键指标表（如每股收益、ROE等单行汇总）
+                    kept_exceptions += 1
+                else:
+                    removed += 1
+                    continue
+
+            # 规则2：至少有一个数字
+            if not has_any_number(data):
+                removed += 1
+                continue
+
+            filtered.append(t)
+
+        if removed or kept_exceptions:
+            parts = []
+            if removed:
+                parts.append(f"移除{removed}个")
+            if kept_exceptions:
+                parts.append(f"保留{kept_exceptions}个页首单行表(含数值)")
+            print(f"  [质量过滤] {'; '.join(parts)}")
+        return filtered
+
+    @staticmethod
+    def _extract_table_title(table_data):
+        """从表格数据中提取标题文字（用于 Sheet 命名）。
+
+        规则：取第一个长度>=4的非空单元格作为标题，
+        如果没有，取表格第一行的前 3 个非空单元拼接。
+        """
+        if not table_data:
+            return "表格"
+        for row in table_data:
+            for cell in row:
+                if cell and str(cell).strip():
+                    s = str(cell).strip()
+                    if len(s) >= 4:
+                        # 截取前12个字符
+                        return s[:12].replace("/", "-").replace("\\", "-").replace("*", "")
+        # fallback：拼接前几个非空
+        parts = []
+        for row in table_data:
+            for cell in row:
+                if cell and str(cell).strip():
+                    s = str(cell).strip()
+                    if s not in parts:
+                        parts.append(s[:4])
+                    if len(parts) >= 3:
+                        break
+            if len(parts) >= 3:
+                break
+        return "-".join(parts)[:20] if parts else "表格"
 
     # ---- 表格区域检测 ----
 
@@ -1327,7 +1933,12 @@ class ExcelExporter:
 
     @staticmethod
     def export_tables(tables_data, output_path):
-        """将表格数据导出为Excel"""
+        """将表格数据导出为Excel——每个表格一个独立Sheet。
+
+        Sheet 命名: P{页码}-T{序号}-{标题前若干字}
+        表头区: 标题行(粗体) + 来源行(灰色) + 空白行
+        数据区: 左右各留1列空白，上下各留1行空白
+        """
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
@@ -1340,72 +1951,135 @@ class ExcelExporter:
             bottom=Side(style='thin')
         )
 
-        page_groups = {}
-        for table_info in tables_data:
-            page = table_info.get("page", 0)
-            if page not in page_groups:
-                page_groups[page] = []
-            page_groups[page].append(table_info)
+        # 过滤掉空数据表格，按页码+表格序号排序
+        valid_tables = [t for t in tables_data if t.get("data")]
+        if not valid_tables:
+            # 创建一个空 sheet 避免报错
+            ws = wb.active
+            ws.title = "无数据"
+            ws.cell(row=1, column=1, value="未提取到表格数据")
+            wb.save(output_path)
+            return True
 
-        sorted_pages = sorted(page_groups.keys())
+        # 按页排序，同页按 extractor（docx 优先）
+        def sort_key(t):
+            page = t.get("page", 0)
+            ext = t.get("extractor", "")
+            is_docx = 0 if ext.startswith("docx") else 1
+            return (page, is_docx)
 
-        for idx, page in enumerate(sorted_pages):
-            tables_on_page = page_groups[page]
+        valid_tables.sort(key=sort_key)
 
-            if idx == 0:
-                ws = wb.active
-            else:
-                ws = wb.create_sheet()
+        # 按页分组，分配每页内序号
+        page_tables = {}
+        for t in valid_tables:
+            page = t.get("page", 0)
+            if page not in page_tables:
+                page_tables[page] = []
+            page_tables[page].append(t)
 
-            ws.title = f"第{page}页"
+        # 计算最大页码位数，用于零补位
+        max_page = max(page_tables.keys()) if page_tables else 1
+        page_digits = max(3, len(str(max_page)))  # 至少 3 位
 
-            row_num = 1
+        # 计算全局最大本页表数，用于零补位
+        max_per_page = max(len(v) for v in page_tables.values()) if page_tables else 1
+        seq_digits = max(2, len(str(max_per_page)))  # 至少 2 位
 
-            for table_idx, table_info in enumerate(tables_on_page):
+        global_idx = 0
+        for page in sorted(page_tables.keys()):
+            tables_on_page = page_tables[page]
+            for seq, table_info in enumerate(tables_on_page, 1):
                 table_data = table_info.get("data", [])
-
                 if not table_data:
                     continue
 
-                if table_idx > 0:
-                    ws.cell(row=row_num, column=1, value=f"【表格 {table_idx + 1}】")
-                    ws.cell(row=row_num, column=1).font = Font(bold=True, color="808080")
-                    row_num += 1
+                # ---- Sheet 命名（零补位确保字符串排序=数值排序）----
+                title = PDFProcessor._extract_table_title(table_data)
+                sheet_name = f"P{page:0{page_digits}d}-T{seq:0{seq_digits}d}-{title}"
+                # Sheet 名最长 31 字符
+                if len(sheet_name) > 31:
+                    sheet_name = sheet_name[:28] + "..."
+                # 替换非法字符
+                sheet_name = sheet_name.replace(":", "-").replace("[", "(").replace("]", ")")
 
+                if global_idx == 0:
+                    ws = wb.active
+                else:
+                    ws = wb.create_sheet()
+                ws.title = sheet_name
+                global_idx += 1
+
+                # 计算列布局
                 max_cols = 0
                 for row in table_data:
                     max_cols = max(max_cols, len(row))
-                    for col, value in enumerate(row, 1):
-                        cell = ws.cell(row=row_num, column=col, value=str(value))
-                        cell.border = thin_border
-                        cell.alignment = Alignment(horizontal="left", vertical="center")
-                    # 增加2列空白数据，让excel区域更宽
-                    for col in range(len(row) + 1, len(row) + 3):
-                        cell = ws.cell(row=row_num, column=col, value="")
-                        cell.border = thin_border
-                    row_num += 1
+                data_start_col = 2  # 左侧留白
+                data_end_col = data_start_col + max_cols  # 数据结束列（也是右侧留白）
 
-                # 在表格末尾增加2行空白数据
-                extra_col_count = max(max_cols, 1) + 2
-                for _ in range(2):
-                    for col in range(1, extra_col_count + 1):
-                        cell = ws.cell(row=row_num, column=col, value="")
-                        cell.border = thin_border
-                    row_num += 1
+                row_num = 1
 
+                # ---- 表头区 ----
+                # 标题行
+                ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=data_end_col)
+                title_cell = ws.cell(row=row_num, column=1, value=title)
+                title_cell.font = Font(bold=True, size=12)
+                title_cell.alignment = Alignment(horizontal="left", vertical="center")
                 row_num += 1
 
-            for column in ws.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    try:
-                        if cell.value:
-                            max_length = max(max_length, len(str(cell.value)))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 50)
-                ws.column_dimensions[column_letter].width = adjusted_width
+                # 来源行
+                ext_label = table_info.get("extractor", "unknown")
+                ext_display = "docx精准通道" if ext_label.startswith("docx") else "V2快速通道"
+                ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=data_end_col)
+                source_cell = ws.cell(row=row_num, column=1,
+                                      value=f"来源: PDF第{page}页 | 提取方式: {ext_display}")
+                source_cell.font = Font(color="808080", size=9)
+                source_cell.alignment = Alignment(horizontal="left", vertical="center")
+                row_num += 1
+
+                # 标题与数据之间的空行
+                row_num += 1
+
+                # ---- 数据区：顶部空白行 ----
+                for col in range(1, data_end_col + 1):
+                    cell = ws.cell(row=row_num, column=col, value="")
+                    cell.border = thin_border
+                row_num += 1
+
+                # ---- 写入表格数据 ----
+                for row in table_data:
+                    # 左侧空白列
+                    cell = ws.cell(row=row_num, column=1, value="")
+                    cell.border = thin_border
+
+                    for col_idx, value in enumerate(row):
+                        col = data_start_col + col_idx
+                        cell = ws.cell(row=row_num, column=col, value=str(value) if value is not None else "")
+                        cell.border = thin_border
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+                    # 右侧空白列
+                    cell = ws.cell(row=row_num, column=data_end_col, value="")
+                    cell.border = thin_border
+
+                    row_num += 1
+
+                # ---- 底部空白行 ----
+                for col in range(1, data_end_col + 1):
+                    cell = ws.cell(row=row_num, column=col, value="")
+                    cell.border = thin_border
+                row_num += 1
+
+                # ---- 自动列宽 ----
+                for col_idx in range(1, data_end_col + 1):
+                    max_length = 0
+                    col_letter = ws.cell(row=1, column=col_idx).column_letter
+                    for r in range(1, row_num):
+                        cv = ws.cell(row=r, column=col_idx).value
+                        if cv:
+                            max_length = max(max_length, len(str(cv)))
+                    adjusted_width = min(max_length + 2, 50)
+                    ws.column_dimensions[col_letter].width = adjusted_width
 
         wb.save(output_path)
         return True
@@ -1429,55 +2103,86 @@ class ProcessingWorker(QThread):
         self.llm = VisionLLM()
 
     def run(self):
+        context = None
         try:
             self.progress.emit(5, "正在检测PDF类型...")
 
-            is_image = self.pdf_processor.is_image_pdf(self.pdf_path)
-
-            import fitz
-            doc = fitz.open(self.pdf_path)
-            total_pages = len(doc)
-            doc.close()
-
+            # ---- 创建 PDF 共享上下文（一次打开，全流程复用） ----
+            print(f"  [Worker] 创建 PDFContext: {self.pdf_path}")
+            context = PDFContext(self.pdf_path)
+            total_pages = context.page_count
             if self.max_pages:
                 total_pages = min(self.max_pages, total_pages)
 
+            is_image = self.pdf_processor.is_image_pdf(context=context)
+
             results = []
-            failed_pages = []
-            image_cache_dir = ""  # 初始化图片缓存目录
-            image_paths = []  # 初始化图片路径列表
+            failed_pages = set()  # 用 set 防止 auto 降级时重复记录同一页
+            image_cache_dir = ""
+            image_paths = []
 
-            if self.mode == "text_only" or (self.mode == "auto" and not is_image):
-                self.progress.emit(20, "正在提取文本和表格...")
-                tables = self.pdf_processor.extract_text_tables(
-                    self.pdf_path,
-                    max_pages=self.max_pages
+            if self.mode == "text_only" or self.mode == "auto":
+                # 进度回调 lambda
+                cb = lambda v, m: self.progress.emit(v, m)
+
+                if self.mode == "auto" and not is_image:
+                    # ---- auto 模式：docx(pdf2word) 主力提取（V2 不再作为补充，省时） ----
+                    self.progress.emit(20, "pdf2word 提取表格(约2-5分钟)...")
+                    docx_tables = self.pdf_processor._extract_tables_via_docx(
+                        pdf_path=self.pdf_path,
+                        context=context,
+                        progress_callback=cb
+                    )
+                    v2_tables = []  # auto 模式不跑 V2，docx 已覆盖
+                else:
+                    # ---- text_only 模式：纯 V2 ----
+                    self.progress.emit(20, "V2提取表格...")
+                    v2_tables = self.pdf_processor.extract_text_tables(
+                        pdf_path=self.pdf_path,
+                        max_pages=self.max_pages,
+                        context=context,
+                        progress_callback=cb
+                    )
+                    docx_tables = []
+
+                # ---- 去重合并：docx 优先，V2 补漏 ----
+                self.progress.emit(50, "正在去重合并表格...")
+                merged_tables = self.pdf_processor._deduplicate_v2_docx(
+                    v2_tables, docx_tables
                 )
+                # 质量过滤：去掉单行/无数字的无效表格
+                merged_tables = self.pdf_processor._filter_table_quality(merged_tables)
 
-                for t in tables:
+                for t in merged_tables:
+                    ext = t.get("extractor", "v2")
+                    data = t.get("data", [])
+                    is_docx = ext.startswith("docx")
                     results.append({
                         "page": t["page"],
                         "type": "text",
-                        "data": t.get("data", []),
-                        "extractor": t.get("extractor", "pdfplumber"),
-                        "parse_status": "success" if t.get("data") else "failed",
-                        "parse_message": "成功提取" if t.get("data") else "未检测到表格"
+                        "data": data,
+                        "extractor": ext,
+                        "parse_status": "success" if data else "failed",
+                        "parse_message": "docx通道提取" if (is_docx and data) else ("V2提取" if data else "未检测到表格")
                     })
 
-                extracted_pages = {t["page"] for t in tables}
+                extracted_pages = {t["page"] for t in merged_tables}
                 for page_num in range(1, total_pages + 1):
                     if page_num not in extracted_pages:
-                        failed_pages.append(page_num)
+                        failed_pages.add(page_num)
 
-            elif self.mode == "ai_only" or (self.mode == "auto" and is_image):
-                # 图片型PDF处理
+                if self.mode == "auto" and is_image and not v2_tables:
+                    print(f"  [auto模式] 文本提取未找到表格，降级到图片处理...")
+
+            if self.mode == "ai_only" or (self.mode == "auto" and is_image and not results):
+                # 图片型PDF处理（ai_only 模式，或 auto 模式文本提取失败后的降级）
                 self.progress.emit(20, "正在转换为图片...")
 
-                # 即使没有API Key，也要转图片缓存
-                image_paths = self.pdf_processor.pdf_to_images(self.pdf_path)
-                
-                # 获取图片缓存目录（从第一个图片路径提取）
-                image_cache_dir = str(Path(image_paths[0]).parent) if image_paths else ""
+                # 使用 context 生成 LLM 图片
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                llm_image_dir = Path(TEMP_DIR) / f"pdf_images_{timestamp}"
+                image_paths = context.generate_all_llm_images(llm_image_dir)
+                image_cache_dir = str(llm_image_dir)
 
                 if not self.llm.api_key:
                     # 没有API Key时，给每页生成空数据
@@ -1493,15 +2198,22 @@ class ProcessingWorker(QThread):
                         })
                     results.sort(key=lambda x: x["page"])
                     self.progress.emit(95, "正在整理数据...")
+
+                    # 生成预览图
+                    from codes.pdf_extractor.utils import get_pdf_preview_dir
+                    preview_dir = get_pdf_preview_dir(self.pdf_path)
+                    context.generate_all_previews(preview_dir)
+
+                    context.close()
                     self.finished.emit({
                         "success": True,
                         "is_image_pdf": True,
-                        "image_cache_dir": image_cache_dir,  # 保存图片缓存目录
+                        "image_cache_dir": image_cache_dir,
                         "tables": results,
                         "total_tables": len(results),
                         "success_count": 0,
                         "empty_count": len(results),
-                        "failed_count": len(results),  # 空数据也算作需要人工处理的
+                        "failed_count": len(results),
                         "total_pages": total_pages
                     })
                     return
@@ -1549,9 +2261,9 @@ class ProcessingWorker(QThread):
 
                 for page_num in range(1, total_pages + 1):
                     if page_num not in successful_pages:
-                        failed_pages.append(page_num)
+                        failed_pages.add(page_num)
 
-            for page_num in failed_pages:
+            for page_num in sorted(failed_pages):
                 results.append({
                     "page": page_num,
                     "type": "failed",
@@ -1563,15 +2275,29 @@ class ProcessingWorker(QThread):
             results.sort(key=lambda x: x["page"])
 
             self.progress.emit(95, "正在整理数据...")
-            
+
             # 获取图片缓存目录（如果之前没有设置）
             if not image_cache_dir and image_paths:
                 image_cache_dir = str(Path(image_paths[0]).parent) if image_paths else ""
-            
+
+            # ---- 统一生成预览图到磁盘（UI 层复用） ----
+            from codes.pdf_extractor.utils import get_pdf_preview_dir
+            preview_dir = get_pdf_preview_dir(self.pdf_path)
+            need_preview = True
+            if os.path.isdir(preview_dir):
+                cached = [f for f in os.listdir(preview_dir) if f.startswith("preview_")]
+                if cached:
+                    need_preview = False
+            if need_preview:
+                self.progress.emit(96, "正在生成预览图...")
+                context.generate_all_previews(preview_dir)
+
+            self.progress.emit(98, "处理完成")
+
             self.finished.emit({
                 "success": True,
                 "is_image_pdf": is_image,
-                "image_cache_dir": image_cache_dir,  # 保存图片缓存目录
+                "image_cache_dir": image_cache_dir,
                 "tables": results,
                 "total_tables": len(results),
                 "success_count": len([r for r in results if r.get("parse_status") == "success"]),
@@ -1582,3 +2308,6 @@ class ProcessingWorker(QThread):
         except Exception as e:
             traceback.print_exc()
             self.error.emit(str(e))
+        finally:
+            if context:
+                context.close()

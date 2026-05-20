@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QApplication
-from PyQt5.QtCore import pyqtSignal, QObject
+from PyQt5.QtCore import pyqtSignal, QObject, QTimer
 
 from codes.pdf_extractor import (
     get_cached_pdf_info, load_mid_data, save_mid_data, ProcessingWorker
@@ -26,6 +26,11 @@ class ProcessingManager(QObject):
     def __init__(self, main_window):
         super().__init__()
         self.mw = main_window
+        # 耗时计时器
+        self._elapsed_seconds = 0
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.timeout.connect(self._tick_timer)
+        self._elapsed_timer.setInterval(1000)  # 每秒更新
 
     def select_file(self):
         """选择PDF文件，智能加载缓存"""
@@ -115,6 +120,8 @@ class ProcessingManager(QObject):
         self.mw.preview_text.clear()
         self.mw.preview_text.append("正在处理中，请稍候...\n")
 
+        self._start_timer()  # 开始计时
+
         self.mw.worker = ProcessingWorker(self.mw.current_file, mode, max_pages)
         self.mw.worker.progress.connect(self.update_progress)
         self.mw.worker.finished.connect(self.on_processing_finished)
@@ -124,15 +131,32 @@ class ProcessingManager(QObject):
 
         self.processing_started.emit()
 
+    def _tick_timer(self):
+        """每秒更新耗时显示"""
+        self._elapsed_seconds += 1
+        m, s = divmod(self._elapsed_seconds, 60)
+        self.mw.progress_timer_label.setText(f"⏱ {m}:{s:02d}")
+
+    def _start_timer(self):
+        self._elapsed_seconds = 0
+        self.mw.progress_timer_label.setVisible(True)
+        self.mw.progress_timer_label.setText("⏱ 0:00")
+        self._elapsed_timer.start()
+
+    def _stop_timer(self):
+        self._elapsed_timer.stop()
+        self.mw.progress_timer_label.setVisible(False)
+
     def update_progress(self, value, msg):
-        """更新进度"""
+        """更新进度（实时显示全部进度消息）"""
         self.mw.progress_bar.setValue(value)
         self.mw.status_bar.showMessage(msg)
-        if value % 10 == 0:
-            self.mw.preview_text.append(msg)
+        # 显示所有进度消息，不再仅每10%显示一次
+        self.mw.preview_text.append(f"[{value:3d}%] {msg}")
 
     def on_processing_finished(self, result):
         """处理完成"""
+        self._stop_timer()
         self.mw.progress_bar.setValue(100)
         self.mw.process_btn.setEnabled(True)
         self.mw.processed_results = result
@@ -164,9 +188,9 @@ class ProcessingManager(QObject):
         if hasattr(self.mw, 'preview_manager') and self.mw.preview_manager:
             self.mw.preview_manager.generate_pdf_preview_images()
 
-        # 更新预览文本
-        self.mw.preview_text.clear()
-        self.mw.preview_text.append("✅ 处理完成！\n\n")
+        # 更新预览文本（追加摘要，不清除进度日志）
+        self.mw.preview_text.append("\n" + "=" * 50)
+        self.mw.preview_text.append("✅ 处理完成！\n")
         self.mw.preview_text.append(
             f"PDF类型: {'图片型（扫描件）' if result.get('is_image_pdf') else '文字型（可直接复制）'}\n"
         )
@@ -222,6 +246,7 @@ class ProcessingManager(QObject):
 
     def on_processing_error(self, error_msg):
         """处理错误"""
+        self._stop_timer()
         self.mw.progress_bar.setVisible(False)
         self.mw.process_btn.setEnabled(True)
         QMessageBox.critical(self.mw, "处理失败", f"处理PDF时发生错误:\n{error_msg}")
@@ -243,12 +268,15 @@ class ProcessingManager(QObject):
         preview_dir = get_pdf_preview_dir(self.mw.current_file)
         os.makedirs(preview_dir, exist_ok=True)
 
-        # 检查是否已有缓存
-        cached_files = [
-            f for f in os.listdir(preview_dir)
-            if f.startswith("preview_") and f.endswith(".png")
-        ]
-        # 按数字顺序排序，避免字符串排序导致 preview_10 排在 preview_2 前面
+        # 检查是否已有缓存（Worker 已预渲染，通常命中）
+        try:
+            cached_files = [
+                f for f in os.listdir(preview_dir)
+                if f.startswith("preview_") and f.endswith(".png")
+            ]
+        except Exception:
+            cached_files = []
+
         def _extract_page_num(filename):
             try:
                 return int(filename[len("preview_"):-len(".png")])
@@ -259,33 +287,31 @@ class ProcessingManager(QObject):
             self.mw.preview_images = [
                 os.path.join(preview_dir, f) for f in cached_files
             ]
+            print(f"  [processing] 预览缓存命中，共 {len(cached_files)} 张")
             return
 
-        # 获取PDF总页数
+        # 降级：缓存未命中时才逐页渲染（一次打开，避免重复 open）
+        print(f"  [processing] 预览缓存未命中，降级渲染...")
         try:
             doc = fitz.open(self.mw.current_file)
             total_pages = len(doc)
-            doc.close()
         except Exception as e:
             self.mw.status_bar.showMessage(f"获取PDF页数失败: {e}")
             return
 
         self.mw.preview_images = []
-
+        mat = fitz.Matrix(2.0, 2.0)
         for page_num in range(total_pages):
             image_path = os.path.join(preview_dir, f"preview_{page_num}.png")
-
             try:
-                doc = fitz.open(self.mw.current_file)
                 page = doc.load_page(page_num)
-                mat = fitz.Matrix(2.0, 2.0)
                 pix = page.get_pixmap(matrix=mat)
                 pix.save(image_path)
-                doc.close()
                 self.mw.preview_images.append(image_path)
             except Exception as e:
                 self.mw.preview_images.append(None)
                 print(f"[WARN] 生成第{page_num + 1}页预览失败: {e}")
+        doc.close()
 
         self.mw.status_bar.showMessage(f"预览图已生成，共 {total_pages} 页", 3000)
 

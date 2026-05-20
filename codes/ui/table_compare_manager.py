@@ -504,11 +504,16 @@ class TableCompareManager(QObject):
         self.table_list_widget.blockSignals(True)
         self.table_list_widget.clear()
         
+        # 按页号分配序号
+        page_seq = {}
         for idx in self.filtered_indices:
             table = tables[idx]
+            page = table.get('page', 0)
+            page_seq[page] = page_seq.get(page, 0) + 1
             status_icon = "✅" if table.get('parse_status') == 'success' else "❌"
-            parse_type = table.get('parse_type', 'unknown')
-            item_text = f"{status_icon} 第{table['page']}页 [{parse_type}]"
+            ext = table.get('extractor', '')
+            ext_tag = "D" if ext.startswith("docx") else "V2"
+            item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
             self.table_list_widget.addItem(item)
@@ -1181,6 +1186,15 @@ class TableCompareManager(QObject):
             for row in sorted(selected_rows, reverse=True):
                 self.table_widget.removeRow(row)
     
+    def delete_selected_rows(self):
+        """删除所有选中的行"""
+        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
+        if selected_rows:
+            self.save_current_table_state()
+            # 从大到小排序，避免删除后索引变化
+            for row in sorted(selected_rows, reverse=True):
+                self.table_widget.removeRow(row)
+
     def delete_selected_columns(self):
         """删除所有选中的列"""
         selected_cols = set(item.column() for item in self.table_widget.selectedItems())
@@ -1347,10 +1361,14 @@ class TableCompareManager(QObject):
         table['is_manual'] = True
         self.has_unsaved_changes = True
         
-        # 更新列表文本
+        # 更新列表文本（保留页号_序号格式）
+        page = table.get('page', 0)
+        # 计算本表在当前页的序号
+        seq = sum(1 for t in tables[:origin_idx] if t.get('page') == page) + 1
+        ext = table.get('extractor', '')
+        ext_tag = "D" if ext.startswith("docx") else "V2"
         status_icon = "✅" if new_status == 'success' else "❌"
-        parse_type = table.get('parse_type', 'unknown')
-        self.table_list_widget.item(row).setText(f"{status_icon} 第{table['page']}页 [{parse_type}]")
+        self.table_list_widget.item(row).setText(f"{status_icon} P{page}_{seq} [{ext_tag}]")
         
         # 标记保存按钮为可保存状态
         self.save_status_btn.setText("💾 保存更改")
