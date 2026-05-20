@@ -126,4 +126,18 @@ class TableEditor:
         cut_action = menu.addAction("✂️ 剪切")
         cut_action.triggered.connect(self.main_window.cut_from_table)
         
+        menu.addSeparator()
+        
+        # 自动换行（单元格文本过长时自动折行）
+        wrap_enabled = self.table_widget.wordWrap()
+        wrap_label = "↩️ 自动换行 ✓" if wrap_enabled else "↩️ 自动换行"
+        wrap_action = menu.addAction(wrap_label)
+        wrap_action.triggered.connect(self._toggle_wrap_text)
+        
         menu.exec_(self.table_widget.mapToGlobal(position))
+    
+    def _toggle_wrap_text(self):
+        """打开/关闭单元格文本自动换行"""
+        current = self.table_widget.wordWrap()
+        self.table_widget.setWordWrap(not current)
+        self.table_widget.resizeRowsToContents()

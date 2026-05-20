@@ -6,7 +6,7 @@
 import os
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QApplication,
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QSplitter, QMenu, QApplication, QSizePolicy, QMessageBox, QShortcut,
     QDialog, QRadioButton, QSpinBox, QDialogButtonBox
@@ -288,11 +288,14 @@ class TableCompareManager(QObject):
         self.table_widget.setAlternatingRowColors(True)
         self.table_widget.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed)
         self.table_widget.setSelectionMode(QTableWidget.ExtendedSelection)
-        self.table_widget.setSelectionBehavior(QTableWidget.SelectItems)
+        self.table_widget.setSelectionBehavior(QTableWidget.SelectItems)  # 行列都可选
+        self.table_widget.setWordWrap(False)  # 默认不自动换行，右键菜单可切换
         self.table_widget.itemSelectionChanged.connect(self.on_selection_changed)
         self.table_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table_widget.customContextMenuRequested.connect(self.show_table_context_menu)
         self.table_widget.installEventFilter(self)
+        # 点击表格外区域时自动取消选中
+        QApplication.instance().focusChanged.connect(self._on_focus_changed)
         # 注意：移除 cellClicked 连接，因为 on_table_selected 期望 QTableWidgetItem 参数
         # 选择变化已由 itemSelectionChanged.on_selection_changed 处理
         self.table_widget.cellChanged.connect(self.on_cell_changed)
@@ -423,6 +426,11 @@ class TableCompareManager(QObject):
     
     # ==================== 事件处理 ====================
     
+    def _on_focus_changed(self, old, new):
+        """表格失去焦点时自动取消选中"""
+        if old and old == self.table_widget:
+            self.table_widget.clearSelection()
+
     def eventFilter(self, obj, event):
         """事件过滤器"""
         if obj == self.table_widget.viewport():
