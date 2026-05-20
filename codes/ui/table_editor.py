@@ -13,6 +13,7 @@ class TableEditor:
     def __init__(self, main_window):
         self.main_window = main_window
         self.table_widget = main_window.native_table_widget
+        self._wrap_enabled = False  # 自动换行状态
         
     def setup_table_connections(self):
         """设置表格信号连接"""
@@ -128,16 +129,53 @@ class TableEditor:
         
         menu.addSeparator()
         
-        # 自动换行（单元格文本过长时自动折行）
-        wrap_enabled = self.table_widget.wordWrap()
-        wrap_label = "↩️ 自动换行 ✓" if wrap_enabled else "↩️ 自动换行"
+        # 自动换行
+        wrap_label = "↩️ 自动换行 ✓" if self._wrap_enabled else "↩️ 自动换行"
         wrap_action = menu.addAction(wrap_label)
         wrap_action.triggered.connect(self._toggle_wrap_text)
         
         menu.exec_(self.table_widget.mapToGlobal(position))
     
     def _toggle_wrap_text(self):
-        """打开/关闭单元格文本自动换行"""
-        current = self.table_widget.wordWrap()
-        self.table_widget.setWordWrap(not current)
+        """打开/关闭单元格文本自动换行（仅影响选中列）"""
+        selected_cols = set()
+        for item in self.table_widget.selectedItems():
+            selected_cols.add(item.column())
+        if not selected_cols:
+            col = self.table_widget.currentColumn()
+            if col >= 0:
+                selected_cols.add(col)
+        if not selected_cols:
+            self._wrap_enabled = not self._wrap_enabled
+        else:
+            self._wrap_enabled = not self._wrap_enabled
+
+        if self._wrap_enabled:
+            # 按列宽计算每行最大字符，插入换行
+            for col in range(self.table_widget.columnCount()):
+                if selected_cols and col not in selected_cols:
+                    continue
+                col_w = max(20, self.table_widget.columnWidth(col))
+                # 按中文字宽估算（约 14px/字）
+                max_chars = max(5, int(col_w / 14))
+                for row in range(self.table_widget.rowCount()):
+                    item = self.table_widget.item(row, col)
+                    if not item or not item.text():
+                        continue
+                    text = item.text()
+                    if len(text) > max_chars:
+                        wrapped = ""
+                        for i in range(0, len(text), max_chars):
+                            wrapped += text[i:i + max_chars] + "\n"
+                        item.setText(wrapped.rstrip('\n'))
+        else:
+            # 取消换行：移除所有 \n
+            for col in range(self.table_widget.columnCount()):
+                if selected_cols and col not in selected_cols:
+                    continue
+                for row in range(self.table_widget.rowCount()):
+                    item = self.table_widget.item(row, col)
+                    if item and '\n' in (item.text() or ''):
+                        item.setText(item.text().replace('\n', ''))
+
         self.table_widget.resizeRowsToContents()
