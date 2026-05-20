@@ -190,6 +190,8 @@ class TableCompareManager(QObject):
         self.table_list_widget.setMinimumHeight(30)
         self.table_list_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.table_list_widget.itemClicked.connect(self.on_table_selected)
+        self.table_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table_list_widget.customContextMenuRequested.connect(self._show_table_list_menu)
         header_layout.addWidget(self.table_list_widget)
         
         # 操作按钮行
@@ -289,7 +291,6 @@ class TableCompareManager(QObject):
         self.table_widget.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed)
         self.table_widget.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table_widget.setSelectionBehavior(QTableWidget.SelectItems)  # 行列都可选
-        self.table_widget.setWordWrap(False)  # 默认不自动换行，右键菜单可切换
         self.table_widget.itemSelectionChanged.connect(self.on_selection_changed)
         self.table_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table_widget.customContextMenuRequested.connect(self.show_table_context_menu)
@@ -441,12 +442,83 @@ class TableCompareManager(QObject):
     def on_table_selected(self, item):
         """表格选中（先保存当前页编辑，再切换显示）"""
         if item:
-            # 点击列表项时 currentRow() 已变为新行，用 _last_displayed_idx 保存旧页数据
             self._save_previous_page_data()
-            # 同步翻页状态到当前选中项
             self.filtered_index = self.table_list_widget.currentRow()
             self.update_filter_nav_buttons()
             self.update_preview_display()
+
+    def _show_table_list_menu(self, pos):
+        """表格列表右键菜单：插入/删除表格"""
+        item = self.table_list_widget.itemAt(pos)
+        if not item:
+            return
+        row = self.table_list_widget.row(item)
+        menu = QMenu()
+        insert_before = menu.addAction("在上方插入新表")
+        insert_after = menu.addAction("在下方插入新表")
+        menu.addSeparator()
+        delete_action = menu.addAction("🗑️ 删除此表")
+        action = menu.exec_(self.table_list_widget.mapToGlobal(pos))
+        if action == insert_before:
+            self._insert_blank_table(row, before=True)
+        elif action == insert_after:
+            self._insert_blank_table(row, before=False)
+        elif action == delete_action:
+            self._delete_table(row)
+
+    def _insert_blank_table(self, list_row, before=True):
+        """在指定列表行位置插入空白表格"""
+        tables = self.main_window.processed_results.get('tables', [])
+        if list_row < 0 or list_row >= len(self.filtered_indices):
+            return
+        origin_idx = self.filtered_indices[list_row]
+        if origin_idx >= len(tables):
+            return
+        page = tables[origin_idx].get('page', 0)
+        seq = sum(1 for i in range(origin_idx) if tables[i].get('page') == page) + 1
+        if before:
+            insert_idx = origin_idx
+        else:
+            insert_idx = origin_idx + 1
+
+        # 创建空白表格（4行×3列起步）
+        blank_data = [[""] * 3 for _ in range(4)]
+        new_table = {
+            "page": page,
+            "type": "text",
+            "data": blank_data,
+            "extractor": "manual",
+            "title": f"手动添加-P{page}",
+            "parse_status": "success",
+            "parse_message": "手动添加",
+            "is_manual": True
+        }
+        tables.insert(insert_idx, new_table)
+        self.main_window.processed_results['tables'] = tables
+        self.main_window.processed_results['total_tables'] = len(tables)
+        self.has_unsaved_changes = True
+
+        # 重建筛选
+        self.apply_table_filter(preserve_selection=insert_idx)
+        print(f"  [手动] 在P{page}页插入空白表格(位置{insert_idx})")
+
+    def _delete_table(self, list_row):
+        """删除指定列表行的表格"""
+        tables = self.main_window.processed_results.get('tables', [])
+        if list_row < 0 or list_row >= len(self.filtered_indices):
+            return
+        origin_idx = self.filtered_indices[list_row]
+        if origin_idx >= len(tables):
+            return
+        deleted = tables.pop(origin_idx)
+        self.main_window.processed_results['tables'] = tables
+        self.main_window.processed_results['total_tables'] = len(tables)
+        self.has_unsaved_changes = True
+
+        # 重建筛选，选中相邻项
+        new_idx = min(origin_idx, len(tables) - 1) if tables else 0
+        self.apply_table_filter(preserve_selection=new_idx)
+        print(f"  [手动] 已删除 P{deleted.get('page',0)} 页的表格")
     
     def on_cell_changed(self, item):
         """单元格改变 - 自动保存编辑到数据源"""
@@ -520,8 +592,25 @@ class TableCompareManager(QObject):
             page_seq[page] = page_seq.get(page, 0) + 1
             status_icon = "✅" if table.get('parse_status') == 'success' else "❌"
             ext = table.get('extractor', '')
-            ext_tag = "D" if ext.startswith("docx") else "V2"
-            item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]"
+            if ext == "manual":
+                ext_tag = "M"
+            elif ext.startswith("docx"):
+                ext_tag = "D"
+            else:
+                ext_tag = "V2"
+            # 取标题前8字
+            title = table.get('title', '')
+            if not title:
+                data = table.get('data', [])
+                for row in data:
+                    for cell in row:
+                        if cell and str(cell).strip():
+                            title = str(cell).strip()[:8]
+                            break
+                    if title:
+                        break
+            title_str = f" {title}" if title else ""
+            item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{title_str}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
             self.table_list_widget.addItem(item)
@@ -565,31 +654,68 @@ class TableCompareManager(QObject):
         self.update_preview_display()
     
     def update_filter_nav_buttons(self):
-        """更新导航按钮"""
-        has_prev = self.filtered_index > 0
-        has_next = self.filtered_index < len(self.filtered_indices) - 1
+        """更新导航按钮（按 PDF 页号跳转）"""
+        tables = self.main_window.processed_results.get('tables', [])
+        all_pages = sorted(set(tables[i].get('page', 0) for i in self.filtered_indices))
+
+        current_page = self._current_filter_page()
+        current_page_idx = all_pages.index(current_page) if current_page in all_pages else 0
+
+        has_prev = current_page_idx > 0
+        has_next = current_page_idx < len(all_pages) - 1
         self.prev_filtered_btn.setEnabled(has_prev)
         self.next_filtered_btn.setEnabled(has_next)
-        
-        total = len(self.filtered_indices)
-        current = self.filtered_index + 1 if total > 0 else 0
-        self.filter_nav_label.setText(f"第{current}/{total}页")
-        self.filter_count_label.setText(f"共 {total} 页")
-    
+
+        self.filter_nav_label.setText(f"P{current_page} ({current_page_idx + 1}/{len(all_pages)}页)")
+        self.filter_count_label.setText(f"共 {len(self.filtered_indices)} 个表格")
+
+    def _current_filter_page(self):
+        """当前中文 PDF 页号"""
+        tables = self.main_window.processed_results.get('tables', [])
+        if 0 <= self.filtered_index < len(self.filtered_indices):
+            idx = self.filtered_indices[self.filtered_index]
+            if idx < len(tables):
+                return tables[idx].get('page', 0)
+        return 0
+
+    def _jump_to_first_of_page(self, target_page):
+        """跳到目标页的第一个表格"""
+        tables = self.main_window.processed_results.get('tables', [])
+        for i, fi in enumerate(self.filtered_indices):
+            if fi < len(tables) and tables[fi].get('page', 0) == target_page:
+                return i
+        return self.filtered_index
+
     def prev_filtered_page(self):
-        """上一页（先保存当前页，再切换）"""
+        """上一PDF页（跳到前一页的第一个表格，用于对照PDF）"""
         self._save_previous_page_data()
-        if self.filtered_index > 0:
-            self.filtered_index -= 1
+        tables = self.main_window.processed_results.get('tables', [])
+        cur_page = self._current_filter_page()
+        # 找小于当前页的最大页码
+        prev_pages = sorted(set(
+            tables[i].get('page', 0) for i in self.filtered_indices
+            if tables[i].get('page', 0) < cur_page
+        ))
+        if prev_pages:
+            target = prev_pages[-1]
+            self.filtered_index = self._jump_to_first_of_page(target)
             self.update_filter_nav_buttons()
             self.table_list_widget.setCurrentRow(self.filtered_index)
             self.update_preview_display()
 
     def next_filtered_page(self):
-        """下一页（先保存当前页，再切换）"""
+        """下一PDF页（跳到下一页的第一个表格，用于对照PDF）"""
         self._save_previous_page_data()
-        if self.filtered_index < len(self.filtered_indices) - 1:
-            self.filtered_index += 1
+        tables = self.main_window.processed_results.get('tables', [])
+        cur_page = self._current_filter_page()
+        # 找大于当前页的最小页码
+        next_pages = sorted(set(
+            tables[i].get('page', 0) for i in self.filtered_indices
+            if tables[i].get('page', 0) > cur_page
+        ))
+        if next_pages:
+            target = next_pages[0]
+            self.filtered_index = self._jump_to_first_of_page(target)
             self.update_filter_nav_buttons()
             self.table_list_widget.setCurrentRow(self.filtered_index)
             self.update_preview_display()
@@ -1374,9 +1500,13 @@ class TableCompareManager(QObject):
         # 计算本表在当前页的序号
         seq = sum(1 for t in tables[:origin_idx] if t.get('page') == page) + 1
         ext = table.get('extractor', '')
-        ext_tag = "D" if ext.startswith("docx") else "V2"
+        if ext == "manual": ext_tag = "M"
+        elif ext.startswith("docx"): ext_tag = "D"
+        else: ext_tag = "V2"
+        title = table.get('title', '') or ''
+        title_str = f" {title[:8]}" if title else ""
         status_icon = "✅" if new_status == 'success' else "❌"
-        self.table_list_widget.item(row).setText(f"{status_icon} P{page}_{seq} [{ext_tag}]")
+        self.table_list_widget.item(row).setText(f"{status_icon} P{page}_{seq} [{ext_tag}]{title_str}")
         
         # 标记保存按钮为可保存状态
         self.save_status_btn.setText("💾 保存更改")

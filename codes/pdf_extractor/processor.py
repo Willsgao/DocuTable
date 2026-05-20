@@ -1341,6 +1341,159 @@ class PDFProcessor:
             print(f"  [质量过滤] {'; '.join(parts)}")
         return filtered
 
+    class TableAutoCorrector:
+        """基于列数据特征的无框表格自动纠错器。
+
+        核心策略：
+        1. 分析每列的主导数据类型（数字/文本）
+        2. 检测表头区域中被垂直拆分的单元格（如"加权平均"+"净资产收益率"）
+        3. 通过子表头检测避免误合并父子层级（如"每股收益"+"基本"）
+        """
+
+        @staticmethod
+        def correct(table_data):
+            if not table_data or len(table_data) < 2:
+                return table_data
+
+            data = [list(row) for row in table_data]
+            max_cols = max((len(r) for r in data), default=0)
+            for r in data:
+                while len(r) < max_cols:
+                    r.append("")
+
+            col_types = PDFProcessor.TableAutoCorrector._analyze_col_types(data)
+            data = PDFProcessor.TableAutoCorrector._merge_vertical_headers(data, col_types)
+
+            # 清理空行并重新规范化
+            data = [r for r in data if any(str(c).strip() for c in r)]
+            if data:
+                max_cols = max(len(r) for r in data)
+                for r in data:
+                    while len(r) < max_cols:
+                        r.append("")
+            return data
+
+        @staticmethod
+        def _analyze_col_types(data):
+            import re
+            max_cols = max(len(r) for r in data)
+            # 数据区从第2行开始（跳过可能的表头），至少跳过1行
+            data_start = min(2, max(1, len(data) // 2))
+
+            types = []
+            for c in range(max_cols):
+                vals = []
+                for r in range(data_start, len(data)):
+                    if c < len(data[r]):
+                        v = str(data[r][c]).strip()
+                        if v:
+                            vals.append(v)
+
+                if not vals:
+                    types.append("empty")
+                    continue
+
+                numeric = 0
+                for v in vals:
+                    v_clean = v.replace(",", "").replace("(", "-").replace(")", "").replace("%", "").replace("\u2030", "")
+                    try:
+                        float(v_clean)
+                        numeric += 1
+                    except ValueError:
+                        pass
+
+                if numeric > len(vals) * 0.6:
+                    types.append("numeric")
+                elif numeric == 0:
+                    types.append("text")
+                else:
+                    types.append("mixed")
+            return types
+
+        @staticmethod
+        def _merge_vertical_headers(data, col_types, max_header_rows=2):
+            if len(data) < 3:
+                return data
+
+            corrected = []
+            i = 0
+            while i < len(data):
+                row = list(data[i])
+
+                if i + 1 < len(data) and i < max_header_rows:
+                    next_row = list(data[i + 1])
+                    merged_any = False
+
+                    for c in range(min(len(row), len(next_row), len(col_types))):
+                        if not row[c] or not next_row[c]:
+                            continue
+
+                        a = str(row[c]).strip()
+                        b = str(next_row[c]).strip()
+
+                        # 跳过子表头（如"基本"不应与"每股收益"合并）
+                        if PDFProcessor.TableAutoCorrector._is_likely_child_header(data, i + 1, c):
+                            continue
+
+                        # 合并条件：短文本、无数字、该列数据区以数字为主
+                        if (len(a) <= 8 and len(b) <= 8 and
+                                len(a) + len(b) <= 15 and
+                                col_types[c] == "numeric" and
+                                not PDFProcessor.TableAutoCorrector._has_digit(a) and
+                                not PDFProcessor.TableAutoCorrector._has_digit(b)):
+                            row[c] = a + b
+                            next_row[c] = ""
+                            merged_any = True
+
+                    if merged_any:
+                        corrected.append(row)
+                        if any(str(x).strip() for x in next_row):
+                            corrected.append(next_row)
+                        i += 2
+                        continue
+
+                corrected.append(row)
+                i += 1
+            return corrected
+
+        @staticmethod
+        def _is_likely_child_header(data, row_idx, col_idx):
+            if row_idx >= len(data) or col_idx >= len(data[row_idx]):
+                return False
+
+            val = str(data[row_idx][col_idx]).strip()
+            if not val or len(val) > 5:
+                return False
+
+            row = data[row_idx]
+            short_cols = []
+            for c, cell in enumerate(row):
+                if cell and str(cell).strip():
+                    s = str(cell).strip()
+                    if len(s) <= 5 and not PDFProcessor.TableAutoCorrector._has_digit(s):
+                        short_cols.append(c)
+
+            if len(short_cols) < 2:
+                return False
+
+            if row_idx > 0:
+                prev_row = data[row_idx - 1]
+                parent_vals = []
+                for c in short_cols:
+                    if c < len(prev_row) and prev_row[c] and str(prev_row[c]).strip():
+                        parent_vals.append(str(prev_row[c]).strip())
+                parent_vals = [v for v in parent_vals if v]
+                if len(parent_vals) <= 1:
+                    return True
+                if len(set(parent_vals)) == 1:
+                    return True
+            return False
+
+        @staticmethod
+        def _has_digit(s):
+            import re
+            return bool(re.search(r'\d', str(s)))
+
     @staticmethod
     def _extract_table_title(table_data):
         """从表格数据中提取标题文字（用于 Sheet 命名）。
@@ -1995,7 +2148,7 @@ class ExcelExporter:
                     continue
 
                 # ---- Sheet 命名（零补位确保字符串排序=数值排序）----
-                title = PDFProcessor._extract_table_title(table_data)
+                title = table_info.get("title") or PDFProcessor._extract_table_title(table_data)
                 sheet_name = f"P{page:0{page_digits}d}-T{seq:0{seq_digits}d}-{title}"
                 # Sheet 名最长 31 字符
                 if len(sheet_name) > 31:
@@ -2156,6 +2309,16 @@ class ProcessingWorker(QThread):
                 for t in merged_tables:
                     ext = t.get("extractor", "v2")
                     data = t.get("data", [])
+
+                    # 自动纠错：修复无框表格的行列错位
+                    if data and len(data) >= 2:
+                        corrected = self.pdf_processor.TableAutoCorrector.correct(data)
+                        if corrected and len(corrected) != len(data):
+                            print(f"  [自动纠错] P{t.get('page')}: {len(data)}行→{len(corrected)}行")
+                            data = corrected
+                            t["data"] = data
+                            t["rows"] = len(corrected)
+
                     is_docx = ext.startswith("docx")
                     results.append({
                         "page": t["page"],
