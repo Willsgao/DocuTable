@@ -2,6 +2,8 @@
 导出管理模块
 处理Excel导出等功能
 """
+import gc
+
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from codes.pdf_extractor import ExcelExporter
@@ -57,6 +59,8 @@ class ExportManager:
     def _do_export(self, table_pages, tables, output_path):
         """执行导出"""
         try:
+            # 导出期间暂停 GC，防止 C 扩展 refcount 冲突导致闪退
+            gc.disable()
             exporter = ExcelExporter()
             success = exporter.export_tables(table_pages, output_path)
 
@@ -66,6 +70,8 @@ class ExportManager:
                 QMessageBox.warning(self.mw, "导出失败", "导出过程中出现问题")
         except Exception as e:
             QMessageBox.critical(self.mw, "导出失败", f"导出时发生错误:\n{str(e)}")
+        finally:
+            gc.enable()
 
     def export_failed_pages_list(self):
         """导出失败页面列表"""

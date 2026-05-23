@@ -16,6 +16,11 @@ from .utils import (
 )
 from .pdf_context import PDFContext
 
+# 提前导入 openpyxl，避免运行时首次导入时 GC 触发 C 扩展 refcount bug
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
 
 # ============================================================
 # PDF处理器
@@ -2092,9 +2097,6 @@ class ExcelExporter:
         表头区: 标题行(粗体) + 来源行(灰色) + 空白行
         数据区: 左右各留1列空白，上下各留1行空白
         """
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-
         wb = Workbook()
 
         thin_border = Border(
@@ -2226,7 +2228,7 @@ class ExcelExporter:
                 # ---- 自动列宽 ----
                 for col_idx in range(1, data_end_col + 1):
                     max_length = 0
-                    col_letter = ws.cell(row=1, column=col_idx).column_letter
+                    col_letter = get_column_letter(col_idx)
                     for r in range(1, row_num):
                         cv = ws.cell(row=r, column=col_idx).value
                         if cv:
@@ -2236,6 +2238,185 @@ class ExcelExporter:
 
         wb.save(output_path)
         return True
+
+
+# ============================================================
+# 自动清洗 & 合并 工具函数（数据处理层，无 UI 依赖）
+# ============================================================
+
+def _remove_spaces_data(data):
+    """删除空单元格：每行非空左对齐，空单元格右移。返回新数组。"""
+    import copy
+    result = copy.deepcopy(data)
+    for row in result:
+        non_empty = [cell for cell in row if cell and str(cell).strip()]
+        for i in range(len(row)):
+            if i < len(non_empty):
+                row[i] = non_empty[i]
+            else:
+                row[i] = ""
+    return result
+
+
+def _clean_data_cells(data):
+    """清洗数值类单元格：含中文或英文的跳过，其余移除下划线/空格等非数值字符。原地修改。"""
+    import re
+    for row in data:
+        for c in range(len(row)):
+            cell = row[c]
+            if not cell:
+                continue
+            text = str(cell).strip()
+            if not text:
+                row[c] = ""
+                continue
+            # 含中文或英文字母 → 跳过
+            if re.search(r'[\u4e00-\u9fff]|[a-zA-Z]', text):
+                row[c] = text
+                continue
+            # 清洗：保留数字、逗号、小数点、负号、括号、百分号
+            cleaned = re.sub(r'[^0-9,\.\-\(\)\%]', '', text).strip()
+            row[c] = cleaned
+    return data
+
+
+def _is_numeric_data(text):
+    """判断文本是否为纯数值类（含数字格式字符），用于检测无表头数据行。"""
+    if not text or not str(text).strip():
+        return False
+    import re
+    t = str(text).strip()
+    # 只要不含中文或英文字母，且至少有一个数字，就认为是数值
+    if re.search(r'[\u4e00-\u9fff]|[a-zA-Z]', t):
+        return False
+    return bool(re.search(r'[0-9]', t))
+
+
+def _auto_merge_split_tables(results):
+    """检测并合并被 pdf2docx 拆分断裂的相邻表格。
+    仅合并 data（清洗后），original_data 不动。"""
+    import re
+
+    # 先按 page 排序
+    results.sort(key=lambda x: x.get("page", 0))
+
+    # 收集所有有效表格的索引（排除没有 data 的）
+    valid_indices = [i for i, t in enumerate(results) if t.get("data")]
+
+    merged_any = True
+    merge_count = 0
+
+    while merged_any:
+        merged_any = False
+        to_remove = set()
+        merges_this_round = []
+
+        for idx_i in range(len(valid_indices) - 1):
+            i = valid_indices[idx_i]
+            j = valid_indices[idx_i + 1]
+            if i in to_remove or j in to_remove:
+                continue
+
+            table_a = results[i]
+            table_b = results[j]
+
+            # 条件1: 列数相同
+            cols_a = max((len(r) for r in table_a["data"]), default=0)
+            cols_b = max((len(r) for r in table_b["data"]), default=0)
+            if cols_a == 0 or cols_b == 0 or cols_a != cols_b:
+                continue
+
+            # 条件2: table_b 首行全部是纯数值类（无表头）
+            first_row_b = table_b["data"][0] if table_b["data"] else []
+            if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
+                # 宽松模式：首行至少有一个纯数值 + 不全是非数值
+                numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
+                if numeric_count < max(1, len(first_row_b) * 0.5):
+                    continue
+
+            # 执行合并：B 行追加到 A 末尾
+            page_a = table_a.get("page", 0)
+            page_b = table_b.get("page", 0)
+
+            # 确保每行列数一致
+            for row in table_b["data"]:
+                while len(row) < cols_a:
+                    row.append("")
+            table_a["data"].extend([row[:cols_a] for row in table_b["data"]])
+            table_a["rows"] = len(table_a["data"])
+
+            if "original_data" in table_b:
+                if "original_data" not in table_a:
+                    table_a["original_data"] = []
+                for row in table_b["original_data"]:
+                    while len(row) < cols_a:
+                        row.append("")
+                table_a["original_data"].extend([row[:cols_a] for row in table_b["original_data"]])
+
+            # 标记 B 为已合并（需移除）
+            to_remove.add(j)
+            merge_count += 1
+            merges_this_round.append((i, j, page_a, page_b, len(table_b["data"])))
+
+        # 批量移除
+        if to_remove:
+            merged_any = True
+            for j in sorted(to_remove, reverse=True):
+                results.pop(j)
+            valid_indices = [i for i, t in enumerate(results) if t.get("data")]
+
+        # 日志
+        for i, j, pa, pb, rows in merges_this_round:
+            print(f"  [auto-merge] P{pa}+P{pb}: 表格#{i}+#{j} → +{rows}行")
+
+    if merge_count > 0:
+        print(f"  [auto-merge] 共合并 {merge_count} 对断裂表格")
+
+    return results
+
+
+def _auto_clean_tables(results, progress_callback=None):
+    """对解析结果自动清洗：保存原始数据 → 删除空格 → 清洗数值 → 合并断裂表格。"""
+    import copy
+
+    if progress_callback:
+        progress_callback(93, "正在自动清洗数据...")
+
+    total_cleaned_cells = 0
+    total_removed_spaces = 0
+
+    for i, table in enumerate(results):
+        if not table.get("data"):
+            continue
+
+        # 1. 深拷贝原始数据
+        table["original_data"] = copy.deepcopy(table["data"])
+        table["is_cleaned"] = True
+
+        # 2. 清洗数值（含中英文保护）
+        prev_data = copy.deepcopy(table["data"])
+        _clean_data_cells(table["data"])
+        for r in range(len(prev_data)):
+            for c in range(min(len(prev_data[r]), len(table["data"][r]))):
+                if prev_data[r][c] != table["data"][r][c]:
+                    total_cleaned_cells += 1
+
+        # 3. 删除空格（左对齐压缩）
+        prev_data = copy.deepcopy(table["data"])
+        cleaned = _remove_spaces_data(table["data"])
+        table["data"] = cleaned
+        for r in range(len(prev_data)):
+            for c in range(min(len(prev_data[r]), len(cleaned[r]))):
+                if prev_data[r][c] != cleaned[r][c]:
+                    total_removed_spaces += 1
+
+    # 4. 自动合并断裂表格
+    results = _auto_merge_split_tables(results)
+
+    if progress_callback:
+        progress_callback(94, f"清洗完成({len(results)}个表格, {total_cleaned_cells}个单元格已清洗)")
+
+    return results
 
 
 # ============================================================
@@ -2454,6 +2635,9 @@ class ProcessingWorker(QThread):
             if need_preview:
                 self.progress.emit(96, "正在生成预览图...")
                 context.generate_all_previews(preview_dir)
+
+            # ---- 自动清洗数据 + 合并断裂表格 ----
+            results = _auto_clean_tables(results, progress_callback=lambda v, m: self.progress.emit(v, m))
 
             self.progress.emit(98, "处理完成")
 

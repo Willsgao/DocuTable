@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QApplication,
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QSplitter, QMenu, QApplication, QSizePolicy, QMessageBox, QShortcut,
-    QDialog, QRadioButton, QSpinBox, QDialogButtonBox
+    QDialog, QRadioButton, QSpinBox, QDialogButtonBox, QInputDialog
 )
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QEvent, QObject, QTimer
@@ -34,6 +34,9 @@ class TableCompareManager(QObject):
         # 筛选
         self.filtered_indices = []
         self.filtered_index = 0
+        
+        # 原始/清洗数据切换
+        self.showing_original = False
         
         # 控件引用（由 init_ui 设置）
         self.table_widget = None
@@ -221,6 +224,13 @@ class TableCompareManager(QObject):
         self.merge_prev_btn.clicked.connect(self.merge_to_previous)
         btn_layout.addWidget(self.merge_prev_btn)
 
+        # 原始/清洗数据切换按钮
+        self.toggle_original_btn = QPushButton("📋 查看原始数据")
+        self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
+        self.toggle_original_btn.setFocusPolicy(Qt.NoFocus)
+        self.toggle_original_btn.clicked.connect(self.toggle_original_view)
+        btn_layout.addWidget(self.toggle_original_btn)
+
         btn_layout.addSpacing(10)
 
         # 批量插入按钮
@@ -385,7 +395,9 @@ class TableCompareManager(QObject):
                 row_data.append(item.text() if item else "")
             data.append(row_data)
         
-        tables[table_idx]['data'] = data
+        # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
+        data_key = 'original_data' if self.showing_original else 'data'
+        tables[table_idx][data_key] = data
         self._last_displayed_table_idx = table_idx
         
         # 标记有未保存的更改，并安排自动保存
@@ -428,7 +440,9 @@ class TableCompareManager(QObject):
                 item = self.table_widget.item(i, j)
                 row_data.append(item.text() if item else "")
             data.append(row_data)
-        tables[self._last_displayed_table_idx]['data'] = data
+        # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
+        data_key = 'original_data' if self.showing_original else 'data'
+        tables[self._last_displayed_table_idx][data_key] = data
     
     # ==================== 事件处理 ====================
     
@@ -459,12 +473,16 @@ class TableCompareManager(QObject):
             return
         row = self.table_list_widget.row(item)
         menu = QMenu()
+        change_page_action = menu.addAction("✏️ 修改页号")
+        menu.addSeparator()
         insert_before = menu.addAction("在上方插入新表")
         insert_after = menu.addAction("在下方插入新表")
         menu.addSeparator()
         delete_action = menu.addAction("🗑️ 删除此表")
         action = menu.exec_(self.table_list_widget.mapToGlobal(pos))
-        if action == insert_before:
+        if action == change_page_action:
+            self._change_table_page(row)
+        elif action == insert_before:
             self._insert_blank_table(row, before=True)
         elif action == insert_after:
             self._insert_blank_table(row, before=False)
@@ -859,7 +877,11 @@ class TableCompareManager(QObject):
         self.table_widget.blockSignals(True)
         self.table_widget.clear()
         
-        data = table.get('data', [])
+        # 根据状态选择数据源：默认显示清洗后 data，切换后显示原始 original_data
+        data_key = 'original_data' if self.showing_original else 'data'
+        if self.showing_original and 'original_data' not in table:
+            data_key = 'data'  # 没有原始数据时降级到清洗数据
+        data = table.get(data_key, [])
         parse_type = table.get('type', '')
         parse_message = table.get('parse_message', '')
         
@@ -901,6 +923,62 @@ class TableCompareManager(QObject):
         # 更新统计标签
         self.stats_label.setText("选中单元格查看统计信息")
     
+    def toggle_original_view(self):
+        """切换原始数据和清洗后数据的视图"""
+        self.showing_original = not self.showing_original
+        if self.showing_original:
+            self.toggle_original_btn.setText("📋 查看清洗数据")
+            self.toggle_original_btn.setToolTip("当前显示原始提取数据，点击切换回清洗后数据")
+        else:
+            self.toggle_original_btn.setText("📋 查看原始数据")
+            self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
+        # 刷新当前表格显示
+        self.update_preview_display()
+    
+    def _change_table_page(self, filtered_row):
+        """手动修改表格的 PDF 页号"""
+        if filtered_row < 0 or filtered_row >= len(self.filtered_indices):
+            return
+        
+        table_idx = self.filtered_indices[filtered_row]
+        tables = self.main_window.processed_results.get('tables', [])
+        if table_idx >= len(tables):
+            return
+        
+        current_page = tables[table_idx].get('page', 0)
+        
+        # 弹出输入对话框
+        new_page_str, ok = QInputDialog.getText(
+            self.main_window, "修改页号",
+            f"当前页号: P{current_page}\n请输入新的页号:",
+            text=str(current_page)
+        )
+        if not ok or not new_page_str:
+            return
+        
+        try:
+            new_page = int(new_page_str.strip())
+        except ValueError:
+            QMessageBox.warning(self.main_window, "修改页号", "请输入有效的数字页号。")
+            return
+        
+        if new_page == current_page:
+            return
+        
+        # 更新页号
+        tables[table_idx]['page'] = new_page
+        
+        # 重新按页码排序
+        tables.sort(key=lambda x: x.get('page', 0))
+        self.main_window.processed_results['tables'] = tables
+        
+        # 同步到文件
+        from codes.pdf_extractor import save_mid_data
+        if self.main_window.current_file:
+            save_mid_data(self.main_window.current_file, self.main_window.processed_results)
+        
+        # 刷新列表，找到修改后的表格并选中
+        self.apply_table_filter(preserve_selection=table_idx if table_idx < len(tables) else None)
     def prev_preview_page(self):
         """上一页预览（切页前先保存当前编辑）"""
         self._sync_ui_to_processed_results()

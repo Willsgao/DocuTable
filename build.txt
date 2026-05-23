@@ -1,0 +1,1 @@
+.\venv\Scripts\pyinstaller.exe "银行年报PDF解析工具.spec"
