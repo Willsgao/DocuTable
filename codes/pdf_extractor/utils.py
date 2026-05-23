@@ -96,11 +96,11 @@ get_mid_data_dir().mkdir(parents=True, exist_ok=True)
 # ============================================================
 def get_pdf_cache_dir(pdf_path):
     """获取PDF文件对应的独立缓存目录：data/mid_cache/<pdf文件名>/"""
-    pdf_name = Path(pdf_path).stem[:100]
+    pdf_name = Path(pdf_path).stem[:100].strip()
     # 移除Windows文件名非法字符: \ / : * ? " < > |
     for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
         pdf_name = pdf_name.replace(ch, '_')
-    return get_mid_data_dir() / pdf_name
+    return get_mid_data_dir() / pdf_name.strip()
 
 
 def get_pdf_preview_dir(pdf_path):

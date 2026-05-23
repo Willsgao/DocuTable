@@ -58,6 +58,9 @@ class TableCompareManager(QObject):
         
         # 编辑状态
         self.edit_mode = False
+        # 锁定表格状态
+        self.table_locked = False
+        self.locked_table_data = None  # 锁定时保持的表格数据
         self.has_unsaved_changes = False
         
         # 自动保存定时器
@@ -347,6 +350,17 @@ class TableCompareManager(QObject):
         self.stats_label.setFixedHeight(22)
         table_layout.addWidget(self.stats_label)
         
+        # 锁定表格按钮
+        self.lock_table_btn = QPushButton("🔓 解锁")
+        self.lock_table_btn.setToolTip("锁定后翻页只更新PDF，表格内容固定不变")
+        self.lock_table_btn.setCheckable(True)
+        self.lock_table_btn.clicked.connect(self.on_lock_table_toggled)
+        self.lock_table_btn.setStyleSheet("""
+            QPushButton { background-color: #95A5A6; color: white; padding: 2px 12px; border-radius: 4px; }
+            QPushButton:checked { background-color: #E74C3C; color: white; font-weight: bold; }
+        """)
+        table_layout.addWidget(self.lock_table_btn)
+        
         self.goto_export_btn = QPushButton("💾 批量导出")
         self.goto_export_btn.setToolTip("批量导出所有标记为表格的页面数据")
         self.goto_export_btn.clicked.connect(self.batch_export_tables)
@@ -462,6 +476,23 @@ class TableCompareManager(QObject):
     def on_show_original_changed(self):
         """原始数据/清洗数据切换"""
         self.update_preview_display()
+
+    def on_lock_table_toggled(self):
+        """锁定表格切换"""
+        self.table_locked = self.lock_table_btn.isChecked()
+        if self.table_locked:
+            self.lock_table_btn.setText("🔒 已锁定")
+            # 保存当前表格数据用于锁定
+            row = self.table_list_widget.currentRow()
+            if row >= 0 and row < len(self.filtered_indices):
+                table_idx = self.filtered_indices[row]
+                tables = self.main_window.processed_results.get('tables', [])
+                if table_idx < len(tables):
+                    self.locked_table_data = tables[table_idx]
+        else:
+            self.lock_table_btn.setText("🔓 解锁")
+            self.locked_table_data = None
+            self.update_preview_display()
 
     def _show_table_list_menu(self, pos):
         """表格列表右键菜单：插入/删除表格"""
@@ -714,7 +745,6 @@ class TableCompareManager(QObject):
         self._save_previous_page_data()
         tables = self.main_window.processed_results.get('tables', [])
         cur_page = self._current_filter_page()
-        # 找小于当前页的最大页码
         prev_pages = sorted(set(
             tables[i].get('page', 0) for i in self.filtered_indices
             if tables[i].get('page', 0) < cur_page
@@ -780,7 +810,13 @@ class TableCompareManager(QObject):
             print(f"[DEBUG] table_idx >= len(tables)，提前返回")
             return
         
-        table = tables[table_idx]
+        # 锁定时：表格内容用冻结数据，PDF页码用实际列表位置
+        if self.table_locked and self.locked_table_data:
+            table = self.locked_table_data
+            pdf_page = tables[table_idx].get('page', 1)
+        else:
+            table = tables[table_idx]
+            pdf_page = table.get('page', 1)
         print(f"[DEBUG] 当前页: {table['page']}, 类型: {table.get('type')}, 状态: {table.get('parse_status')}")
         print(f"[DEBUG] table data 前3行: {table.get('data', [])[:3] if table.get('data') else '无数据'}")
         
@@ -817,20 +853,20 @@ class TableCompareManager(QObject):
         
         # 显示PDF预览
         print(f"[DEBUG] 准备显示PDF预览")
-        print(f"[DEBUG] 当前页: {table['page']}")
+        print(f"[DEBUG] 当前页: {pdf_page}")
         try:
             if hasattr(self.main_window, 'pdf_preview_widget') and self.main_window.pdf_preview_widget:
                 print(f"[DEBUG] pdf_preview_widget 存在")
                 if hasattr(self.main_window, 'preview_images') and self.main_window.preview_images:
                     print(f"[DEBUG] preview_images 存在，长度: {len(self.main_window.preview_images)}")
-                    if table['page'] <= len(self.main_window.preview_images):
-                        img_path = self.main_window.preview_images[table['page'] - 1]
+                    if pdf_page <= len(self.main_window.preview_images):
+                        img_path = self.main_window.preview_images[pdf_page - 1]
                         print(f"[DEBUG] img_path: {img_path}")
                         print(f"[DEBUG] img_path 是否存在: {os.path.exists(img_path) if img_path else False}")
                         if img_path and os.path.exists(img_path):
                             print(f"[DEBUG] 准备设置预览")
                             self.main_window.pdf_preview_widget.set_preview(
-                                img_path, table['page'] - 1,
+                                img_path, pdf_page - 1,
                                 pdf_path=self.main_window.current_file
                             )
                             print(f"[DEBUG] 预览已设置")
@@ -932,14 +968,31 @@ class TableCompareManager(QObject):
         self.table_widget.resizeColumnsToContents()
         self.table_widget.blockSignals(False)
         
-        # 更新统计标签（注明数据来源）
+        # 更新统计标签（注明数据来源和锁定状态）
         tip = "选中单元格查看统计信息"
+        if self.table_locked:
+            tip = "🔒 已锁定 | " + tip
         if show_original:
             tip = "📋 原始数据 | " + tip
         self.stats_label.setText(tip)
     
+    def _update_pdf_preview(self, page_num):
+        """仅更新 PDF 预览到指定页码（不改变表格内容）"""
+        try:
+            if hasattr(self.main_window, 'pdf_preview_widget') and self.main_window.pdf_preview_widget:
+                if hasattr(self.main_window, 'preview_images') and self.main_window.preview_images:
+                    if page_num <= len(self.main_window.preview_images):
+                        img_path = self.main_window.preview_images[page_num - 1]
+                        if img_path and os.path.exists(img_path):
+                            self.main_window.pdf_preview_widget.set_preview(
+                                img_path, page_num - 1,
+                                pdf_path=self.main_window.current_file
+                            )
+        except Exception as e:
+            pass
+
     def prev_preview_page(self):
-        """上一页预览（切页前先保存当前编辑）"""
+        """上一页预览"""
         self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current > 0:
@@ -947,7 +1000,7 @@ class TableCompareManager(QObject):
             self.update_preview_display()
 
     def next_preview_page(self):
-        """下一页预览（切页前先保存当前编辑）"""
+        """下一页预览"""
         self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current < self.table_list_widget.count() - 1:
@@ -955,14 +1008,14 @@ class TableCompareManager(QObject):
             self.update_preview_display()
 
     def first_preview_page(self):
-        """第一页预览（切页前先保存当前编辑）"""
+        """第一页预览"""
         self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
             self.table_list_widget.setCurrentRow(0)
             self.update_preview_display()
 
     def last_preview_page(self):
-        """最后一页预览（切页前先保存当前编辑）"""
+        """最后一页预览"""
         self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
             self.table_list_widget.setCurrentRow(self.table_list_widget.count() - 1)
