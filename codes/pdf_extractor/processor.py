@@ -2583,13 +2583,36 @@ def _auto_merge_split_tables(results):
             if cols_a == 0 or cols_b == 0 or cols_a != cols_b:
                 continue
 
+            # 辅助：判断是否为本页第一个表格
+            def _is_first_on_page(idx):
+                page = results[idx].get("page", 0)
+                for k in valid_indices:
+                    if k == idx:
+                        break
+                    if results[k].get("page") == page and results[k].get("data"):
+                        return False
+                return True
+
+            # 辅助：判断上下文是否仅为纯页码（如 31、34、-2-）
+            def _is_page_number_only(ctx):
+                if not ctx or not ctx.strip():
+                    return True
+                return bool(re.match(r'^[\d\-\s]+$', ctx.strip()))
+
+            # 规则：后表是本页第一个表 + 上下文不是纯页码 → 强制合并
+            force_merge = False
+            if _is_first_on_page(j):
+                ctx_b = table_b.get("context_text", "")
+                if not _is_page_number_only(ctx_b):
+                    force_merge = True
+
             # 条件2: table_b 首行全部是纯数值类（无表头）
-            first_row_b = table_b["data"][0] if table_b["data"] else []
-            if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
-                # 宽松模式：首行至少有一个纯数值 + 不全是非数值
-                numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
-                if numeric_count < max(1, len(first_row_b) * 0.5):
-                    continue
+            if not force_merge:
+                first_row_b = table_b["data"][0] if table_b["data"] else []
+                if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
+                    numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
+                    if numeric_count < max(1, len(first_row_b) * 0.5):
+                        continue
 
             # 执行合并：B 行追加到 A 末尾
             page_a = table_a.get("page", 0)

@@ -218,6 +218,12 @@ class TableCompareManager(QObject):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_widget.setFixedHeight(40)
 
+        # 向前合并按钮
+        self.merge_forward_btn = QPushButton("⬆ 向前合并")
+        self.merge_forward_btn.setToolTip("将当前表格合并到前一个表格下方")
+        self.merge_forward_btn.clicked.connect(self.merge_forward)
+        btn_layout.addWidget(self.merge_forward_btn)
+        
         # 删除空格按钮
         self.remove_spaces_btn = QPushButton("🧹 删除空格")
         self.remove_spaces_btn.setToolTip("清除当前表格中所有单元格的前后及中间空格，并左对齐")
@@ -462,13 +468,15 @@ class TableCompareManager(QObject):
         """事件过滤器"""
         if obj == self.table_widget.viewport():
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                self.save_current_table_state()
+                if not self.table_locked:
+                    self.save_current_table_state()
         return False
     
     def on_table_selected(self, item):
         """表格选中（先保存当前页编辑，再切换显示）"""
         if item:
-            self._save_previous_page_data()
+            if not self.table_locked:
+                self._save_previous_page_data()
             self.filtered_index = self.table_list_widget.currentRow()
             self.update_filter_nav_buttons()
             self.update_preview_display()
@@ -742,7 +750,8 @@ class TableCompareManager(QObject):
 
     def prev_filtered_page(self):
         """上一PDF页（跳到前一页的第一个表格，用于对照PDF）"""
-        self._save_previous_page_data()
+        if not self.table_locked:
+            self._save_previous_page_data()
         tables = self.main_window.processed_results.get('tables', [])
         cur_page = self._current_filter_page()
         prev_pages = sorted(set(
@@ -758,7 +767,8 @@ class TableCompareManager(QObject):
 
     def next_filtered_page(self):
         """下一PDF页（跳到下一页的第一个表格，用于对照PDF）"""
-        self._save_previous_page_data()
+        if not self.table_locked:
+            self._save_previous_page_data()
         tables = self.main_window.processed_results.get('tables', [])
         cur_page = self._current_filter_page()
         # 找大于当前页的最小页码
@@ -993,7 +1003,8 @@ class TableCompareManager(QObject):
 
     def prev_preview_page(self):
         """上一页预览"""
-        self._sync_ui_to_processed_results()
+        if not self.table_locked:
+            self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current > 0:
             self.table_list_widget.setCurrentRow(current - 1)
@@ -1001,7 +1012,8 @@ class TableCompareManager(QObject):
 
     def next_preview_page(self):
         """下一页预览"""
-        self._sync_ui_to_processed_results()
+        if not self.table_locked:
+            self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current < self.table_list_widget.count() - 1:
             self.table_list_widget.setCurrentRow(current + 1)
@@ -1009,14 +1021,16 @@ class TableCompareManager(QObject):
 
     def first_preview_page(self):
         """第一页预览"""
-        self._sync_ui_to_processed_results()
+        if not self.table_locked:
+            self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
             self.table_list_widget.setCurrentRow(0)
             self.update_preview_display()
 
     def last_preview_page(self):
         """最后一页预览"""
-        self._sync_ui_to_processed_results()
+        if not self.table_locked:
+            self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
             self.table_list_widget.setCurrentRow(self.table_list_widget.count() - 1)
             self.update_preview_display()
@@ -1251,6 +1265,60 @@ class TableCompareManager(QObject):
         
         self.table_widget.resizeColumnsToContents()
     
+    def merge_forward(self):
+        """将当前表格合并到前一个表格下方"""
+        row = self.table_list_widget.currentRow()
+        if row < 0 or row >= len(self.filtered_indices):
+            QMessageBox.warning(self.main_window, "提示", "请先选中一个表格")
+            return
+        if row == 0:
+            QMessageBox.warning(self.main_window, "提示", "已是第一个表格，无法向前合并")
+            return
+        
+        tables = self.main_window.processed_results.get('tables', [])
+        cur_idx = self.filtered_indices[row]
+        prev_idx = self.filtered_indices[row - 1]
+        cur_table = tables[cur_idx]
+        prev_table = tables[prev_idx]
+        
+        cur_data = cur_table.get('data', [])
+        prev_data = prev_table.get('data', [])
+        if not cur_data or not prev_data:
+            QMessageBox.warning(self.main_window, "提示", "表格数据为空，无法合并")
+            return
+        
+        # 列数对齐
+        cols_prev = max(len(r) for r in prev_data) if prev_data else 0
+        cols_cur = max(len(r) for r in cur_data) if cur_data else 0
+        if cols_cur != cols_prev:
+            QMessageBox.warning(self.main_window, "提示",
+                f"列数不一致（前表{cols_prev}列，当前{cols_cur}列），无法合并")
+            return
+        
+        # 合并数据
+        prev_table["data"].extend(cur_data)
+        prev_table["rows"] = len(prev_table["data"])
+        if cur_table.get("original_data"):
+            if "original_data" not in prev_table:
+                prev_table["original_data"] = []
+            prev_table["original_data"].extend(cur_table["original_data"])
+        
+        # 弹窗确认是否删除
+        reply = QMessageBox.question(self.main_window, "合并完成",
+            f"已将当前表格（{len(cur_data)}行）合并到前一个表格。\n\n是否删除当前表格？",
+            QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # 删除当前表格
+            tables.pop(cur_idx)
+            # 重建 filtered_indices
+            self.apply_table_filter()
+        else:
+            # 不清除，但需要刷新显示
+            self.has_unsaved_changes = True
+            self._schedule_auto_save()
+            self.update_preview_display()
+
     def remove_spaces(self):
         """删除当前表格中所有单元格的前后及中间空格，并左对齐"""
         self.save_current_table_state()
@@ -1273,6 +1341,8 @@ class TableCompareManager(QObject):
                 # 设置左对齐
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         table.resizeColumnsToContents()
+        self.has_unsaved_changes = True
+        self._schedule_auto_save()
         QMessageBox.information(
             self.main_window, "删除空格",
             f"已处理完成，共修改 {removed_count} 个单元格。"
