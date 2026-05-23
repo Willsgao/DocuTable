@@ -78,7 +78,8 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """初始化主UI"""
         self.setWindowTitle("银行年报PDF解析工具 v1.0")
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(100, 100, 800, 600)
+        self.setMinimumSize(600, 400)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -326,6 +327,7 @@ class MainWindow(QMainWindow):
 
         # 添加到splitter
         splitter.addWidget(table_group)
+        splitter.setChildrenCollapsible(False)
 
         # 设置Splitter比例 - PDF区域占更大比例
         splitter.setSizes([600, 400])
@@ -521,6 +523,40 @@ class MainWindow(QMainWindow):
         self.test_api_btn.clicked.connect(self.test_api)
         model_layout.addWidget(self.test_api_btn)
         config_layout.addLayout(model_layout)
+
+        config_tab_layout.addWidget(config_group)
+
+        # DeepSeek API 配置（表格命名）
+        ds_group = QGroupBox("🤖 DeepSeek 表格命名配置")
+        ds_layout = QVBoxLayout(ds_group)
+        ds_api_key_layout = QHBoxLayout()
+        ds_api_key_layout.addWidget(QLabel("DeepSeek API Key:"))
+        self.ds_api_key_input = QLineEdit()
+        self.ds_api_key_input.setText(self.config.get("deepseek_api_key", ""))
+        self.ds_api_key_input.setPlaceholderText("输入 DeepSeek API Key")
+        self.ds_api_key_input.setEchoMode(QLineEdit.Password)
+        ds_api_key_layout.addWidget(self.ds_api_key_input)
+        self.ds_show_key_btn = QPushButton("👁")
+        self.ds_show_key_btn.setMaximumWidth(40)
+        self.ds_show_key_btn.clicked.connect(self.toggle_ds_key_visibility)
+        ds_api_key_layout.addWidget(self.ds_show_key_btn)
+        ds_layout.addLayout(ds_api_key_layout)
+        ds_endpoint_layout = QHBoxLayout()
+        ds_endpoint_layout.addWidget(QLabel("API 端点:"))
+        self.ds_endpoint_input = QLineEdit()
+        self.ds_endpoint_input.setText(self.config.get("deepseek_endpoint", "api.deepseek.com"))
+        ds_endpoint_layout.addWidget(self.ds_endpoint_input)
+        ds_layout.addLayout(ds_endpoint_layout)
+        ds_model_layout = QHBoxLayout()
+        ds_model_layout.addWidget(QLabel("模型名称:"))
+        self.ds_model_input = QLineEdit()
+        self.ds_model_input.setText(self.config.get("deepseek_model", "deepseek-chat"))
+        ds_model_layout.addWidget(self.ds_model_input)
+        self.test_ds_api_btn = QPushButton("🧪 测试连接")
+        self.test_ds_api_btn.clicked.connect(self.test_ds_api)
+        ds_model_layout.addWidget(self.test_ds_api_btn)
+        ds_layout.addLayout(ds_model_layout)
+        config_tab_layout.addWidget(ds_group)
 
         # 保存按钮
         save_layout = QHBoxLayout()
@@ -947,16 +983,26 @@ class MainWindow(QMainWindow):
     # ==================== 设置 ====================
 
     def toggle_key_visibility(self):
-        """切换Key可见性（委托给settings_manager）"""
+        """切换豆包Key可见性"""
         if self.settings_manager:
             self.settings_manager.toggle_key_visibility()
 
+    def toggle_ds_key_visibility(self):
+        """切换 DeepSeek Key 可见性"""
+        if self.settings_manager:
+            self.settings_manager.toggle_ds_key_visibility()
+
     def test_api(self):
-        """测试API连接（委托给settings_manager）"""
+        """测试豆包API连接"""
         if self.settings_manager:
             self.settings_manager.test_api()
 
+    def test_ds_api(self):
+        """测试 DeepSeek API 连接"""
+        if self.settings_manager:
+            self.settings_manager.test_ds_api()
+
     def save_settings(self):
-        """保存设置（委托给settings_manager）"""
+        """保存设置"""
         if self.settings_manager:
             self.settings_manager.save_settings()

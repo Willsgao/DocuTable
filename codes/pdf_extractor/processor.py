@@ -847,6 +847,11 @@ class PDFProcessor:
                 if len(region_words) < 3:
                     continue
 
+                # 提取表格区域上方的上下文文本（表格上方 100pt 范围内的文本）
+                context_text = PDFProcessor._extract_context_text_from_words(
+                    words, rx0, ry0, rx1, ry1, margin=100.0
+                )
+
                 # 行边界
                 row_bounds = self._detect_horizontal_lines(page, region_words, drawings)
                 if len(row_bounds) < 2:
@@ -879,6 +884,7 @@ class PDFProcessor:
                     "rows": len(table_data),
                     "cols": len(col_bounds) - 1,
                     "has_border": has_border,
+                    "context_text": context_text,
                 })
 
         if close_doc:
@@ -886,6 +892,53 @@ class PDFProcessor:
         # V2 不再合并同一页的多个表格，每个表格区域独立保留
         # results = self._merge_tables_on_same_page(results)
         return results
+
+    @staticmethod
+    def _extract_context_text_from_words(words, rx0, ry0, rx1, ry1, margin=100.0):
+        """从 PDF words 中提取表格区域上方的上下文文本。
+
+        Args:
+            words: PDF 页面的所有 words 列表 (每个 word 含 x0, y0, x1, y1, text)
+            rx0, ry0, rx1, ry1: 表格区域边界
+            margin: 表格上方搜索范围（pt），默认 100pt（约 2-3 行文本）
+
+        Returns:
+            str: 拼接后的上下文文本，按 y 坐标从上到下排列
+        """
+        # 筛选表格上方 margin 范围内且 x 方向与表格有重叠的 words
+        context_top = max(0, ry0 - margin)
+        context_words = [
+            w for w in words
+            if context_top <= w["y0"] < ry0
+            and w["x1"] > rx0 * 0.8  # 允许 x 方向有 20% 外扩容差
+            and w["x0"] < rx1 * 1.2
+            and w["text"].strip()
+        ]
+
+        if not context_words:
+            return ""
+
+        # 按 y 坐标升序分组为行
+        context_words.sort(key=lambda w: (w["y0"], w["x0"]))
+        lines = []
+        current_line = []
+        current_y = None
+        y_tolerance = 5.0  # 同行的 y 容差
+
+        for w in context_words:
+            if current_y is None or abs(w["y0"] - current_y) <= y_tolerance:
+                current_line.append(w["text"])
+                if current_y is None:
+                    current_y = w["y0"]
+            else:
+                lines.append(' '.join(current_line))
+                current_line = [w["text"]]
+                current_y = w["y0"]
+
+        if current_line:
+            lines.append(' '.join(current_line))
+
+        return '\n'.join(lines).strip()
 
     @staticmethod
     def _extract_words_from_dict(page):
@@ -976,30 +1029,60 @@ class PDFProcessor:
         buf.close()
 
         # 步骤3：遍历文档 body 子元素，通过分页符推算每个表格的真实页码
+        # 同时收集每个表格上方的段落文本作为上下文
         W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
         body = doc.element.body
 
-        # 先扫描所有 body 子元素，建立 page_table_map：{表格XML元素: PDF页码}
+        # 先扫描所有 body 子元素
+        # page_table_map:  {表格XML元素: PDF页码}
+        # table_context_map: {表格XML元素: 表格上方段落文本}
         current_page = 1
-        page_table_map = {}  # tbl_element -> page_number
+        page_table_map = {}
+        table_context_map = {}
+        pending_paragraphs = []  # 收集表格前的段落文本
+
+        def _extract_paragraph_text(child_elem):
+            """从 w:p 元素中提取纯文本"""
+            texts = []
+            for t_elem in child_elem.iter(f'{W}t'):
+                if t_elem.text:
+                    texts.append(t_elem.text)
+            return ''.join(texts).strip()
 
         for child in body:
             tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
 
             if tag == 'p':
+                para_text = _extract_paragraph_text(child)
                 # 检查段落中是否包含分页符
+                has_page_break = False
                 for br in child.iter(f'{W}br'):
                     br_type = br.get(f'{W}type')
                     if br_type == 'page':
                         current_page += 1
+                        has_page_break = True
                         break
                 # 也检查 lastRenderedPageBreak
                 for lrpb in child.iter(f'{W}lastRenderedPageBreak'):
                     current_page += 1
+                    has_page_break = True
                     break
+
+                if has_page_break:
+                    pending_paragraphs.clear()
+
+                if para_text:
+                    pending_paragraphs.append(para_text)
+                # 限制缓存的段落数量，避免积累过多
+                if len(pending_paragraphs) > 5:
+                    pending_paragraphs = pending_paragraphs[-5:]
 
             elif tag == 'tbl':
                 page_table_map[child] = current_page
+                # 取表格前最近 1-3 段作为上下文文本
+                ctx_text = '\n'.join(pending_paragraphs[-3:]) if pending_paragraphs else ""
+                table_context_map[child] = ctx_text
+                pending_paragraphs.clear()  # 表格之后的段落属于下一个表格
 
         if not page_table_map:
             print(f"  [docx] Word 中未检测到任何表格")
@@ -1079,6 +1162,7 @@ class PDFProcessor:
                         rows_data.append(row_cells)
 
                 if rows_data:
+                    context_text = table_context_map.get(tbl_elem, "")
                     results.append({
                         "page": page_num,
                         "type": "table",
@@ -1089,8 +1173,13 @@ class PDFProcessor:
                         "rows": len(rows_data),
                         "cols": max(len(r) for r in rows_data) if rows_data else 0,
                         "has_border": True,
+                        "context_text": context_text,
                     })
-                    print(f"  [docx] 表格{tbl_idx+1}(PDF第{page_num}页): {len(rows_data)}行{results[-1]['cols']}列表格")
+                    if context_text:
+                        ctx_preview = context_text[:50].replace('\n', ' ')
+                        print(f"  [docx] 表格{tbl_idx+1}(PDF第{page_num}页): {len(rows_data)}行{results[-1]['cols']}列表格, 上下文: {ctx_preview}...")
+                    else:
+                        print(f"  [docx] 表格{tbl_idx+1}(PDF第{page_num}页): {len(rows_data)}行{results[-1]['cols']}列表格")
 
             except Exception as e:
                 print(f"  [docx] 表格{tbl_idx+1}解析失败: {e}")
@@ -2064,6 +2153,173 @@ class VisionLLM:
 
 
 # ============================================================
+# 表格上下文LLM模块 - 为表格生成名称和摘要
+# ============================================================
+class TableContextLLM:
+    """文本型LLM接口 - 使用 deepseek-v4 等模型为表格生成名称和摘要"""
+
+    MAX_PREVIEW_ROWS = 5          # 表格预览最多行数
+    MAX_PREVIEW_CELL_LEN = 30     # 单格最大字符数
+
+    def __init__(self, api_key=None, endpoint=None, model=None):
+        self.config = load_config()
+        self.api_key = api_key or self.config.get("deepseek_api_key", "")
+        self.endpoint = endpoint or self.config.get("deepseek_endpoint", "api.deepseek.com")
+        self.model = model or self.config.get("deepseek_model", "deepseek-chat")
+
+    def test_connection(self):
+        """测试 deepseek API 连通性"""
+        import requests
+        api_url = f"https://{self.endpoint}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        data = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 10
+        }
+        try:
+            resp = requests.post(api_url, headers=headers, json=data, timeout=15)
+            resp.raise_for_status()
+            return True, "DeepSeek API 连接成功！"
+        except requests.exceptions.Timeout:
+            return False, "连接超时，请检查网络或API地址"
+        except requests.exceptions.HTTPError as e:
+            return False, f"HTTP错误: {e.response.status_code} - {e.response.reason}"
+        except requests.exceptions.RequestException as e:
+            return False, f"连接失败: {str(e)}"
+
+    @staticmethod
+    def _build_table_preview(table_data, max_rows=None, max_cell_len=None):
+        """将表格数据压缩为文本预览（用于 LLM prompt）"""
+        if max_rows is None:
+            max_rows = TableContextLLM.MAX_PREVIEW_ROWS
+        if max_cell_len is None:
+            max_cell_len = TableContextLLM.MAX_PREVIEW_CELL_LEN
+
+        if not table_data:
+            return "（表格数据为空）"
+
+        lines = []
+        for row_idx, row in enumerate(table_data):
+            if row_idx >= max_rows:
+                lines.append(f"... (共{len(table_data)}行，仅显示前{max_rows}行)")
+                break
+            cells = []
+            for cell in row:
+                s = str(cell).strip()
+                if len(s) > max_cell_len:
+                    s = s[:max_cell_len - 3] + "..."
+                cells.append(s)
+            lines.append(" | ".join(cells))
+
+        return "\n".join(lines)
+
+    def generate_table_name(self, context_text, table_data):
+        """将上下文文本 + 表格摘要发给 LLM，返回 {"title": str, "summary": str}"""
+        if not self.api_key:
+            return {"title": "", "summary": "", "error": "未配置 DeepSeek API Key"}
+
+        import json as _json
+        import requests
+
+        table_preview = self._build_table_preview(table_data)
+
+        prompt = f"""你是一个财务文档分析专家。下面是一份银行年报中提取的表格数据。
+请根据表格上方的描述文字和表格内容，为这个表格生成一个规范的名称和一句话摘要。
+
+表格上方描述文字：
+{context_text if context_text else "（无上方描述文字）"}
+
+表格内容预览（前{self.MAX_PREVIEW_ROWS}行）：
+{table_preview}
+
+请以JSON格式返回，只返回JSON，不要其他文字：
+{{"title": "表格的规范名称（如'合并资产负债表'、'利润表'）", "summary": "一句话描述该表格的主要内容（不超过50字）"}}"""
+
+        api_url = f"https://{self.endpoint}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "你是一个专业的财务表格分析助手，擅长为财务表格生成规范的标题和摘要。请只返回JSON格式的结果。"},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 500,
+            "temperature": 0.1
+        }
+
+        try:
+            resp = requests.post(api_url, headers=headers, json=data, timeout=30)
+            resp.raise_for_status()
+            result = resp.json()
+
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                # 尝试解析 JSON
+                try:
+                    parsed = _json.loads(content)
+                    return {
+                        "title": parsed.get("title", ""),
+                        "summary": parsed.get("summary", "")
+                    }
+                except _json.JSONDecodeError:
+                    # 尝试从文本中提取 JSON
+                    import re
+                    match = re.search(r'\{[^}]*\}', content, re.DOTALL)
+                    if match:
+                        try:
+                            parsed = _json.loads(match.group())
+                            return {
+                                "title": parsed.get("title", ""),
+                                "summary": parsed.get("summary", "")
+                            }
+                        except _json.JSONDecodeError:
+                            pass
+                    return {"title": content.strip()[:100], "summary": "", "error": "JSON解析失败，已用原始返回"}
+            else:
+                return {"title": "", "summary": "", "error": "API返回格式错误"}
+
+        except requests.exceptions.Timeout:
+            return {"title": "", "summary": "", "error": "请求超时"}
+        except Exception as e:
+            return {"title": "", "summary": "", "error": str(e)}
+
+    def batch_generate(self, tables, progress_callback=None):
+        """批量处理多个表格，返回每个表格的命名结果列表
+
+        Args:
+            tables: [{"context_text": str, "data": [[...], ...]}, ...]
+            progress_callback: callable(current, total, message)
+
+        Returns:
+            [{"title": str, "summary": str, "error": str or None}, ...]
+        """
+        results = []
+        total = len(tables)
+
+        for i, table in enumerate(tables):
+            context_text = table.get("context_text", "")
+            table_data = table.get("data", [])
+
+            if progress_callback:
+                progress_callback(i + 1, total, f"正在为第{i+1}个表格生成名称...")
+
+            result = self.generate_table_name(context_text, table_data)
+            results.append(result)
+
+            if i < total - 1:
+                time.sleep(0.3)  # 限速，避免触发 API 频率限制
+
+        return results
+
+
+# ============================================================
 # Excel导出模块
 # ============================================================
 class ExcelExporter:
@@ -2150,7 +2406,8 @@ class ExcelExporter:
                     continue
 
                 # ---- Sheet 命名（零补位确保字符串排序=数值排序）----
-                title = table_info.get("title") or PDFProcessor._extract_table_title(table_data)
+                # 优先级：llm_title > title > 自动提取
+                title = table_info.get("llm_title") or table_info.get("title") or PDFProcessor._extract_table_title(table_data)
                 sheet_name = f"P{page:0{page_digits}d}-T{seq:0{seq_digits}d}-{title}"
                 # Sheet 名最长 31 字符
                 if len(sheet_name) > 31:
@@ -2501,14 +2758,17 @@ class ProcessingWorker(QThread):
                             t["rows"] = len(corrected)
 
                     is_docx = ext.startswith("docx")
-                    results.append({
+                    entry = {
                         "page": t["page"],
                         "type": "text",
                         "data": data,
                         "extractor": ext,
                         "parse_status": "success" if data else "failed",
                         "parse_message": "docx通道提取" if (is_docx and data) else ("V2提取" if data else "未检测到表格")
-                    })
+                    }
+                    if t.get("context_text"):
+                        entry["context_text"] = t["context_text"]
+                    results.append(entry)
 
                 extracted_pages = {t["page"] for t in merged_tables}
                 for page_num in range(1, total_pages + 1):

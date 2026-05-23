@@ -22,6 +22,7 @@ from .widgets import (
 from .processor import (
     PDFProcessor,
     VisionLLM,
+    TableContextLLM,
     ExcelExporter,
     ProcessingWorker
 )
@@ -44,6 +45,7 @@ __all__ = [
     # processor
     'PDFProcessor',
     'VisionLLM',
+    'TableContextLLM',
     'ExcelExporter',
     'ProcessingWorker',
     # pdf context

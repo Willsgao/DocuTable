@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from codes.pdf_extractor import save_config, VisionLLM
+from codes.pdf_extractor import save_config, VisionLLM, TableContextLLM
 
 
 class SettingsManager:
@@ -20,7 +20,7 @@ class SettingsManager:
         self.mw = main_window
 
     def toggle_key_visibility(self):
-        """切换Key可见性"""
+        """切换豆包Key可见性"""
         if self.mw.api_key_input.echoMode() == QLineEdit.Password:
             self.mw.api_key_input.setEchoMode(QLineEdit.Normal)
             self.mw.show_key_btn.setText("🔒")
@@ -28,8 +28,17 @@ class SettingsManager:
             self.mw.api_key_input.setEchoMode(QLineEdit.Password)
             self.mw.show_key_btn.setText("👁")
 
+    def toggle_ds_key_visibility(self):
+        """切换 DeepSeek Key 可见性"""
+        if self.mw.ds_api_key_input.echoMode() == QLineEdit.Password:
+            self.mw.ds_api_key_input.setEchoMode(QLineEdit.Normal)
+            self.mw.ds_show_key_btn.setText("🔒")
+        else:
+            self.mw.ds_api_key_input.setEchoMode(QLineEdit.Password)
+            self.mw.ds_show_key_btn.setText("👁")
+
     def test_api(self):
-        """测试API连接"""
+        """测试豆包API连接"""
         try:
             self.mw.test_api_btn.setEnabled(False)
             self.mw.test_api_btn.setText("测试中...")
@@ -54,11 +63,40 @@ class SettingsManager:
             self.mw.test_api_btn.setEnabled(True)
             self.mw.test_api_btn.setText("🧪 测试连接")
 
+    def test_ds_api(self):
+        """测试 DeepSeek API 连接"""
+        try:
+            self.mw.test_ds_api_btn.setEnabled(False)
+            self.mw.test_ds_api_btn.setText("测试中...")
+
+            api_key = self.mw.ds_api_key_input.text().strip()
+            endpoint = self.mw.ds_endpoint_input.text().strip()
+            model = self.mw.ds_model_input.text().strip()
+
+            if not api_key or not endpoint or not model:
+                raise ValueError("请填写完整的 DeepSeek API 信息")
+
+            llm = TableContextLLM(api_key, endpoint, model)
+            success, message = llm.test_connection()
+
+            if success:
+                QMessageBox.information(self.mw, "连接成功", message)
+            else:
+                QMessageBox.warning(self.mw, "连接失败", message)
+        except Exception as e:
+            QMessageBox.critical(self.mw, "DeepSeek连接失败", f"连接失败:\n{traceback.format_exc()}")
+        finally:
+            self.mw.test_ds_api_btn.setEnabled(True)
+            self.mw.test_ds_api_btn.setText("🧪 测试连接")
+
     def save_settings(self):
         """保存设置"""
         self.mw.config["doubao_api_key"] = self.mw.api_key_input.text().strip()
         self.mw.config["doubao_endpoint"] = self.mw.endpoint_input.text().strip()
         self.mw.config["doubao_model"] = self.mw.model_input.text().strip()
+        self.mw.config["deepseek_api_key"] = self.mw.ds_api_key_input.text().strip()
+        self.mw.config["deepseek_endpoint"] = self.mw.ds_endpoint_input.text().strip()
+        self.mw.config["deepseek_model"] = self.mw.ds_model_input.text().strip()
         self.mw.config["max_pages"] = self.mw.max_pages_spin.value()
         version_map = {"v1（位置分析+pdfplumber混合）": "v1", "v2（表格线+对齐聚簇）": "v2"}
         self.mw.config["extraction_version"] = version_map.get(

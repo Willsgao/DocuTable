@@ -100,15 +100,7 @@ def get_pdf_cache_dir(pdf_path):
     # 移除Windows文件名非法字符: \ / : * ? " < > |
     for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
         pdf_name = pdf_name.replace(ch, '_')
-    # strip 首尾空格和点号，Windows 不允许末尾空格/点号
-    pdf_name = pdf_name.strip().rstrip('.')
-    # 处理文件名乱码或无效字符：仅保留中文、英文、数字、下划线、连字符
-    sanitized = ''.join(c if c == '_' or c == '-' or c.isalnum() or '\u4e00' <= c <= '\u9fff' else '_' for c in pdf_name)
-    # 如果 sanitize 后为空或与原文件名差异很大（乱码），用文件 hash 作为目录名
-    if not sanitized.strip('_'):
-        file_hash = get_pdf_file_hash(pdf_path)
-        sanitized = file_hash[:16]
-    return get_mid_data_dir() / sanitized
+    return get_mid_data_dir() / pdf_name
 
 
 def get_pdf_preview_dir(pdf_path):
