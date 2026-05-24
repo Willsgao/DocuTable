@@ -81,6 +81,7 @@ class PDFProcessor:
             context: PDFContext 共享上下文（优先使用）
         """
         import fitz  # PyMuPDF
+        import gc; gc.disable()  # 防止 pymupdf C 扩展 refcount bug
 
         if context:
             doc = context.doc
@@ -138,6 +139,7 @@ class PDFProcessor:
         result = image_pages > text_pages
         print(f"  [PDF检测] 采样{len(sample_pages)}页: {', '.join(details)}")
         print(f"  [PDF检测] 文本页={text_pages}, 图片页={image_pages} → {'图片型PDF' if result else '文本型PDF'}")
+        gc.enable()
         return result
 
     def extract_text_tables(self, pdf_path=None, max_pages=None, context=None, progress_callback=None, progress_base=20, skip_drawings=False):
@@ -1003,13 +1005,17 @@ class PDFProcessor:
 
         buf = BytesIO()
         cv = Converter(_pdf_path)
-        cv.convert(
-            buf,
-            start=0,
-            end=None,
-            layout=False,           # 流式模式：表格识别更准
-            table_deduction=False,  # 保守策略
-        )
+        import gc; gc.disable()
+        try:
+            cv.convert(
+                buf,
+                start=0,
+                end=None,
+                layout=False,           # 流式模式：表格识别更准
+                table_deduction=False,  # 保守策略
+            )
+        finally:
+            gc.enable()
         cv.close()
         buf.seek(0)
 
@@ -1067,6 +1073,15 @@ class PDFProcessor:
                     current_page += 1
                     has_page_break = True
                     break
+
+                # 分支：检测页眉页脚中的纯数字页码
+                if context and para_text and not has_page_break:
+                    stripped = para_text.strip()
+                    if stripped.isdigit():
+                        pn = int(stripped)
+                        if 1 <= pn <= context.page_count and pn > current_page:
+                            current_page = pn
+                            has_page_break = True
 
                 if has_page_break:
                     pending_paragraphs.clear()
@@ -1190,6 +1205,10 @@ class PDFProcessor:
             if progress_callback:
                 progress_callback(33, "docx: 校验表格页码...")
             results = self._verify_docx_page_numbers(results, context)
+            # 确保页码单调递增，防止后列表跑前面
+            for i in range(1, len(results)):
+                if results[i].get("page", 0) < results[i-1].get("page", 0):
+                    results[i]["page"] = results[i-1]["page"]
             # 按页码排序
             results.sort(key=lambda x: x.get("page", 0))
 
@@ -2593,26 +2612,28 @@ def _auto_merge_split_tables(results):
                         return False
                 return True
 
-            # 辅助：判断上下文是否仅为纯页码（如 31、34、-2-）
-            def _is_page_number_only(ctx):
-                if not ctx or not ctx.strip():
-                    return True
-                return bool(re.match(r'^[\d\-\s]+$', ctx.strip()))
+            # 规则：两表之间有2行以上实质文本 → 不合并
+            ctx_b = table_b.get("context_text", "")
+            meaningful_lines = []
+            if ctx_b:
+                meaningful_lines = [l for l in ctx_b.split('\n') if l.strip() and not re.match(r'^[\d\-\s]+$', l.strip())]
+            if len(meaningful_lines) >= 2:
+                continue
 
-            # 规则：后表是本页第一个表 + 上下文不是纯页码 → 强制合并
-            force_merge = False
-            if _is_first_on_page(j):
-                ctx_b = table_b.get("context_text", "")
-                if not _is_page_number_only(ctx_b):
-                    force_merge = True
+            # 规则：后表是本页第一个且有实质描述文字 → 不合并
+            if _is_first_on_page(j) and len(meaningful_lines) >= 1:
+                continue
 
             # 条件2: table_b 首行全部是纯数值类（无表头）
-            if not force_merge:
-                first_row_b = table_b["data"][0] if table_b["data"] else []
-                if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
-                    numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
-                    if numeric_count < max(1, len(first_row_b) * 0.5):
-                        continue
+            first_row_b = table_b["data"][0] if table_b["data"] else []
+            if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
+                numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
+                non_empty_in_first = sum(1 for c in first_row_b if c and str(c).strip())
+                # 首行大多为空（<3个非空）→ 断裂续行，允许合并
+                if non_empty_in_first < 3:
+                    pass
+                elif numeric_count < max(1, len(first_row_b) * 0.5):
+                    continue
 
             # 执行合并：B 行追加到 A 末尾
             page_a = table_a.get("page", 0)
