@@ -839,6 +839,8 @@ class TableCompareManager(QObject):
             return
         
         row = self.table_list_widget.currentRow()
+        # 始终同步 filtered_index，保证筛选翻页与 sheet 翻页联动
+        self.filtered_index = row
         print(f"[DEBUG] currentRow: {row}")
         print(f"[DEBUG] filtered_indices 长度: {len(self.filtered_indices)}")
         print(f"[DEBUG] filtered_indices 前5个: {self.filtered_indices[:5] if self.filtered_indices else '空'}")
@@ -981,6 +983,9 @@ class TableCompareManager(QObject):
 
         # 记录当前显示的表格索引，供 _save_previous_page_data 使用
         self._last_displayed_table_idx = table_idx
+        
+        # 同步筛选导航，保证筛选翻页与 sheet 翻页联动
+        self.update_filter_nav_buttons()
     
     def display_table_data(self, table):
         """显示表格数据"""
@@ -1119,7 +1124,9 @@ class TableCompareManager(QObject):
         self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current > 0:
-            self.table_list_widget.setCurrentRow(current - 1)
+            self.filtered_index = current - 1
+            self.table_list_widget.setCurrentRow(self.filtered_index)
+            self.update_filter_nav_buttons()
             self.update_preview_display()
 
     def next_preview_page(self):
@@ -1127,29 +1134,36 @@ class TableCompareManager(QObject):
         self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current < self.table_list_widget.count() - 1:
-            self.table_list_widget.setCurrentRow(current + 1)
+            self.filtered_index = current + 1
+            self.table_list_widget.setCurrentRow(self.filtered_index)
+            self.update_filter_nav_buttons()
             self.update_preview_display()
 
     def first_preview_page(self):
         """第一页预览（切页前先保存当前编辑）"""
         self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
+            self.filtered_index = 0
             self.table_list_widget.setCurrentRow(0)
+            self.update_filter_nav_buttons()
             self.update_preview_display()
 
     def last_preview_page(self):
         """最后一页预览（切页前先保存当前编辑）"""
         self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
-            self.table_list_widget.setCurrentRow(self.table_list_widget.count() - 1)
+            self.filtered_index = self.table_list_widget.count() - 1
+            self.table_list_widget.setCurrentRow(self.filtered_index)
+            self.update_filter_nav_buttons()
             self.update_preview_display()
 
     def goto_preview_page(self, page_num):
         """跳转到指定页（切页前先保存当前编辑）"""
         self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0 and page_num >= 1:
-            target_row = min(page_num - 1, self.table_list_widget.count() - 1)
-            self.table_list_widget.setCurrentRow(target_row)
+            self.filtered_index = min(page_num - 1, self.table_list_widget.count() - 1)
+            self.table_list_widget.setCurrentRow(self.filtered_index)
+            self.update_filter_nav_buttons()
             self.update_preview_display()
     
     # ==================== 表格编辑 ====================
