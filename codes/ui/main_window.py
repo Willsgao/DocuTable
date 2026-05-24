@@ -239,6 +239,11 @@ class MainWindow(QMainWindow):
 
         # 创建水平分割器
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(6)
+        splitter.setStyleSheet("""
+            QSplitter::handle { background-color: #BDC3C7; }
+            QSplitter::handle:hover { background-color: #5D6D7E; }
+        """)
 
         # 左侧：PDF预览（通过PreviewManager创建）
         pdf_group = QGroupBox("📄 PDF页面预览")
@@ -327,7 +332,7 @@ class MainWindow(QMainWindow):
 
         # 添加到splitter
         splitter.addWidget(table_group)
-        splitter.setChildrenCollapsible(False)
+        splitter.setChildrenCollapsible(False)  # 拖拽时面板不会消失
 
         # 设置Splitter比例 - PDF区域占更大比例
         splitter.setSizes([600, 400])
@@ -529,33 +534,44 @@ class MainWindow(QMainWindow):
         # DeepSeek API 配置（表格命名）
         ds_group = QGroupBox("🤖 DeepSeek 表格命名配置")
         ds_layout = QVBoxLayout(ds_group)
+
+        # DeepSeek API Key
         ds_api_key_layout = QHBoxLayout()
         ds_api_key_layout.addWidget(QLabel("DeepSeek API Key:"))
         self.ds_api_key_input = QLineEdit()
         self.ds_api_key_input.setText(self.config.get("deepseek_api_key", ""))
-        self.ds_api_key_input.setPlaceholderText("输入 DeepSeek API Key")
+        self.ds_api_key_input.setPlaceholderText("输入 DeepSeek API Key（用于AI表格命名）")
         self.ds_api_key_input.setEchoMode(QLineEdit.Password)
         ds_api_key_layout.addWidget(self.ds_api_key_input)
+
         self.ds_show_key_btn = QPushButton("👁")
         self.ds_show_key_btn.setMaximumWidth(40)
         self.ds_show_key_btn.clicked.connect(self.toggle_ds_key_visibility)
         ds_api_key_layout.addWidget(self.ds_show_key_btn)
         ds_layout.addLayout(ds_api_key_layout)
+
+        # DeepSeek Endpoint
         ds_endpoint_layout = QHBoxLayout()
         ds_endpoint_layout.addWidget(QLabel("API 端点:"))
         self.ds_endpoint_input = QLineEdit()
         self.ds_endpoint_input.setText(self.config.get("deepseek_endpoint", "api.deepseek.com"))
+        self.ds_endpoint_input.setPlaceholderText("如: api.deepseek.com")
         ds_endpoint_layout.addWidget(self.ds_endpoint_input)
         ds_layout.addLayout(ds_endpoint_layout)
+
+        # DeepSeek Model
         ds_model_layout = QHBoxLayout()
         ds_model_layout.addWidget(QLabel("模型名称:"))
         self.ds_model_input = QLineEdit()
         self.ds_model_input.setText(self.config.get("deepseek_model", "deepseek-chat"))
+        self.ds_model_input.setPlaceholderText("如: deepseek-chat, deepseek-reasoner")
         ds_model_layout.addWidget(self.ds_model_input)
+
         self.test_ds_api_btn = QPushButton("🧪 测试连接")
         self.test_ds_api_btn.clicked.connect(self.test_ds_api)
         ds_model_layout.addWidget(self.test_ds_api_btn)
         ds_layout.addLayout(ds_model_layout)
+
         config_tab_layout.addWidget(ds_group)
 
         # 保存按钮
@@ -564,7 +580,7 @@ class MainWindow(QMainWindow):
         self.save_config_btn.clicked.connect(self.save_settings)
         save_layout.addWidget(self.save_config_btn)
         save_layout.addStretch()
-        config_layout.addLayout(save_layout)
+        config_tab_layout.addLayout(save_layout)
 
         # 缓存管理
         cache_group = QGroupBox("💾 缓存管理")
@@ -983,26 +999,26 @@ class MainWindow(QMainWindow):
     # ==================== 设置 ====================
 
     def toggle_key_visibility(self):
-        """切换豆包Key可见性"""
+        """切换Key可见性（委托给settings_manager）"""
         if self.settings_manager:
             self.settings_manager.toggle_key_visibility()
 
     def toggle_ds_key_visibility(self):
-        """切换 DeepSeek Key 可见性"""
+        """切换 DeepSeek Key 可见性（委托给settings_manager）"""
         if self.settings_manager:
             self.settings_manager.toggle_ds_key_visibility()
 
     def test_api(self):
-        """测试豆包API连接"""
+        """测试API连接（委托给settings_manager）"""
         if self.settings_manager:
             self.settings_manager.test_api()
 
     def test_ds_api(self):
-        """测试 DeepSeek API 连接"""
+        """测试 DeepSeek API 连接（委托给settings_manager）"""
         if self.settings_manager:
             self.settings_manager.test_ds_api()
 
     def save_settings(self):
-        """保存设置"""
+        """保存设置（委托给settings_manager）"""
         if self.settings_manager:
             self.settings_manager.save_settings()

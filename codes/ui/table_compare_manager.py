@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QSplitter, QMenu, QApplication, QSizePolicy, QMessageBox, QShortcut,
     QDialog, QRadioButton, QSpinBox, QDialogButtonBox, QInputDialog,
-    QTextBrowser, QCheckBox
+    QTextBrowser
 )
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QEvent, QObject, QTimer, QThread, pyqtSignal
@@ -36,6 +36,9 @@ class TableCompareManager(QObject):
         self.filtered_indices = []
         self.filtered_index = 0
         
+        # 原始/清洗数据切换
+        self.showing_original = False
+        
         # 控件引用（由 init_ui 设置）
         self.table_widget = None
         self.table_list_widget = None
@@ -58,9 +61,6 @@ class TableCompareManager(QObject):
         
         # 编辑状态
         self.edit_mode = False
-        # 锁定表格状态
-        self.table_locked = False
-        self.locked_table_data = None  # 锁定时保持的表格数据
         self.has_unsaved_changes = False
         
         # 自动保存定时器
@@ -84,6 +84,7 @@ class TableCompareManager(QObject):
         
         # header区域
         header_widget = QWidget()
+        header_widget.setMinimumHeight(120)  # 拖手柄时保留最小区域，不会消失
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -154,12 +155,6 @@ class TableCompareManager(QObject):
         """)
         filter_layout.addWidget(self.table_type_label)
         
-        # 原始数据勾选框
-        self.show_original_checkbox = QCheckBox("📋 原始数据")
-        self.show_original_checkbox.setToolTip("勾选查看清洗前的原始数据，不勾选查看清洗后的数据")
-        self.show_original_checkbox.stateChanged.connect(self.on_show_original_changed)
-        filter_layout.addWidget(self.show_original_checkbox)
-        
         # 编辑模式按钮
         self.edit_mode_btn = QPushButton("✏️ 开始编辑")
         self.edit_mode_btn.setToolTip("进入编辑模式，可修改页面类型标记")
@@ -195,12 +190,19 @@ class TableCompareManager(QObject):
         filter_layout.addStretch(1)
         header_layout.addWidget(filter_widget)
         
-        # 上下文文本展示区（表格上方描述文字）
+        # 上下文文本展示区
         self.context_text_browser = QTextBrowser()
         self.context_text_browser.setReadOnly(True)
-        self.context_text_browser.setFixedHeight(50)
+        self.context_text_browser.setFixedHeight(80)
+        self.context_text_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.context_text_browser.setPlaceholderText("选中表格后显示标题和上下文...")
-        self.context_text_browser.setStyleSheet("QTextBrowser { border:1px solid #BDC3C7; border-radius:4px; background-color:#FEF9E7; color:#7D6608; font-size:12px; padding:4px; }")
+        self.context_text_browser.setStyleSheet("""
+            QTextBrowser {
+                border: 2px solid #F39C12; border-radius: 4px;
+                background-color: #FEF9E7; color: #7D6608;
+                font-size: 12px; padding: 4px;
+            }
+        """)
         header_layout.addWidget(self.context_text_browser)
         
         # 表格列表
@@ -218,29 +220,47 @@ class TableCompareManager(QObject):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_widget.setFixedHeight(40)
 
-        # 向前合并按钮
-        self.merge_forward_btn = QPushButton("⬆ 向前合并")
-        self.merge_forward_btn.setToolTip("将当前表格合并到前一个表格下方")
-        self.merge_forward_btn.clicked.connect(self.merge_forward)
-        btn_layout.addWidget(self.merge_forward_btn)
-        
         # 删除空格按钮
         self.remove_spaces_btn = QPushButton("🧹 删除空格")
         self.remove_spaces_btn.setToolTip("清除当前表格中所有单元格的前后及中间空格，并左对齐")
+        self.remove_spaces_btn.setFocusPolicy(Qt.NoFocus)
         self.remove_spaces_btn.clicked.connect(self.remove_spaces)
         btn_layout.addWidget(self.remove_spaces_btn)
+
+        # 清洗数据按钮
+        self.clean_data_btn = QPushButton("🧼 清洗数据")
+        self.clean_data_btn.setToolTip("选中区域只保留数值、千分位、小数点、负号、括号、百分号")
+        self.clean_data_btn.setFocusPolicy(Qt.NoFocus)
+        self.clean_data_btn.clicked.connect(self.clean_data)
+        btn_layout.addWidget(self.clean_data_btn)
+
+        # 向前合并按钮
+        self.merge_prev_btn = QPushButton("⬅️ 向前合并")
+        self.merge_prev_btn.setToolTip("将当前表格数据追加到前一个表格的左下方，然后删除当前表格")
+        self.merge_prev_btn.setFocusPolicy(Qt.NoFocus)
+        self.merge_prev_btn.clicked.connect(self.merge_to_previous)
+        btn_layout.addWidget(self.merge_prev_btn)
+
+        # 原始/清洗数据切换按钮
+        self.toggle_original_btn = QPushButton("📋 查看原始数据")
+        self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
+        self.toggle_original_btn.setFocusPolicy(Qt.NoFocus)
+        self.toggle_original_btn.clicked.connect(self.toggle_original_view)
+        btn_layout.addWidget(self.toggle_original_btn)
 
         btn_layout.addSpacing(10)
 
         # 批量插入按钮
         self.batch_insert_btn = QPushButton("📦 批量插入")
         self.batch_insert_btn.setToolTip("一次性插入多行或多列")
+        self.batch_insert_btn.setFocusPolicy(Qt.NoFocus)
         self.batch_insert_btn.clicked.connect(self.batch_insert)
         btn_layout.addWidget(self.batch_insert_btn)
         
         # 统计按钮
         self.calc_sum_btn = QPushButton("📊 计算选中区域")
         self.calc_sum_btn.setToolTip("计算选中单元格的总和、平均值、数量")
+        self.calc_sum_btn.setFocusPolicy(Qt.NoFocus)
         self.calc_sum_btn.clicked.connect(self.calculate_selected)
         btn_layout.addWidget(self.calc_sum_btn)
         
@@ -251,7 +271,12 @@ class TableCompareManager(QObject):
         self.ai_name_btn.setToolTip("使用 DeepSeek 为表格生成规范的标题和摘要")
         self.ai_name_btn.setFocusPolicy(Qt.NoFocus)
         self.ai_name_btn.clicked.connect(self.on_ai_name_clicked)
-        self.ai_name_btn.setStyleSheet("QPushButton { background-color:#8E44AD; color:white; padding:2px 12px; border-radius:4px; font-weight:bold; } QPushButton:hover { background-color:#7D3C98; } QPushButton:disabled { background-color:#BDC3C7; color:#ecf0f1; }")
+        self.ai_name_btn.setStyleSheet("""
+            QPushButton { background-color: #8E44AD; color: white; padding: 2px 12px; border-radius: 4px;
+                          font-weight: bold; }
+            QPushButton:hover { background-color: #7D3C98; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
         btn_layout.addWidget(self.ai_name_btn)
         
         btn_layout.addSpacing(10)
@@ -259,12 +284,14 @@ class TableCompareManager(QObject):
         # 撤销/重做按钮
         self.undo_btn = QPushButton("↩️ 撤销")
         self.undo_btn.setToolTip("撤销上一步操作 (Ctrl+Z)")
+        self.undo_btn.setFocusPolicy(Qt.NoFocus)
         self.undo_btn.clicked.connect(self.undo_change)
         self.undo_btn.setMaximumWidth(60)
         btn_layout.addWidget(self.undo_btn)
         
         self.redo_btn = QPushButton("↪️ 重做")
         self.redo_btn.setToolTip("重做操作 (Ctrl+Y)")
+        self.redo_btn.setFocusPolicy(Qt.NoFocus)
         self.redo_btn.clicked.connect(self.redo_change)
         self.redo_btn.setMaximumWidth(60)
         btn_layout.addWidget(self.redo_btn)
@@ -300,7 +327,7 @@ class TableCompareManager(QObject):
         
         # header区域添加到splitter
         self.table_splitter.addWidget(header_widget)
-        self.table_splitter.setChildrenCollapsible(False)
+        self.table_splitter.setChildrenCollapsible(False)  # 拖拽时面板不会消失
         
         # 设置splitter分割线宽度和初始大小
         self.table_splitter.setHandleWidth(8)
@@ -308,6 +335,7 @@ class TableCompareManager(QObject):
         
         # 创建表格控件
         self.table_widget = ZoomableTableWidget()
+        self.table_widget.setMinimumHeight(80)  # 拖手柄时保留最小区域，不会消失
         self.table_widget.setAlternatingRowColors(True)
         self.table_widget.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed)
         self.table_widget.setSelectionMode(QTableWidget.ExtendedSelection)
@@ -356,17 +384,6 @@ class TableCompareManager(QObject):
         self.stats_label.setFixedHeight(22)
         table_layout.addWidget(self.stats_label)
         
-        # 锁定表格按钮
-        self.lock_table_btn = QPushButton("🔓 解锁")
-        self.lock_table_btn.setToolTip("锁定后翻页只更新PDF，表格内容固定不变")
-        self.lock_table_btn.setCheckable(True)
-        self.lock_table_btn.clicked.connect(self.on_lock_table_toggled)
-        self.lock_table_btn.setStyleSheet("""
-            QPushButton { background-color: #95A5A6; color: white; padding: 2px 12px; border-radius: 4px; }
-            QPushButton:checked { background-color: #E74C3C; color: white; font-weight: bold; }
-        """)
-        table_layout.addWidget(self.lock_table_btn)
-        
         self.goto_export_btn = QPushButton("💾 批量导出")
         self.goto_export_btn.setToolTip("批量导出所有标记为表格的页面数据")
         self.goto_export_btn.clicked.connect(self.batch_export_tables)
@@ -412,7 +429,9 @@ class TableCompareManager(QObject):
                 row_data.append(item.text() if item else "")
             data.append(row_data)
         
-        tables[table_idx]['data'] = data
+        # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
+        data_key = 'original_data' if self.showing_original else 'data'
+        tables[table_idx][data_key] = data
         self._last_displayed_table_idx = table_idx
         
         # 标记有未保存的更改，并安排自动保存
@@ -455,7 +474,9 @@ class TableCompareManager(QObject):
                 item = self.table_widget.item(i, j)
                 row_data.append(item.text() if item else "")
             data.append(row_data)
-        tables[self._last_displayed_table_idx]['data'] = data
+        # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
+        data_key = 'original_data' if self.showing_original else 'data'
+        tables[self._last_displayed_table_idx][data_key] = data
     
     # ==================== 事件处理 ====================
     
@@ -468,38 +489,15 @@ class TableCompareManager(QObject):
         """事件过滤器"""
         if obj == self.table_widget.viewport():
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                if not self.table_locked:
-                    self.save_current_table_state()
+                self.save_current_table_state()
         return False
     
     def on_table_selected(self, item):
         """表格选中（先保存当前页编辑，再切换显示）"""
         if item:
-            if not self.table_locked:
-                self._save_previous_page_data()
+            self._save_previous_page_data()
             self.filtered_index = self.table_list_widget.currentRow()
             self.update_filter_nav_buttons()
-            self.update_preview_display()
-
-    def on_show_original_changed(self):
-        """原始数据/清洗数据切换"""
-        self.update_preview_display()
-
-    def on_lock_table_toggled(self):
-        """锁定表格切换"""
-        self.table_locked = self.lock_table_btn.isChecked()
-        if self.table_locked:
-            self.lock_table_btn.setText("🔒 已锁定")
-            # 保存当前表格数据用于锁定
-            row = self.table_list_widget.currentRow()
-            if row >= 0 and row < len(self.filtered_indices):
-                table_idx = self.filtered_indices[row]
-                tables = self.main_window.processed_results.get('tables', [])
-                if table_idx < len(tables):
-                    self.locked_table_data = tables[table_idx]
-        else:
-            self.lock_table_btn.setText("🔓 解锁")
-            self.locked_table_data = None
             self.update_preview_display()
 
     def _show_table_list_menu(self, pos):
@@ -509,12 +507,16 @@ class TableCompareManager(QObject):
             return
         row = self.table_list_widget.row(item)
         menu = QMenu()
+        change_page_action = menu.addAction("✏️ 修改页号")
+        menu.addSeparator()
         insert_before = menu.addAction("在上方插入新表")
         insert_after = menu.addAction("在下方插入新表")
         menu.addSeparator()
         delete_action = menu.addAction("🗑️ 删除此表")
         action = menu.exec_(self.table_list_widget.mapToGlobal(pos))
-        if action == insert_before:
+        if action == change_page_action:
+            self._change_table_page(row)
+        elif action == insert_before:
             self._insert_blank_table(row, before=True)
         elif action == insert_after:
             self._insert_blank_table(row, before=False)
@@ -645,18 +647,25 @@ class TableCompareManager(QObject):
             table = tables[idx]
             page = table.get('page', 0)
             page_seq[page] = page_seq.get(page, 0) + 1
-            status_icon = "✅" if table.get('parse_status') == 'success' else "❌"
+            is_text = table.get('type') == 'text'
+            status_icon = "📝" if is_text else ("✅" if table.get('parse_status') == 'success' else "❌")
             ext = table.get('extractor', '')
             if ext == "manual":
                 ext_tag = "M"
+            elif ext == "docx_text":
+                ext_tag = "T"
             elif ext.startswith("docx"):
                 ext_tag = "D"
             else:
                 ext_tag = "V2"
-            # 标题优先级：llm_title > title > data第一格 > context首行
+            # 标题优先级：llm_title > title > context首行 > data第一格
             title = table.get('llm_title', '')
             if not title:
                 title = table.get('title', '')
+            if not title:
+                ctx = table.get('context_text', '')
+                if ctx:
+                    title = ctx.split('\n')[0].strip()[:12]
             if not title:
                 data = table.get('data', [])
                 for row in data:
@@ -671,6 +680,7 @@ class TableCompareManager(QObject):
                 if ctx:
                     title = ctx.split('\n')[0].strip()[:8]
             title_str = f" {title}" if title else ""
+            # LLM 生成的标题加星号标记
             llm_mark = "✨" if table.get('llm_title') else ""
             item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{title_str}"
             item = QListWidgetItem(item_text)
@@ -750,10 +760,10 @@ class TableCompareManager(QObject):
 
     def prev_filtered_page(self):
         """上一PDF页（跳到前一页的第一个表格，用于对照PDF）"""
-        if not self.table_locked:
-            self._save_previous_page_data()
+        self._save_previous_page_data()
         tables = self.main_window.processed_results.get('tables', [])
         cur_page = self._current_filter_page()
+        # 找小于当前页的最大页码
         prev_pages = sorted(set(
             tables[i].get('page', 0) for i in self.filtered_indices
             if tables[i].get('page', 0) < cur_page
@@ -767,8 +777,7 @@ class TableCompareManager(QObject):
 
     def next_filtered_page(self):
         """下一PDF页（跳到下一页的第一个表格，用于对照PDF）"""
-        if not self.table_locked:
-            self._save_previous_page_data()
+        self._save_previous_page_data()
         tables = self.main_window.processed_results.get('tables', [])
         cur_page = self._current_filter_page()
         # 找大于当前页的最小页码
@@ -820,37 +829,43 @@ class TableCompareManager(QObject):
             print(f"[DEBUG] table_idx >= len(tables)，提前返回")
             return
         
-        # 锁定时：表格内容用冻结数据，PDF页码用实际列表位置
-        if self.table_locked and self.locked_table_data:
-            table = self.locked_table_data
-            pdf_page = tables[table_idx].get('page', 1)
-        else:
-            table = tables[table_idx]
-            pdf_page = table.get('page', 1)
+        table = tables[table_idx]
         print(f"[DEBUG] 当前页: {table['page']}, 类型: {table.get('type')}, 状态: {table.get('parse_status')}")
         print(f"[DEBUG] table data 前3行: {table.get('data', [])[:3] if table.get('data') else '无数据'}")
         
         # 更新表格类型标签
+        parse_status = table.get('parse_status', '')
+        if table.get('type') == 'text' or parse_status == 'text':
+            status_text = "📝 文本"
+        else:
+            status_text = "✅ 表格" if parse_status == 'success' else "❌ 非表格"
+        self.table_type_label.setText(f"状态: {status_text}")
+        
         # 更新上下文文本展示区
         context_text = table.get('context_text', '')
         llm_title = table.get('llm_title', '')
         llm_summary = table.get('llm_summary', '')
+        
         if hasattr(self, 'context_text_browser') and self.context_text_browser:
             if llm_title or context_text:
                 text = ""
-                if llm_title: text = f"📌 {llm_title}"
-                if llm_summary: text += f"\n{llm_summary}" if text else llm_summary
-                if context_text: text += f"\n{context_text}" if text else context_text
+                if llm_title:
+                    text += f"📌 {llm_title}"
+                if llm_summary:
+                    text += f"\n{llm_summary}" if text else llm_summary
+                if context_text:
+                    text += f"\n{context_text}" if text else context_text
                 self.context_text_browser.setPlainText(text)
             else:
                 self.context_text_browser.setPlainText("（无上下文描述文字）")
-
-        is_success = table.get('parse_status') == 'success'
-        status_text = "✅ 表格" if is_success else "❌ 非表格"
-        self.table_type_label.setText(f"状态: {status_text}")
         
         # 根据状态设置标签颜色
-        if is_success:
+        if table.get('type') == 'text' or parse_status == 'text':
+            self.table_type_label.setStyleSheet("""
+                QLabel { color: #8E44AD; font-weight: bold; padding: 2px 8px;
+                         background-color: #F4ECF7; border-radius: 4px; border: 1px solid #8E44AD; }
+            """)
+        elif parse_status == 'success':
             self.table_type_label.setStyleSheet("""
                 QLabel { color: #27AE60; font-weight: bold; padding: 2px 8px;
                          background-color: #E8F8F5; border-radius: 4px; border: 1px solid #27AE60; }
@@ -863,20 +878,20 @@ class TableCompareManager(QObject):
         
         # 显示PDF预览
         print(f"[DEBUG] 准备显示PDF预览")
-        print(f"[DEBUG] 当前页: {pdf_page}")
+        print(f"[DEBUG] 当前页: {table['page']}")
         try:
             if hasattr(self.main_window, 'pdf_preview_widget') and self.main_window.pdf_preview_widget:
                 print(f"[DEBUG] pdf_preview_widget 存在")
                 if hasattr(self.main_window, 'preview_images') and self.main_window.preview_images:
                     print(f"[DEBUG] preview_images 存在，长度: {len(self.main_window.preview_images)}")
-                    if pdf_page <= len(self.main_window.preview_images):
-                        img_path = self.main_window.preview_images[pdf_page - 1]
+                    if table['page'] <= len(self.main_window.preview_images):
+                        img_path = self.main_window.preview_images[table['page'] - 1]
                         print(f"[DEBUG] img_path: {img_path}")
                         print(f"[DEBUG] img_path 是否存在: {os.path.exists(img_path) if img_path else False}")
                         if img_path and os.path.exists(img_path):
                             print(f"[DEBUG] 准备设置预览")
                             self.main_window.pdf_preview_widget.set_preview(
-                                img_path, pdf_page - 1,
+                                img_path, table['page'] - 1,
                                 pdf_path=self.main_window.current_file
                             )
                             print(f"[DEBUG] 预览已设置")
@@ -937,15 +952,30 @@ class TableCompareManager(QObject):
         self.table_widget.blockSignals(True)
         self.table_widget.clear()
         
-        # 勾选"原始数据"时显示 original_data，否则显示清洗后的 data
-        show_original = self.show_original_checkbox.isChecked()
-        data = table.get('original_data') if show_original and table.get('original_data') else table.get('data', [])
+        # 根据状态选择数据源：默认显示清洗后 data，切换后显示原始 original_data
+        data_key = 'original_data' if self.showing_original else 'data'
+        if self.showing_original and 'original_data' not in table:
+            data_key = 'data'  # 没有原始数据时降级到清洗数据
+        data = table.get(data_key, [])
         parse_type = table.get('type', '')
         parse_message = table.get('parse_message', '')
         
         if not data:
+            # 文本条目：直接显示上下文文本
+            if parse_type == 'text':
+                ctx = table.get('context_text', '')
+                lines = ctx.split('\n') if ctx else ['（无文本内容）']
+                self.table_widget.setRowCount(len(lines))
+                self.table_widget.setColumnCount(1)
+                for i, line in enumerate(lines):
+                    item = QTableWidgetItem(line)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.table_widget.setItem(i, 0, item)
+                self.table_widget.resizeColumnsToContents()
+                self.table_widget.blockSignals(False)
+                self.stats_label.setText(f"📝 文本段落，共 {len(lines)} 行")
+                return
             # 图片类页面虽然没有数据，但也正常显示
-            # 根据类型设置更友好的提示信息
             if parse_type == 'failed':
                 hint_text = "[图片型页面，无表格数据]"
             elif parse_type == 'ai':
@@ -978,59 +1008,91 @@ class TableCompareManager(QObject):
         self.table_widget.resizeColumnsToContents()
         self.table_widget.blockSignals(False)
         
-        # 更新统计标签（注明数据来源和锁定状态）
-        tip = "选中单元格查看统计信息"
-        if self.table_locked:
-            tip = "🔒 已锁定 | " + tip
-        if show_original:
-            tip = "📋 原始数据 | " + tip
-        self.stats_label.setText(tip)
+        # 更新统计标签
+        self.stats_label.setText("选中单元格查看统计信息")
     
-    def _update_pdf_preview(self, page_num):
-        """仅更新 PDF 预览到指定页码（不改变表格内容）"""
+    def toggle_original_view(self):
+        """切换原始数据和清洗后数据的视图"""
+        self.showing_original = not self.showing_original
+        if self.showing_original:
+            self.toggle_original_btn.setText("📋 查看清洗数据")
+            self.toggle_original_btn.setToolTip("当前显示原始提取数据，点击切换回清洗后数据")
+        else:
+            self.toggle_original_btn.setText("📋 查看原始数据")
+            self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
+        # 刷新当前表格显示
+        self.update_preview_display()
+    
+    def _change_table_page(self, filtered_row):
+        """手动修改表格的 PDF 页号"""
+        if filtered_row < 0 or filtered_row >= len(self.filtered_indices):
+            return
+        
+        table_idx = self.filtered_indices[filtered_row]
+        tables = self.main_window.processed_results.get('tables', [])
+        if table_idx >= len(tables):
+            return
+        
+        current_page = tables[table_idx].get('page', 0)
+        
+        # 弹出输入对话框
+        new_page_str, ok = QInputDialog.getText(
+            self.main_window, "修改页号",
+            f"当前页号: P{current_page}\n请输入新的页号:",
+            text=str(current_page)
+        )
+        if not ok or not new_page_str:
+            return
+        
         try:
-            if hasattr(self.main_window, 'pdf_preview_widget') and self.main_window.pdf_preview_widget:
-                if hasattr(self.main_window, 'preview_images') and self.main_window.preview_images:
-                    if page_num <= len(self.main_window.preview_images):
-                        img_path = self.main_window.preview_images[page_num - 1]
-                        if img_path and os.path.exists(img_path):
-                            self.main_window.pdf_preview_widget.set_preview(
-                                img_path, page_num - 1,
-                                pdf_path=self.main_window.current_file
-                            )
-        except Exception as e:
-            pass
-
+            new_page = int(new_page_str.strip())
+        except ValueError:
+            QMessageBox.warning(self.main_window, "修改页号", "请输入有效的数字页号。")
+            return
+        
+        if new_page == current_page:
+            return
+        
+        # 更新页号
+        tables[table_idx]['page'] = new_page
+        
+        # 重新按页码排序
+        tables.sort(key=lambda x: x.get('page', 0))
+        self.main_window.processed_results['tables'] = tables
+        
+        # 同步到文件
+        from codes.pdf_extractor import save_mid_data
+        if self.main_window.current_file:
+            save_mid_data(self.main_window.current_file, self.main_window.processed_results)
+        
+        # 刷新列表，找到修改后的表格并选中
+        self.apply_table_filter(preserve_selection=table_idx if table_idx < len(tables) else None)
     def prev_preview_page(self):
-        """上一页预览"""
-        if not self.table_locked:
-            self._sync_ui_to_processed_results()
+        """上一页预览（切页前先保存当前编辑）"""
+        self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current > 0:
             self.table_list_widget.setCurrentRow(current - 1)
             self.update_preview_display()
 
     def next_preview_page(self):
-        """下一页预览"""
-        if not self.table_locked:
-            self._sync_ui_to_processed_results()
+        """下一页预览（切页前先保存当前编辑）"""
+        self._sync_ui_to_processed_results()
         current = self.table_list_widget.currentRow()
         if current < self.table_list_widget.count() - 1:
             self.table_list_widget.setCurrentRow(current + 1)
             self.update_preview_display()
 
     def first_preview_page(self):
-        """第一页预览"""
-        if not self.table_locked:
-            self._sync_ui_to_processed_results()
+        """第一页预览（切页前先保存当前编辑）"""
+        self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
             self.table_list_widget.setCurrentRow(0)
             self.update_preview_display()
 
     def last_preview_page(self):
-        """最后一页预览"""
-        if not self.table_locked:
-            self._sync_ui_to_processed_results()
+        """最后一页预览（切页前先保存当前编辑）"""
+        self._sync_ui_to_processed_results()
         if self.table_list_widget.count() > 0:
             self.table_list_widget.setCurrentRow(self.table_list_widget.count() - 1)
             self.update_preview_display()
@@ -1059,41 +1121,112 @@ class TableCompareManager(QObject):
         
         menu.addSeparator()
 
+        menu.addAction("⬆️ 上方插入行").triggered.connect(self.insert_row_above)
+        menu.addAction("⬇️ 下方插入行").triggered.connect(self.insert_row_below)
+        menu.addAction("⬅️ 左侧插入列").triggered.connect(self.insert_col_left)
+        menu.addAction("➡️ 右侧插入列").triggered.connect(self.insert_col_right)
+        menu.addSeparator()
+        menu.addAction("📦 批量插入行/列...").triggered.connect(self.batch_insert)
+
+        menu.addSeparator()
+
+        # 删除操作 - 根据选中情况显示不同选项
+        selected_items = self.table_widget.selectedItems()
+        selected_rows = set(item.row() for item in selected_items)
+        selected_cols = set(item.column() for item in selected_items)
+
+        if len(selected_rows) > 1:
+            delete_all_rows_action = menu.addAction(f"🗑️ 删除所有选中行 ({len(selected_rows)}行)")
+            delete_all_rows_action.triggered.connect(self.delete_selected_rows)
+        elif len(selected_rows) == 1:
+            menu.addAction("🗑️ 删除行").triggered.connect(self.delete_row)
+
+        if len(selected_cols) > 1:
+            delete_all_cols_action = menu.addAction(f"🗑️ 删除所有选中列 ({len(selected_cols)}列)")
+            delete_all_cols_action.triggered.connect(self.delete_selected_columns)
+        elif len(selected_cols) == 1:
+            menu.addAction("🗑️ 删除列").triggered.connect(self.delete_column)
+
+        menu.addSeparator()
         menu.addAction("📋 复制").triggered.connect(self.copy_from_table)
         menu.addAction("📄 粘贴").triggered.connect(self.paste_to_table)
         menu.addAction("✂️ 剪切").triggered.connect(self.cut_from_table)
         menu.addAction("⬇️ 向下填充").triggered.connect(self.fill_down_from_table)
-        
+
         menu.exec_(self.table_widget.mapToGlobal(position))
-    
+
+    def insert_row(self):
+        """插入行（工具栏用，在选中位置上方插入）"""
+        self.save_current_table_state()
+        current_row = self.table_widget.currentRow()
+        self.table_widget.insertRow(current_row if current_row >= 0 else 0)
+        self.table_widget.resizeColumnsToContents()
+
+    def delete_row(self):
+        """删除选中行"""
+        self.save_current_table_state()
+        current_row = self.table_widget.currentRow()
+        if current_row >= 0:
+            self.table_widget.removeRow(current_row)
+
+    def insert_column(self):
+        """插入列（工具栏用，在选中位置左侧插入）"""
+        self.save_current_table_state()
+        current_col = self.table_widget.currentColumn()
+        self.table_widget.insertColumn(current_col if current_col >= 0 else 0)
+        self.table_widget.resizeColumnsToContents()
+
+    def delete_column(self):
+        """删除选中列"""
+        self.save_current_table_state()
+        current_col = self.table_widget.currentColumn()
+        if current_col >= 0:
+            self.table_widget.removeColumn(current_col)
+
     def insert_row_above(self):
         """上方插入行"""
         self.save_current_table_state()
         current_row = self.table_widget.currentRow()
         self.table_widget.insertRow(current_row if current_row >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
     def insert_row_below(self):
         """下方插入行"""
         self.save_current_table_state()
         current_row = self.table_widget.currentRow()
         self.table_widget.insertRow(current_row + 1 if current_row >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
     def insert_col_left(self):
         """左侧插入列"""
         self.save_current_table_state()
         current_col = self.table_widget.currentColumn()
         self.table_widget.insertColumn(current_col if current_col >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
     def insert_col_right(self):
         """右侧插入列"""
         self.save_current_table_state()
         current_col = self.table_widget.currentColumn()
         self.table_widget.insertColumn(current_col + 1 if current_col >= 0 else 0)
         self.table_widget.resizeColumnsToContents()
-    
+
+    def delete_selected_rows(self):
+        """删除所有选中的行"""
+        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
+        if selected_rows:
+            self.save_current_table_state()
+            for row in sorted(selected_rows, reverse=True):
+                self.table_widget.removeRow(row)
+
+    def delete_selected_columns(self):
+        """删除所有选中的列"""
+        selected_cols = set(item.column() for item in self.table_widget.selectedItems())
+        if selected_cols:
+            self.save_current_table_state()
+            for col in sorted(selected_cols, reverse=True):
+                self.table_widget.removeColumn(col)
+
     def save_current_table_state(self):
         """保存当前表格状态到撤销栈和数据源"""
         row = self.table_list_widget.currentRow()
@@ -1265,87 +1398,185 @@ class TableCompareManager(QObject):
         
         self.table_widget.resizeColumnsToContents()
     
-    def merge_forward(self):
-        """将当前表格合并到前一个表格下方"""
-        row = self.table_list_widget.currentRow()
-        if row < 0 or row >= len(self.filtered_indices):
-            QMessageBox.warning(self.main_window, "提示", "请先选中一个表格")
-            return
-        if row == 0:
-            QMessageBox.warning(self.main_window, "提示", "已是第一个表格，无法向前合并")
-            return
-        
-        tables = self.main_window.processed_results.get('tables', [])
-        cur_idx = self.filtered_indices[row]
-        prev_idx = self.filtered_indices[row - 1]
-        cur_table = tables[cur_idx]
-        prev_table = tables[prev_idx]
-        
-        cur_data = cur_table.get('data', [])
-        prev_data = prev_table.get('data', [])
-        if not cur_data or not prev_data:
-            QMessageBox.warning(self.main_window, "提示", "表格数据为空，无法合并")
-            return
-        
-        # 列数对齐
-        cols_prev = max(len(r) for r in prev_data) if prev_data else 0
-        cols_cur = max(len(r) for r in cur_data) if cur_data else 0
-        if cols_cur != cols_prev:
-            QMessageBox.warning(self.main_window, "提示",
-                f"列数不一致（前表{cols_prev}列，当前{cols_cur}列），无法合并")
-            return
-        
-        # 合并数据
-        prev_table["data"].extend(cur_data)
-        prev_table["rows"] = len(prev_table["data"])
-        if cur_table.get("original_data"):
-            if "original_data" not in prev_table:
-                prev_table["original_data"] = []
-            prev_table["original_data"].extend(cur_table["original_data"])
-        
-        # 弹窗确认是否删除
-        reply = QMessageBox.question(self.main_window, "合并完成",
-            f"已将当前表格（{len(cur_data)}行）合并到前一个表格。\n\n是否删除当前表格？",
-            QMessageBox.Yes | QMessageBox.No)
-        
-        if reply == QMessageBox.Yes:
-            # 删除当前表格
-            tables.pop(cur_idx)
-            # 重建 filtered_indices
-            self.apply_table_filter()
-        else:
-            # 不清除，但需要刷新显示
-            self.has_unsaved_changes = True
-            self._schedule_auto_save()
-            self.update_preview_display()
-
     def remove_spaces(self):
-        """删除当前表格中所有单元格的前后及中间空格，并左对齐"""
+        """删除空单元格：每行内，非空单元格向左移动对齐，空单元格移到右侧"""
         self.save_current_table_state()
         table = self.table_widget
         removed_count = 0
         for row in range(table.rowCount()):
+            # 收集当前行所有非空单元格内容
+            cells = []
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                text = item.text().strip() if item else ""
+                if text:  # 非空，保留
+                    cells.append(text)
+                else:
+                    removed_count += 1
+
+            # 将非空内容左对齐填充，右侧留空
             for col in range(table.columnCount()):
                 item = table.item(row, col)
                 if item is None:
-                    continue
-                text = item.text()
-                if not text:
-                    continue
-                # 去除前后空格，并将中间连续空白字符合并为单个空格
-                import re
-                cleaned = re.sub(r'\s+', ' ', text.strip())
-                if cleaned != text:
-                    removed_count += 1
-                item.setText(cleaned)
-                # 设置左对齐
-                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    item = QTableWidgetItem()
+                    table.setItem(row, col, item)
+                if col < len(cells):
+                    item.setText(cells[col])
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                else:
+                    item.setText("")
+
         table.resizeColumnsToContents()
-        self.has_unsaved_changes = True
-        self._schedule_auto_save()
         QMessageBox.information(
             self.main_window, "删除空格",
-            f"已处理完成，共修改 {removed_count} 个单元格。"
+            f"已处理完成，共清理 {removed_count} 个空单元格，各行已左对齐。"
+        )
+
+    def clean_data(self):
+        """清洗选中区域数据：只保留数值、千分位、小数点、负号、括号、百分号"""
+        table = self.table_widget
+
+        # 优先使用 selectedItems，避免因焦点丢失导致 selectedRanges 为空
+        selected = table.selectedItems()
+        if not selected:
+            QMessageBox.information(
+                self.main_window, "清洗数据",
+                "请先选中要清洗的单元格区域。"
+            )
+            return
+
+        self.save_current_table_state()
+        import re
+
+        # 匹配要保留的字符：数字、逗号、小数点、负号、括号、百分号
+        pattern = re.compile(r'[^0-9,\.\-\(\)\%\s]')
+
+        cleaned_count = 0
+        seen = set()
+        for item in selected:
+            row = item.row()
+            col = item.column()
+            key = (row, col)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            text = item.text()
+            if not text:
+                continue
+            # 去掉不允许的字符，然后去除前后空白
+            cleaned = pattern.sub('', text)
+            cleaned = cleaned.strip()
+            if cleaned != text.strip():
+                cleaned_count += 1
+            item.setText(cleaned)
+            item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        table.resizeColumnsToContents()
+        QMessageBox.information(
+            self.main_window, "清洗数据",
+            f"已处理完成，共清洗 {cleaned_count} 个单元格。"
+        )
+
+    def merge_to_previous(self):
+        """将当前表格数据追加到前一个同类别表格的左下方，然后删除当前表格"""
+        current_row = self.table_list_widget.currentRow()
+        if current_row < 0 or current_row >= len(self.filtered_indices):
+            return
+
+        # 获取当前表格的原始索引和类别
+        current_table_idx = self.filtered_indices[current_row]
+        tables = self.main_window.processed_results.get('tables', [])
+        if current_table_idx >= len(tables):
+            return
+
+        current_table = tables[current_table_idx]
+        current_is_success = current_table.get('parse_status') == 'success'
+        current_is_manual = current_table.get('is_manual', False)
+
+        # 在同类别表格中，找到当前表格的前一个表格（按原始顺序向前查找）
+        prev_table_idx = None
+        for i in range(current_table_idx - 1, -1, -1):
+            t = tables[i]
+            t_is_success = t.get('parse_status') == 'success'
+            t_is_manual = t.get('is_manual', False)
+
+            # 判断是否是同类别（parse_status 和 is_manual 都相同）
+            if t_is_success == current_is_success and t_is_manual == current_is_manual:
+                prev_table_idx = i
+                break
+
+        if prev_table_idx is None:
+            QMessageBox.information(
+                self.main_window, "向前合并",
+                "当前已是同类别中的第一个表格，无法向前合并。"
+            )
+            return
+
+        # 找到 prev_table_idx 在 filtered_indices 中的位置（用于显示序号）
+        prev_row_in_filtered = None
+        for i, idx in enumerate(self.filtered_indices):
+            if idx == prev_table_idx:
+                prev_row_in_filtered = i
+                break
+
+        prev_table = tables[prev_table_idx]
+        current_data = current_table.get('data', [])
+        prev_data = prev_table.get('data', [])
+
+        if not current_data:
+            QMessageBox.information(
+                self.main_window, "向前合并",
+                "当前表格没有数据，无需合并。"
+            )
+            return
+
+        # 确认对话框（显示同类别中的序号）
+        display_current = current_row + 1
+        display_prev = prev_row_in_filtered + 1 if prev_row_in_filtered is not None else prev_table_idx + 1
+        reply = QMessageBox.question(
+            self.main_window, "确认合并",
+            f"确定将当前表格（同类别第{display_current}个）合并到前一个同类别表格（同类别第{display_prev}个）吗？\n\n"
+            f"当前表格 {len(current_data)} 行数据将追加到前一个表格下方。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 数据合并：将当前表格数据追加到前一个表格的左下方
+        # 左对齐：以前一个表格的列数为准，不足的列补空
+        prev_cols = max((len(row) for row in prev_data), default=0) if prev_data else 0
+        if prev_cols == 0:
+            # 前一个表格没有数据，直接用当前表格的数据
+            prev_data = [list(row) for row in current_data]
+        else:
+            for row in current_data:
+                new_row = list(row)
+                while len(new_row) < prev_cols:
+                    new_row.append("")
+                prev_data.append(new_row[:prev_cols])  # 截断多余的列
+
+        # 更新前一个表格的数据和行数
+        prev_table['data'] = prev_data
+        prev_table['rows'] = len(prev_data)
+        prev_table['parse_status'] = 'success'
+
+        # 删除当前表格（使用原始索引）
+        # 因为 prev_table_idx < current_table_idx，删除 current_table_idx 不影响 prev_table_idx
+        tables.pop(current_table_idx)
+        self.main_window.processed_results['tables'] = tables
+        self.main_window.processed_results['total_tables'] = len(tables)
+
+        # 同步到文件
+        if self.main_window.current_file:
+            from codes.pdf_extractor import save_mid_data
+            save_mid_data(self.main_window.current_file, self.main_window.processed_results)
+
+        # 刷新列表并选中前一个（使用原始索引）
+        self.apply_table_filter(preserve_selection=prev_table_idx)
+        QMessageBox.information(
+            self.main_window, "向前合并",
+            f"合并完成！已追加 {len(current_data)} 行数据到前一个表格。"
         )
 
     def batch_insert(self):
@@ -1447,36 +1678,11 @@ class TableCompareManager(QObject):
                     self.table_widget.insertColumn(self.table_widget.columnCount())
 
         self.table_widget.resizeColumnsToContents()
-        """删除所有选中的行"""
-        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
-        if selected_rows:
-            self.save_current_table_state()
-            # 从大到小排序，避免删除后索引变化
-            for row in sorted(selected_rows, reverse=True):
-                self.table_widget.removeRow(row)
-    
-    def delete_selected_rows(self):
-        """删除所有选中的行"""
-        selected_rows = set(item.row() for item in self.table_widget.selectedItems())
-        if selected_rows:
-            self.save_current_table_state()
-            # 从大到小排序，避免删除后索引变化
-            for row in sorted(selected_rows, reverse=True):
-                self.table_widget.removeRow(row)
-
-    def delete_selected_columns(self):
-        """删除所有选中的列"""
-        selected_cols = set(item.column() for item in self.table_widget.selectedItems())
-        if selected_cols:
-            self.save_current_table_state()
-            # 从大到小排序，避免删除后索引变化
-            for col in sorted(selected_cols, reverse=True):
-                self.table_widget.removeColumn(col)
     
     def calculate_selected(self):
         """计算选中区域"""
-        selection = self.table_widget.selectedRanges()
-        if not selection:
+        selected = self.table_widget.selectedItems()
+        if not selected:
             self.stats_label.setText("请先选择单元格区域")
             return
         
@@ -1484,18 +1690,15 @@ class TableCompareManager(QObject):
         count = 0
         values = []
         
-        for range_ in selection:
-            for row in range(range_.topRow(), range_.bottomRow() + 1):
-                for col in range(range_.leftColumn(), range_.rightColumn() + 1):
-                    item = self.table_widget.item(row, col)
-                    if item:
-                        try:
-                            val = float(item.text().replace(',', '').replace('%', ''))
-                            total_sum += val
-                            values.append(val)
-                            count += 1
-                        except ValueError:
-                            pass
+        for item in selected:
+            if item:
+                try:
+                    val = float(item.text().replace(',', '').replace('%', ''))
+                    total_sum += val
+                    values.append(val)
+                    count += 1
+                except ValueError:
+                    pass
         
         if count > 0:
             avg = total_sum / count
@@ -1657,57 +1860,112 @@ class TableCompareManager(QObject):
     # ==================== AI 命名功能 ====================
 
     def on_ai_name_clicked(self):
+        """AI命名按钮点击 - 启动 DeepSeek 为表格生成名称"""
         tables = self.main_window.processed_results.get('tables', [])
         if not tables:
             QMessageBox.warning(self.main_window, "无数据", "请先处理PDF文件，提取表格后再使用AI命名功能。")
             return
-        candidate = [(i, t) for i, t in enumerate(tables) if t.get('data') or t.get('context_text')]
-        if not candidate:
+
+        # 筛选有数据或上下文文本的表格
+        candidate_tables = []
+        for idx, t in enumerate(tables):
+            data = t.get('data', [])
+            ctx = t.get('context_text', '')
+            if data or ctx:
+                candidate_tables.append((idx, t))
+
+        if not candidate_tables:
             QMessageBox.information(self.main_window, "无表格", "没有找到可命名的表格数据。")
             return
-        reply = QMessageBox.question(self.main_window, "AI 命名确认",
-            f"将为 {len(candidate)} 个表格调用 DeepSeek 生成名称。\n约需 {len(candidate)*2} 秒。是否继续？",
-            QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.No:
-            self._start_ai_naming(candidate)
 
-    def _start_ai_naming(self, candidate):
+        # 确认
+        reply = QMessageBox.question(
+            self.main_window, "AI 命名确认",
+            f"将为当前文档的 {len(candidate_tables)} 个表格调用 DeepSeek 生成名称。\n\n"
+            f"每个表格约需 1-3 秒，总共约需 {len(candidate_tables) * 2} 秒。\n\n是否继续？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.No:
+            self._start_ai_naming(candidate_tables)
+
+    def _start_ai_naming(self, candidate_tables):
+        """启动 AI 命名后台线程"""
         from codes.pdf_extractor import load_config
+
         self.ai_name_btn.setEnabled(False)
-        self.ai_name_btn.setText("命名中...")
+        self.ai_name_btn.setText("🤖 命名中...")
+
         config = load_config()
-        if not config.get("deepseek_api_key"):
-            QMessageBox.warning(self.main_window, "未配置", "请先在「配置」页面填写 DeepSeek API Key。")
+        ds_api_key = config.get("deepseek_api_key", "")
+        if not ds_api_key:
+            QMessageBox.warning(
+                self.main_window, "未配置",
+                "请先在「配置」页面填写 DeepSeek API Key。"
+            )
             self.ai_name_btn.setEnabled(True)
             self.ai_name_btn.setText("🤖 AI命名")
             return
-        worker_tables = [{"index": i, "context_text": t.get("context_text",""), "data": t.get("data",[])} for i, t in candidate]
+
+        # 准备传给 worker 的数据（只取必要字段）
+        worker_tables = []
+        for idx, t in candidate_tables:
+            worker_tables.append({
+                "index": idx,
+                "context_text": t.get("context_text", ""),
+                "data": t.get("data", []),
+            })
+
         self._ai_worker = AINameWorker(worker_tables, config)
-        self._ai_worker.progress.connect(lambda c, t, m: self.main_window.status_bar.showMessage(f"🤖 AI命名: {c}/{t} - {m}"))
+        self._ai_worker.progress.connect(self._on_ai_naming_progress)
         self._ai_worker.finished.connect(self._on_ai_name_finished)
         self._ai_worker.start()
-        self.main_window.status_bar.showMessage(f"🤖 AI命名: 0/{len(worker_tables)}...")
+
+        # 显示进度
+        self.main_window.status_bar.showMessage(f"🤖 AI命名: 正在处理 0/{len(worker_tables)}...")
+
+    def _on_ai_naming_progress(self, current, total, message):
+        """AI 命名进度更新"""
+        self.main_window.status_bar.showMessage(f"🤖 AI命名: {current}/{total} - {message}")
 
     def _on_ai_name_finished(self, results):
+        """AI 命名完成 - 更新数据并刷新"""
         tables = self.main_window.processed_results.get('tables', [])
-        updated = 0
-        for r in results:
-            idx = r["index"]
-            if idx < len(tables) and r.get("title"):
-                tables[idx]["llm_title"] = r["title"]
-                tables[idx]["llm_summary"] = r.get("summary", "")
-                updated += 1
+
+        updated_count = 0
+        for result in results:
+            idx = result["index"]
+            if idx < len(tables):
+                tbl = tables[idx]
+                title = result.get("title", "")
+                summary = result.get("summary", "")
+                if title:
+                    tbl["llm_title"] = title
+                    tbl["llm_summary"] = summary
+                    updated_count += 1
+
         self.ai_name_btn.setEnabled(True)
         self.ai_name_btn.setText("🤖 AI命名")
-        self.main_window.status_bar.showMessage(f"✅ AI命名: 成功{updated}个" if updated else "⚠️ AI命名: 无结果")
-        if updated:
+
+        if updated_count > 0:
+            self.main_window.status_bar.showMessage(
+                f"✅ AI命名完成: 成功为 {updated_count} 个表格生成名称"
+            )
+            # 刷新列表和预览
             self.apply_table_filter()
+            # 自动保存到缓存
             self.has_unsaved_changes = True
             self._schedule_auto_save()
+        else:
+            self.main_window.status_bar.showMessage(
+                "⚠️ AI命名: 没有成功生成任何表格名称，请检查 API 配置"
+            )
+
+        # 清理 worker
         self._ai_worker = None
 
 
 class AINameWorker(QThread):
+    """AI 命名后台工作线程"""
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(list)
 
@@ -1718,21 +1976,25 @@ class AINameWorker(QThread):
 
     def run(self):
         from codes.pdf_extractor import TableContextLLM
+
         llm = TableContextLLM(
             api_key=self.config.get("deepseek_api_key", ""),
             endpoint=self.config.get("deepseek_endpoint", "api.deepseek.com"),
             model=self.config.get("deepseek_model", "deepseek-chat")
         )
+
         llm_results = llm.batch_generate(
             self.tables,
             progress_callback=lambda c, t, m: self.progress.emit(c, t, m)
         )
-        final = []
-        for i, r in enumerate(llm_results):
-            final.append({
+
+        final_results = []
+        for i, result in enumerate(llm_results):
+            final_results.append({
                 "index": self.tables[i]["index"],
-                "title": r.get("title", ""),
-                "summary": r.get("summary", ""),
-                "error": r.get("error", ""),
+                "title": result.get("title", ""),
+                "summary": result.get("summary", ""),
+                "error": result.get("error", ""),
             })
-        self.finished.emit(final)
+
+        self.finished.emit(final_results)

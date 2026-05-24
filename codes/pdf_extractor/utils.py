@@ -96,11 +96,19 @@ get_mid_data_dir().mkdir(parents=True, exist_ok=True)
 # ============================================================
 def get_pdf_cache_dir(pdf_path):
     """获取PDF文件对应的独立缓存目录：data/mid_cache/<pdf文件名>/"""
-    pdf_name = Path(pdf_path).stem[:100].strip()
+    pdf_name = Path(pdf_path).stem[:100]
     # 移除Windows文件名非法字符: \ / : * ? " < > |
     for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
         pdf_name = pdf_name.replace(ch, '_')
-    return get_mid_data_dir() / pdf_name.strip()
+    # strip 首尾空格和点号，Windows 不允许末尾空格/点号
+    pdf_name = pdf_name.strip().rstrip('.')
+    # 处理文件名乱码或无效字符：仅保留中文、英文、数字、下划线、连字符
+    sanitized = ''.join(c if c == '_' or c == '-' or c.isalnum() or '\u4e00' <= c <= '\u9fff' else '_' for c in pdf_name)
+    # 如果 sanitize 后为空或与原文件名差异很大（乱码），用文件 hash 作为目录名
+    if not sanitized.strip('_'):
+        file_hash = get_pdf_file_hash(pdf_path)
+        sanitized = file_hash[:16]
+    return get_mid_data_dir() / sanitized
 
 
 def get_pdf_preview_dir(pdf_path):
@@ -150,6 +158,7 @@ def save_mid_data(pdf_path, data):
 
 def load_mid_data(pdf_path):
     """从缓存加载中间数据"""
+    import gc
     CACHE_VERSION = 2
     cache_file = get_cache_file_path(pdf_path)
 
@@ -157,6 +166,7 @@ def load_mid_data(pdf_path):
         return None
 
     try:
+        gc.disable()  # 避免 GC 触发 openpyxl C 扩展 refcount bug
         with open(cache_file, 'r', encoding='utf-8') as f:
             cache_data = json.load(f)
 
@@ -181,6 +191,8 @@ def load_mid_data(pdf_path):
         return cache_data.get('data')
     except Exception as e:
         print(f"[CACHE] 加载缓存失败: {e}")
+    finally:
+        gc.enable()
     return None
 
 
@@ -302,6 +314,9 @@ def load_config():
         "doubao_api_key": "",
         "doubao_endpoint": "ark.cn-beijing.volces.com",
         "doubao_model": "doubao-pro-32k",
+        "deepseek_api_key": "",
+        "deepseek_endpoint": "api.deepseek.com",
+        "deepseek_model": "deepseek-chat",
         "auto_detect_mode": True,
         "max_pages": 500,
         "extraction_version": "v2"
