@@ -32,6 +32,7 @@ class PDFPreviewWidget(QWidget):
         self.current_image_path = None
         self.current_page = None
         self.current_doc = None
+        self.current_pdf_path = None
         self.current_page_num = -1
         self.scale_factor = 1.0
         self.zoom_factor = 1.0
@@ -132,31 +133,31 @@ class PDFPreviewWidget(QWidget):
             scale_factor: 缩放因子
             pdf_path: 可选，原始PDF路径（用于文本复制）
         """
-        # 关闭旧文档
-        self._close_doc()
-
         self.current_image_path = img_path
         self.current_page_num = page_num
         self.scale_factor = scale_factor
         self.original_pixmap = None
-        self.current_doc = None
-        self.current_page = None
-        self.current_pdf_path = pdf_path
+
+        # 只在 PDF 路径变化时才重新打开 fitz 文档（避免反复 open/close 导致 refcount 崩溃）
+        if pdf_path and pdf_path != self.current_pdf_path:
+            self._close_doc()
+            self.current_pdf_path = pdf_path
+            if os.path.exists(pdf_path):
+                try:
+                    import fitz
+                    self.current_doc = fitz.open(pdf_path)
+                except Exception as e:
+                    print(f"[DEBUG] 加载PDF文档失败: {e}")
+                    self.current_doc = None
+
+        # 复用已打开的文档获取页码引用
+        if self.current_doc and page_num < len(self.current_doc):
+            self.current_page = self.current_doc[page_num]
+        else:
+            self.current_page = None
 
         if img_path and os.path.exists(img_path):
             self.original_pixmap = QPixmap(img_path)
-
-        # 如果提供了PDF路径，加载PDF页面供文本提取
-        if pdf_path and os.path.exists(pdf_path):
-            try:
-                import fitz
-                self.current_doc = fitz.open(pdf_path)
-                if page_num < len(self.current_doc):
-                    self.current_page = self.current_doc[page_num]
-                else:
-                    print(f"[WARN] set_preview: page_num={page_num} out of range (doc has {len(self.current_doc)} pages)")
-            except Exception as e:
-                print(f"[DEBUG] 加载PDF页面失败: {e}")
 
         self.clear_selection()
         # 每次切换页面都强制重置缩放后重新适应
@@ -167,14 +168,9 @@ class PDFPreviewWidget(QWidget):
         self._auto_fit_to_viewport()
 
     def _close_doc(self):
-        """安全关闭PDF文档"""
-        if self.current_doc is not None:
-            try:
-                self.current_doc.close()
-            except:
-                pass
-        self.current_doc = None
+        """安全关闭PDF文档（不显式调用 close()，避免 pymupdf 的 refcount 双释放崩溃）"""
         self.current_page = None
+        self.current_doc = None
 
     def load_pdf_page(self, pdf_path, page_num, render_pixmap):
         """加载PDF页面用于文本提取"""
