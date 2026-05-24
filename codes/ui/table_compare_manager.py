@@ -224,25 +224,15 @@ class TableCompareManager(QObject):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_widget.setFixedHeight(40)
 
-        # 删除空格按钮
-        self.remove_spaces_btn = QPushButton("🧹 删除空格")
-        self.remove_spaces_btn.setToolTip("清除当前表格中所有单元格的前后及中间空格，并左对齐")
-        self.remove_spaces_btn.setFocusPolicy(Qt.NoFocus)
-        self.remove_spaces_btn.clicked.connect(self.remove_spaces)
-        btn_layout.addWidget(self.remove_spaces_btn)
-
-        # 清洗数据按钮
-        self.clean_data_btn = QPushButton("🧼 清洗数据")
-        self.clean_data_btn.setToolTip("选中区域只保留数值、千分位、小数点、负号、括号、百分号")
-        self.clean_data_btn.setFocusPolicy(Qt.NoFocus)
-        self.clean_data_btn.clicked.connect(self.clean_data)
-        btn_layout.addWidget(self.clean_data_btn)
-
         # 向前合并按钮
         self.merge_prev_btn = QPushButton("⬅️ 向前合并")
         self.merge_prev_btn.setToolTip("将当前表格数据追加到前一个表格的左下方，然后删除当前表格")
         self.merge_prev_btn.setFocusPolicy(Qt.NoFocus)
         self.merge_prev_btn.clicked.connect(self.merge_to_previous)
+        self.merge_prev_btn.setStyleSheet("""
+            QPushButton { background-color: #3498DB; color: white; border: none; border-radius: 4px; padding: 6px 12px; font-size: 12px; }
+            QPushButton:hover { background-color: #2980B9; }
+        """)
         btn_layout.addWidget(self.merge_prev_btn)
 
         # 原始/清洗数据切换按钮
@@ -250,6 +240,10 @@ class TableCompareManager(QObject):
         self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
         self.toggle_original_btn.setFocusPolicy(Qt.NoFocus)
         self.toggle_original_btn.clicked.connect(self.toggle_original_view)
+        self.toggle_original_btn.setStyleSheet("""
+            QPushButton { background-color: #8E44AD; color: white; border: none; border-radius: 4px; padding: 6px 12px; font-size: 12px; }
+            QPushButton:hover { background-color: #7D3C98; }
+        """)
         btn_layout.addWidget(self.toggle_original_btn)
 
         btn_layout.addSpacing(10)
@@ -282,6 +276,28 @@ class TableCompareManager(QObject):
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
         btn_layout.addWidget(self.ai_name_btn)
+        
+        # 删除空格按钮
+        self.remove_spaces_btn = QPushButton("🧹 删除空格")
+        self.remove_spaces_btn.setToolTip("清除当前表格中所有单元格的前后及中间空格，并左对齐")
+        self.remove_spaces_btn.setFocusPolicy(Qt.NoFocus)
+        self.remove_spaces_btn.clicked.connect(self.remove_spaces)
+        self.remove_spaces_btn.setStyleSheet("""
+            QPushButton { background-color: #E67E22; color: white; border: none; border-radius: 4px; padding: 6px 12px; font-size: 12px; }
+            QPushButton:hover { background-color: #D35400; }
+        """)
+        btn_layout.addWidget(self.remove_spaces_btn)
+
+        # 清洗数据按钮
+        self.clean_data_btn = QPushButton("🧼 清洗数据")
+        self.clean_data_btn.setToolTip("选中区域只保留数值、千分位、小数点、负号、括号、百分号")
+        self.clean_data_btn.setFocusPolicy(Qt.NoFocus)
+        self.clean_data_btn.clicked.connect(self.clean_data)
+        self.clean_data_btn.setStyleSheet("""
+            QPushButton { background-color: #27AE60; color: white; border: none; border-radius: 4px; padding: 6px 12px; font-size: 12px; }
+            QPushButton:hover { background-color: #1E8449; }
+        """)
+        btn_layout.addWidget(self.clean_data_btn)
         
         btn_layout.addSpacing(10)
         
