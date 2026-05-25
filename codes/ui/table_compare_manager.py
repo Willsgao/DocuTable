@@ -19,6 +19,8 @@ from codes.pdf_extractor import (
     ZoomableTableWidget, save_mid_data,
     load_ai_correction_cache, save_ai_correction_cache
 )
+from codes.pdf_extractor.ai_correction import RuleChecker, LLMCorrector
+from codes.ui.ai_correction_dialog import PromptEditDialog
 
 
 class TableCompareManager(QObject):
@@ -290,6 +292,19 @@ class TableCompareManager(QObject):
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
         btn_layout.addWidget(self.ai_correct_all_btn)
+
+        # 预览Prompt按钮
+        self.preview_prompt_btn = QPushButton("📝 预览Prompt")
+        self.preview_prompt_btn.setToolTip("查看并编辑即将发送给 LLM 的 Prompt\n支持切换模式查看不同模式下的 Prompt 内容")
+        self.preview_prompt_btn.setFocusPolicy(Qt.NoFocus)
+        self.preview_prompt_btn.clicked.connect(self.on_preview_prompt_clicked)
+        self.preview_prompt_btn.setStyleSheet("""
+            QPushButton { background-color: #8E44AD; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #7D3C98; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.preview_prompt_btn)
         
         # 删除空格按钮
         self.remove_spaces_btn = QPushButton("🧹 删除空格")
@@ -2204,12 +2219,132 @@ class TableCompareManager(QObject):
 
         self.main_window.status_bar.showMessage("🔍 AI纠错: 规则预检中...")
 
+    def on_preview_prompt_clicked(self):
+        """预览 Prompt 按钮 — 构建 prompt 并弹出编辑弹窗"""
+        all_tables = self.main_window.processed_results.get('tables', [])
+        if not all_tables:
+            QMessageBox.warning(self.main_window, "无数据",
+                                "请先处理PDF文件，提取表格后再预览 Prompt。")
+            return
+
+        # 判断分析范围：有选中表时默认"当前表"，否则"全部"
+        current_idx = self._get_current_table_index()
+        table_tables = self._get_table_only_tables()
+
+        # 弹窗让用户选择范围
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout as VBL, QHBoxLayout as HBL, \
+            QDialogButtonBox as DBB, QRadioButton
+
+        scope_dlg = QDialog(self.main_window)
+        scope_dlg.setWindowTitle("选择 Prompt 范围")
+        layout = VBL(scope_dlg)
+
+        radio_current = QRadioButton("仅当前选中表格")
+        radio_all = QRadioButton(f"全部表格（{len(table_tables)} 张）")
+        radio_all.setChecked(True)
+
+        if current_idx is not None:
+            radio_current.setEnabled(True)
+        else:
+            radio_current.setEnabled(False)
+            radio_current.setText("仅当前选中表格（无选中表）")
+
+        layout.addWidget(QLabel("请选择要构建 Prompt 的表格范围："))
+        layout.addWidget(radio_current)
+        layout.addWidget(radio_all)
+
+        buttons = DBB(DBB.Ok | DBB.Cancel)
+        buttons.accepted.connect(scope_dlg.accept)
+        buttons.rejected.connect(scope_dlg.reject)
+        layout.addWidget(buttons)
+
+        if scope_dlg.exec_() != QDialog.Accepted:
+            return
+
+        # 确定分析范围
+        if radio_current.isChecked() and current_idx is not None:
+            scope_tables = [all_tables[current_idx]]
+            scope_label = "当前表"
+        else:
+            scope_tables = table_tables
+            scope_label = f"全部（{len(scope_tables)} 张）"
+
+        if not scope_tables:
+            QMessageBox.information(self.main_window, "无表格",
+                                    "选中的范围内没有可分析的表格。")
+            return
+
+        # 预置索引 + 规则预检
+        check_results = {}
+        for i, t in enumerate(scope_tables):
+            if "__index__" not in t:
+                idx = t.get("__index__", i)
+                t["__index__"] = idx
+            check_results[t.get("__index__", i)] = RuleChecker.check(t)
+
+        # 构建 prompt
+        pdf_context = getattr(self.main_window, '_pdf_context', None)
+        corrector = LLMCorrector()
+        try:
+            sys_prompt, usr_prompt = corrector.build_prompt_for_preview(
+                scope_tables, check_results, pdf_context
+            )
+        except Exception as e:
+            QMessageBox.critical(self.main_window, "构建失败",
+                                 f"构建 Prompt 时出错：\n{str(e)}")
+            return
+
+        # 弹出编辑弹窗
+        dlg = PromptEditDialog(sys_prompt, usr_prompt, analysis_scope=scope_label,
+                               parent=self.main_window)
+        if dlg.exec_() != QDialog.Accepted:
+            return  # 用户取消
+
+        # 获取编辑后的 prompt
+        edited_sys, edited_usr = dlg.get_edited_prompts()
+
+        # 确认发送
+        reply = QMessageBox.question(
+            self.main_window, "确认发送",
+            f"将使用编辑后的 Prompt 对 {scope_label} 表格进行 AI 分析。\n\n"
+            f"● System Prompt: {len(edited_sys)} 字符\n"
+            f"● User Prompt: {len(edited_usr)} 字符\n\n"
+            f"继续发送？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._run_ai_correction_with_prompt(scope_tables, edited_sys, edited_usr)
+
+    def _run_ai_correction_with_prompt(self, tables, custom_system_prompt, custom_user_prompt):
+        """使用自定义 Prompt 启动 AI 纠错"""
+        pdf_path = getattr(self.main_window, 'current_file', None)
+        pdf_context = getattr(self.main_window, '_pdf_context', None)
+
+        # 禁用按钮
+        self._disable_correction_buttons()
+
+        self._ai_correction_worker = AICorrectionWorker(
+            tables, pdf_context, pdf_path=pdf_path,
+            custom_system_prompt=custom_system_prompt,
+            custom_user_prompt=custom_user_prompt
+        )
+        self._ai_correction_worker.progress.connect(self._on_ai_correction_progress)
+        self._ai_correction_worker.finished.connect(self._on_ai_correction_finished)
+        self._ai_correction_worker.error.connect(self._on_ai_correction_error)
+        self._ai_correction_worker.start()
+
+        self.main_window.status_bar.showMessage("🔍 AI纠错: 使用自定义 Prompt 分析中...")
+
     def _disable_correction_buttons(self):
         """禁用所有 AI 纠错按钮"""
         if hasattr(self, 'ai_correct_current_btn') and self.ai_correct_current_btn:
             self.ai_correct_current_btn.setEnabled(False)
         if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
             self.ai_correct_all_btn.setEnabled(False)
+        if hasattr(self, 'preview_prompt_btn') and self.preview_prompt_btn:
+            self.preview_prompt_btn.setEnabled(False)
 
     def _enable_correction_buttons(self):
         """恢复所有 AI 纠错按钮"""
@@ -2217,6 +2352,8 @@ class TableCompareManager(QObject):
             self.ai_correct_current_btn.setEnabled(True)
         if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
             self.ai_correct_all_btn.setEnabled(True)
+        if hasattr(self, 'preview_prompt_btn') and self.preview_prompt_btn:
+            self.preview_prompt_btn.setEnabled(True)
 
     def cancel_ai_correction_worker(self):
         """取消正在运行的 AI 纠错后台线程（切换PDF时调用）"""
@@ -2267,6 +2404,13 @@ class TableCompareManager(QObject):
         ai_tab = getattr(self.main_window, 'ai_correction_tab', None)
         if ai_tab:
             ai_tab.set_results(correction_results, self.main_window.processed_results)
+
+            # 传递实际发送的 Prompt（供事后查看）
+            if worker and hasattr(worker, 'engine') and worker.engine:
+                prompts = getattr(worker.engine, 'last_prompts', None)
+                if prompts:
+                    ai_tab.set_prompts(prompts[0], prompts[1])
+
             # 切换到 AI优化 Tab
             tabs = self.main_window.tabs
             for i in range(tabs.count()):
@@ -2415,20 +2559,26 @@ class AICorrectionWorker(QThread):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, tables, pdf_context=None, pdf_path=None):
+    def __init__(self, tables, pdf_context=None, pdf_path=None,
+                 custom_system_prompt=None, custom_user_prompt=None):
         super().__init__()
         self.tables = tables
         self.pdf_context = pdf_context
         self.pdf_path = pdf_path
+        self.custom_system_prompt = custom_system_prompt
+        self.custom_user_prompt = custom_user_prompt
 
     def run(self):
         from codes.pdf_extractor.ai_correction import CorrectionEngine
 
         try:
-            engine = CorrectionEngine(self.tables, self.pdf_context)
-            engine.progress.connect(self.progress.emit)
+            self.engine = CorrectionEngine(self.tables, self.pdf_context)
+            self.engine.progress.connect(self.progress.emit)
 
-            results = engine.run()
+            results = self.engine.run(
+                custom_system_prompt=self.custom_system_prompt,
+                custom_user_prompt=self.custom_user_prompt
+            )
             self.finished.emit(results)
 
         except Exception as e:

@@ -383,8 +383,12 @@ class LLMCorrector:
         self.endpoint = endpoint or config.get("deepseek_endpoint", "api.deepseek.com")
         self.model = model or config.get("deepseek_model", "deepseek-chat")
         self.api_url = f"https://{self.endpoint}/v1/chat/completions"
+        # 存储最近一次实际发送的 prompt（供 UI 事后查看）
+        self.last_system_prompt = ""
+        self.last_user_prompt = ""
 
-    def analyze_all(self, tables, check_results, context=None, progress_callback=None):
+    def analyze_all(self, tables, check_results, context=None, progress_callback=None,
+                    custom_system_prompt=None, custom_user_prompt=None):
         """
         一次性分析所有待处理表格。
 
@@ -393,6 +397,8 @@ class LLMCorrector:
             check_results: {table_index: check_result_dict}
             context: PDFContext 实例（可选，用于扩大 context_text 提取）
             progress_callback: callable(percent, message)
+            custom_system_prompt: 自定义 system prompt（None 则用默认）
+            custom_user_prompt: 自定义 user prompt（None 则用默认）
 
         Returns:
             [CorrectionResult, ...]
@@ -403,16 +409,26 @@ class LLMCorrector:
         batch_size = min(150, self.MAX_INPUT_TOKENS // self.TOKENS_PER_TABLE_EST)
 
         if len(tables) <= batch_size:
-            return self._single_call(tables, check_results, context, progress_callback)
+            return self._single_call(tables, check_results, context, progress_callback,
+                                     custom_system_prompt, custom_user_prompt)
         else:
             return self._batched_call(tables, check_results, batch_size, context, progress_callback)
 
-    def _single_call(self, tables, check_results, context, progress_callback):
+    def _single_call(self, tables, check_results, context, progress_callback,
+                     custom_system_prompt=None, custom_user_prompt=None):
         """单批次 API 调用"""
         if progress_callback:
             progress_callback(10, "构建 Prompt...")
 
-        system_prompt, user_prompt = self._build_prompt(tables, check_results, context)
+        if custom_system_prompt is not None and custom_user_prompt is not None:
+            # 使用自定义 prompt
+            system_prompt, user_prompt = custom_system_prompt, custom_user_prompt
+        else:
+            system_prompt, user_prompt = self._build_prompt(tables, check_results, context)
+
+        # 存储到实例，供事后查看
+        self.last_system_prompt = system_prompt
+        self.last_user_prompt = user_prompt
 
         if progress_callback:
             progress_callback(30, "调用 LLM API...")
@@ -841,6 +857,21 @@ class LLMCorrector:
 
     # ==================== 多模态扩展接口（预留） ====================
 
+    def build_prompt_for_preview(self, tables, check_results, context=None):
+        """
+        公开方法：为预览编辑构建 prompt，不调用 API。
+        供 UI PromptEditDialog 调用。
+
+        Args:
+            tables: 表格列表
+            check_results: {table_index: check_result_dict}
+            context: PDFContext 实例（可选）
+
+        Returns:
+            (system_prompt, user_prompt) 两个字符串
+        """
+        return self._build_prompt(tables, check_results, context)
+
     def _build_multimodal_prompt(self, tables, check_results, context):
         """
         如果未来启用多模态，在此方法中构建包含图片的 prompt。
@@ -1070,8 +1101,10 @@ class CorrectionEngine(QObject):
         super().__init__()
         self.tables = tables
         self.pdf_context = pdf_context
+        self.last_prompts = None  # 存储最近一次发送的 (system_prompt, user_prompt)
+        self._corrector = None    # 保留 LLMCorrector 引用以便外部读取
 
-    def run(self):
+    def run(self, custom_system_prompt=None, custom_user_prompt=None):
         """主流程：L1 → L2 → L3"""
         results = []
 
@@ -1104,16 +1137,24 @@ class CorrectionEngine(QObject):
             # ============== Layer 3: LLM 深度分析 ==============
             self.progress.emit(30, f"LLM 分析中（{len(llm_tables)} 张表）...")
 
-            corrector = LLMCorrector()
+            self._corrector = LLMCorrector()
 
             def llm_progress(pct, msg):
                 self.progress.emit(30 + int(pct * 0.65), msg)
 
-            llm_results = corrector.analyze_all(
+            llm_results = self._corrector.analyze_all(
                 llm_tables,
                 check_results,
                 context=self.pdf_context,
-                progress_callback=llm_progress
+                progress_callback=llm_progress,
+                custom_system_prompt=custom_system_prompt,
+                custom_user_prompt=custom_user_prompt
+            )
+
+            # 保存实际发送的 prompt
+            self.last_prompts = (
+                self._corrector.last_system_prompt,
+                self._corrector.last_user_prompt
             )
 
             # 合并 LLM 结果到 results

@@ -33,7 +33,8 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
     QSplitter, QMessageBox, QTabWidget, QTextBrowser,
-    QHeaderView, QAbstractItemView, QSpacerItem, QSizePolicy
+    QHeaderView, QAbstractItemView, QSpacerItem, QSizePolicy,
+    QDialog, QPlainTextEdit, QComboBox, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QBrush, QFont
@@ -75,6 +76,161 @@ TAG_COLORS = {
 
 
 # ============================================================
+# Prompt 预览 & 编辑弹窗
+# ============================================================
+
+class PromptEditDialog(QDialog):
+    """Prompt 预览与编辑弹窗，支持模式切换"""
+
+    PROMPT_MODES = {
+        "text_only": "纯文本模式（当前）",
+        "multimodal": "多模态模式（预留）",
+    }
+
+    def __init__(self, system_prompt, user_prompt, analysis_scope="全部", parent=None):
+        super().__init__(parent)
+        self._default_system = system_prompt
+        self._default_user = user_prompt
+        self._analysis_scope = analysis_scope
+
+        self.setWindowTitle(f"📝 预览 & 编辑 Prompt（分析范围: {analysis_scope}）")
+        self.setMinimumSize(900, 700)
+        self.resize(1000, 750)
+
+        self._init_ui()
+        self._load_prompts(system_prompt, user_prompt)
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ===== 顶部：模式选择器 =====
+        top_bar = QHBoxLayout()
+        top_bar.addWidget(QLabel("📋 模式:"))
+        self.mode_combo = QComboBox()
+        for mode_key, mode_label in self.PROMPT_MODES.items():
+            self.mode_combo.addItem(f"{mode_label} ({mode_key})", mode_key)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        top_bar.addWidget(self.mode_combo)
+        top_bar.addStretch(1)
+
+        scope_label = QLabel(f"分析范围: {self._analysis_scope}")
+        scope_label.setStyleSheet("color: #2980B9; font-weight: bold;")
+        top_bar.addWidget(scope_label)
+        layout.addLayout(top_bar)
+
+        # ===== System Prompt =====
+        sys_header = QHBoxLayout()
+        sys_header.addWidget(QLabel("🔧 System Prompt"))
+        sys_header.addStretch(1)
+        self.sys_char_count = QLabel("字符: 0")
+        self.sys_char_count.setStyleSheet("color: #888; font-size: 11px;")
+        sys_header.addWidget(self.sys_char_count)
+        layout.addLayout(sys_header)
+
+        self.system_edit = QPlainTextEdit()
+        self.system_edit.setFont(QFont("Consolas, Courier New, 微软雅黑", 10))
+        self.system_edit.setMinimumHeight(140)
+        self.system_edit.setMaximumHeight(220)
+        self.system_edit.setStyleSheet("""
+            QPlainTextEdit { border: 1px solid #ccc; border-radius: 4px;
+                              padding: 6px; background-color: #FDFEFE; }
+        """)
+        self.system_edit.textChanged.connect(lambda: self._update_char_count(
+            self.system_edit, self.sys_char_count))
+        layout.addWidget(self.system_edit)
+
+        # ===== User Prompt =====
+        usr_header = QHBoxLayout()
+        usr_header.addWidget(QLabel("📄 User Prompt"))
+        usr_header.addStretch(1)
+        self.usr_char_count = QLabel("字符: 0")
+        self.usr_char_count.setStyleSheet("color: #888; font-size: 11px;")
+        usr_header.addWidget(self.usr_char_count)
+        layout.addLayout(usr_header)
+
+        self.user_edit = QPlainTextEdit()
+        self.user_edit.setFont(QFont("Consolas, Courier New, 微软雅黑", 10))
+        self.user_edit.setStyleSheet("""
+            QPlainTextEdit { border: 1px solid #ccc; border-radius: 4px;
+                              padding: 6px; background-color: #FDFEFE; }
+        """)
+        self.user_edit.textChanged.connect(lambda: self._update_char_count(
+            self.user_edit, self.usr_char_count))
+        layout.addWidget(self.user_edit, 1)
+
+        # ===== 底部按钮 =====
+        btn_layout = QHBoxLayout()
+
+        self.restore_btn = QPushButton("🔁 恢复默认")
+        self.restore_btn.setToolTip("将 Prompt 重置为默认版本")
+        self.restore_btn.clicked.connect(self._restore_default)
+        self.restore_btn.setStyleSheet("""
+            QPushButton { background-color: #F39C12; color: white; padding: 6px 16px;
+                          border-radius: 4px; font-weight: bold; font-size: 12px; }
+            QPushButton:hover { background-color: #E67E22; }
+        """)
+        btn_layout.addWidget(self.restore_btn)
+
+        btn_layout.addStretch(1)
+
+        self.confirm_btn = QPushButton("✅ 确认发送")
+        self.confirm_btn.setToolTip("将编辑后的 Prompt 发送给 LLM")
+        self.confirm_btn.clicked.connect(self.accept)
+        self.confirm_btn.setStyleSheet("""
+            QPushButton { background-color: #27AE60; color: white; padding: 8px 24px;
+                          border-radius: 4px; font-weight: bold; font-size: 13px; }
+            QPushButton:hover { background-color: #229954; }
+        """)
+        btn_layout.addWidget(self.confirm_btn)
+
+        self.cancel_btn = QPushButton("❌ 取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton { background-color: #95A5A6; color: white; padding: 6px 16px;
+                          border-radius: 4px; font-weight: bold; font-size: 12px; }
+            QPushButton:hover { background-color: #7F8C8D; }
+        """)
+        btn_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _load_prompts(self, system, user):
+        self.system_edit.setPlainText(system)
+        self.user_edit.setPlainText(user)
+        self._update_char_count(self.system_edit, self.sys_char_count)
+        self._update_char_count(self.user_edit, self.usr_char_count)
+
+    def _update_char_count(self, editor, label):
+        count = len(editor.toPlainText())
+        label.setText(f"字符: {count}")
+
+    def _restore_default(self):
+        self._load_prompts(self._default_system, self._default_user)
+
+    def _on_mode_changed(self, index):
+        mode_key = self.mode_combo.itemData(index)
+        if mode_key == "multimodal":
+            self.system_edit.setEnabled(False)
+            self.user_edit.setEnabled(False)
+            self.system_edit.setPlainText("多模态模式待实现，当前不可编辑。")
+            self.user_edit.setPlainText("多模态模式待实现，当前不可编辑。")
+            self.confirm_btn.setEnabled(False)
+            self.restore_btn.setEnabled(False)
+        else:
+            self.system_edit.setEnabled(True)
+            self.user_edit.setEnabled(True)
+            self.confirm_btn.setEnabled(True)
+            self.restore_btn.setEnabled(True)
+            # 切回 text_only 时恢复默认
+            self._restore_default()
+
+    def get_edited_prompts(self):
+        """获取编辑后的 (system_prompt, user_prompt)"""
+        return self.system_edit.toPlainText(), self.user_edit.toPlainText()
+
+
+# ============================================================
 # AI 纠错 Tab 组件
 # ============================================================
 
@@ -93,6 +249,10 @@ class AICorrectionTab(QWidget):
         self.tables = []
         self._confirm_status = {}
         self._current_table_index = -1
+
+        # Prompt 查看（事后只读）
+        self._prompt_system = ""
+        self._prompt_user = ""
 
         self._init_ui()
         self._connect_signals()
@@ -239,7 +399,7 @@ class AICorrectionTab(QWidget):
         self.info_label.setWordWrap(True)
         info_bar.addWidget(self.info_label, 1)
 
-        # 层级 / 问题切换
+        # 层级 / 问题 / Prompt 切换
         self.show_hierarchy_btn = QPushButton("🌳 层级")
         self.show_hierarchy_btn.setCheckable(True)
         self.show_hierarchy_btn.setStyleSheet(self._toggle_btn_style())
@@ -249,6 +409,12 @@ class AICorrectionTab(QWidget):
         self.show_issues_btn.setCheckable(True)
         self.show_issues_btn.setStyleSheet(self._toggle_btn_style())
         info_bar.addWidget(self.show_issues_btn)
+
+        self.show_prompt_btn = QPushButton("📝 Prompt")
+        self.show_prompt_btn.setCheckable(True)
+        self.show_prompt_btn.setToolTip("查看本次 AI 分析实际使用的 System / User Prompt")
+        self.show_prompt_btn.setStyleSheet(self._toggle_btn_style())
+        info_bar.addWidget(self.show_prompt_btn)
 
         info_bar.addSpacing(20)
 
@@ -347,6 +513,7 @@ class AICorrectionTab(QWidget):
         self.apply_btn.clicked.connect(self._on_apply_clicked)
         self.show_hierarchy_btn.toggled.connect(lambda c: self._update_detail_view())
         self.show_issues_btn.toggled.connect(lambda c: self._update_detail_view())
+        self.show_prompt_btn.toggled.connect(lambda c: self._update_detail_view())
 
     # ==================== 数据设置 ====================
 
@@ -391,6 +558,15 @@ class AICorrectionTab(QWidget):
                 if w:
                     w.deleteLater()
             self.tag_layout.addStretch(1)
+
+        # 清除 prompt
+        self._prompt_system = ""
+        self._prompt_user = ""
+
+        # 重置按钮状态
+        self.show_hierarchy_btn.setChecked(False)
+        self.show_issues_btn.setChecked(False)
+        self.show_prompt_btn.setChecked(False)
 
         self.stats_label.setText("未加载数据")
         self.progress_label.setText("")
@@ -659,6 +835,14 @@ class AICorrectionTab(QWidget):
 
     def _update_detail_view(self):
         """更新底部详情视图"""
+        # Prompt 视图独立于表格选择，显示全局 prompt
+        if self.show_prompt_btn.isChecked():
+            self.detail_browser.setHtml(self._build_prompt_html())
+            self.detail_browser.setMaximumHeight(9999)  # 不限制高度
+            return
+        else:
+            self.detail_browser.setMaximumHeight(120)   # 恢复默认高度
+
         idx = self._current_table_index
         if idx < 0 or idx >= len(self.correction_results):
             self.detail_browser.clear()
@@ -771,6 +955,51 @@ class AICorrectionTab(QWidget):
 
         return "\n".join(parts)
 
+    def _build_prompt_html(self):
+        """构建 Prompt 查看 HTML（只读）"""
+        if not self._prompt_system and not self._prompt_user:
+            return "<p style='color: #E67E22; padding: 10px;'>暂无 Prompt 数据（尚未执行 AI 分析）</p>"
+
+        lines = []
+        lines.append("<style>"
+                     ".prompt-section { margin-bottom: 12px; }"
+                     ".prompt-section h4 { margin: 4px 0; color: #2C3E50; }"
+                     ".prompt-content { background-color: #F8F9FA; border: 1px solid #ddd; "
+                     "border-radius: 4px; padding: 10px; font-size: 12px; "
+                     "font-family: 'Consolas', 'Courier New', monospace; "
+                     "white-space: pre-wrap; word-break: break-word; "
+                     "max-height: 300px; overflow-y: auto; color: #333; }"
+                     "</style>")
+
+        # System Prompt
+        sys_chars = len(self._prompt_system)
+        lines.append("<div class='prompt-section'>")
+        lines.append(f"<h4>🔧 System Prompt（字符: {sys_chars}）</h4>")
+        lines.append("<div class='prompt-content'>")
+        lines.append(self._escape_html(self._prompt_system))
+        lines.append("</div></div>")
+
+        # User Prompt
+        usr_chars = len(self._prompt_user)
+        lines.append("<div class='prompt-section'>")
+        lines.append(f"<h4>📄 User Prompt（字符: {usr_chars}）</h4>")
+        lines.append("<div class='prompt-content'>")
+        lines.append(self._escape_html(self._prompt_user))
+        lines.append("</div></div>")
+
+        return "\n".join(lines)
+
+    def _escape_html(self, text):
+        """转义 HTML 特殊字符"""
+        if not text:
+            return ""
+        return (text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&#39;"))
+
     # ==================== 确认操作 ====================
 
     def _accept_all(self):
@@ -881,6 +1110,11 @@ class AICorrectionTab(QWidget):
 
     def get_confirm_status(self):
         return dict(self._confirm_status)
+
+    def set_prompts(self, system_prompt, user_prompt):
+        """设置本次分析使用的 Prompt（事后只读查看）"""
+        self._prompt_system = system_prompt or ""
+        self._prompt_user = user_prompt or ""
 
     def has_results(self):
         """是否有已加载的纠错结果"""
