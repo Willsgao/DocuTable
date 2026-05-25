@@ -122,12 +122,15 @@ class MainWindow(QMainWindow):
         self._init_preview_tab()
         self.tabs.addTab(self.preview_tab, "👁 对比预览")
 
-        # Tab3: 历史记录
+        # Tab3: AI优化
+        self._init_ai_tab()
+
+        # Tab4: 历史记录
         self.history_tab = QWidget()
         self._init_history_tab()
         self.tabs.addTab(self.history_tab, "📜 历史记录")
 
-        # Tab4: 配置
+        # Tab5: 配置
         self.config_tab = QWidget()
         self._init_config_tab()
         self.tabs.addTab(self.config_tab, "⚙️ 配置")
@@ -370,6 +373,19 @@ class MainWindow(QMainWindow):
         self.pdf_preview_widget = pm.pdf_preview_widget
         self.pdf_scroll_area = pm.pdf_scroll_area
         self.pdf_loading_label = pm.pdf_loading_label
+
+    def _init_ai_tab(self):
+        """初始化 AI优化 Tab"""
+        from codes.ui.ai_correction_dialog import AICorrectionTab
+
+        self.ai_correction_tab = AICorrectionTab(main_window=self)
+        self.ai_correction_tab.apply_requested.connect(self._on_ai_correction_apply)
+        self.tabs.addTab(self.ai_correction_tab, "🔍 AI优化")
+
+    def _on_ai_correction_apply(self, accepted_results, confirm_status):
+        """AI优化 Tab 中用户点击应用修改（委托给 table_compare_manager）"""
+        if self.table_compare_manager:
+            self.table_compare_manager._apply_corrections(accepted_results, confirm_status)
 
     def _init_history_tab(self):
         """初始化历史记录Tab"""
@@ -995,6 +1011,13 @@ class MainWindow(QMainWindow):
         """执行导出（委托给export_manager）"""
         if self.export_manager:
             self.export_manager._do_export(table_pages, tables, output_path)
+
+    # ==================== AI 纠错 ====================
+
+    def on_ai_correction_finished(self, correction_results):
+        """AI 纠错完成回调（委托给 table_compare_manager）"""
+        if self.table_compare_manager:
+            self.table_compare_manager._on_ai_correction_finished(correction_results)
 
     # ==================== 设置 ====================
 

@@ -164,6 +164,14 @@ class ProcessingManager(QObject):
         if self.mw.current_file:
             save_mid_data(self.mw.current_file, result)
 
+        # 切换PDF时清空 AI纠错 Tab + 取消正在运行的纠错任务
+        if hasattr(self.mw, 'table_compare_manager') and self.mw.table_compare_manager:
+            self.mw.table_compare_manager.cancel_ai_correction_worker()
+        if hasattr(self.mw, 'ai_correction_tab') and self.mw.ai_correction_tab:
+            self.mw.ai_correction_tab.clear_results()
+            # 尝试自动加载该PDF的AI纠错缓存
+            self._try_load_ai_cache()
+
         filename = os.path.basename(self.mw.current_file) if self.mw.current_file else "未知文件"
         success_count = result.get('success_count', 0)
         total_pages = result.get('total_pages', result.get('total_tables', 0))
@@ -243,6 +251,21 @@ class ProcessingManager(QObject):
             self.mw.status_bar.showMessage("处理完成！所有页面均成功解析")
 
         self.processing_finished.emit(result)
+
+    def _try_load_ai_cache(self):
+        """切换PDF后自动尝试加载已有的AI纠错缓存"""
+        if not self.mw.current_file:
+            return
+        try:
+            from codes.pdf_extractor import load_ai_correction_cache
+            cached = load_ai_correction_cache(self.mw.current_file)
+            if cached and hasattr(self.mw, 'ai_correction_tab') and self.mw.ai_correction_tab:
+                self.mw.ai_correction_tab.set_results(
+                    cached, self.mw.processed_results
+                )
+                print(f"[AI CACHE] 自动加载缓存的AI纠错结果 ({len(cached)} 张表)")
+        except Exception as e:
+            print(f"[AI CACHE] 自动加载失败: {e}")
 
     def on_processing_error(self, error_msg):
         """处理错误"""

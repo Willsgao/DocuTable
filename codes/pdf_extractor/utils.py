@@ -299,6 +299,90 @@ def delete_cache_file(pdf_path):
 
 
 # ============================================================
+# AI 纠错结果缓存
+# ============================================================
+AI_CORRECTION_CACHE_VERSION = 1
+
+
+def get_ai_correction_cache_path(pdf_path):
+    """获取 AI 纠错结果缓存文件路径"""
+    return get_pdf_cache_dir(pdf_path) / "ai_correction.json"
+
+
+def save_ai_correction_cache(pdf_path, correction_results):
+    """将 AI 纠错结果序列化到缓存文件
+
+    Args:
+        pdf_path: PDF 文件路径
+        correction_results: [CorrectionResult] 列表
+    """
+    from dataclasses import asdict
+
+    cache_file = get_ai_correction_cache_path(pdf_path)
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    results_dict = [asdict(r) for r in correction_results]
+
+    cache_data = {
+        "cache_version": AI_CORRECTION_CACHE_VERSION,
+        "pdf_hash": get_pdf_file_hash(pdf_path),
+        "table_count": len(results_dict),
+        "cached_time": datetime.now().isoformat(),
+        "results": results_dict,
+    }
+
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+    print(f"[CACHE] AI 纠错结果已缓存: {cache_file} ({len(results_dict)} 张表)")
+    return cache_file
+
+
+def load_ai_correction_cache(pdf_path):
+    """从缓存加载 AI 纠错结果
+
+    Returns:
+        [CorrectionResult] 列表 或 None（缓存无效）
+    """
+    from codes.pdf_extractor.ai_correction import CorrectionResult
+
+    cache_file = get_ai_correction_cache_path(pdf_path)
+    if not cache_file.exists():
+        print("[CACHE] AI 纠错缓存文件不存在")
+        return None
+
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            cache_data = json.load(f)
+
+        # 版本检查
+        if cache_data.get("cache_version", 0) < AI_CORRECTION_CACHE_VERSION:
+            print("[CACHE] AI 纠错缓存版本过旧")
+            return None
+
+        # PDF 哈希校验
+        if os.path.exists(pdf_path):
+            current_hash = get_pdf_file_hash(pdf_path)
+            if current_hash != cache_data.get("pdf_hash", ""):
+                print("[CACHE] PDF 文件已变更，AI 纠错缓存失效")
+                return None
+        else:
+            return None
+
+        # 反序列化为 CorrectionResult 列表
+        results = []
+        for d in cache_data.get("results", []):
+            results.append(CorrectionResult(**d))
+
+        print(f"[CACHE] 从缓存加载 AI 纠错结果: {cache_file} ({len(results)} 张表)")
+        return results
+
+    except Exception as e:
+        print(f"[CACHE] 加载 AI 纠错缓存失败: {e}")
+        return None
+
+
+# ============================================================
 # 配置文件管理
 # ============================================================
 def load_config():

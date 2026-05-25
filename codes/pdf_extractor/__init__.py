@@ -10,7 +10,10 @@ from .utils import (
     get_all_cached_files, delete_cache_file,
     get_cached_pdf_info,
     load_mid_data, save_mid_data,
-    get_pdf_cache_dir, get_pdf_preview_dir
+    get_pdf_cache_dir, get_pdf_preview_dir,
+    get_ai_correction_cache_path,
+    save_ai_correction_cache,
+    load_ai_correction_cache
 )
 
 from .widgets import (
@@ -27,6 +30,14 @@ from .processor import (
     ProcessingWorker
 )
 
+from .ai_correction import (
+    CorrectionResult,
+    RuleChecker,
+    RuleAutoFixer,
+    LLMCorrector,
+    CorrectionEngine
+)
+
 from .pdf_context import PDFContext
 
 __all__ = [
@@ -38,6 +49,9 @@ __all__ = [
     'get_cached_pdf_info',
     'load_mid_data', 'save_mid_data',
     'get_pdf_cache_dir', 'get_pdf_preview_dir',
+    'get_ai_correction_cache_path',
+    'save_ai_correction_cache',
+    'load_ai_correction_cache',
     # widgets
     'PDFPreviewWidget',
     'ZoomableScrollArea',
@@ -48,6 +62,12 @@ __all__ = [
     'TableContextLLM',
     'ExcelExporter',
     'ProcessingWorker',
+    # ai correction
+    'CorrectionResult',
+    'RuleChecker',
+    'RuleAutoFixer',
+    'LLMCorrector',
+    'CorrectionEngine',
     # pdf context
     'PDFContext',
 ]

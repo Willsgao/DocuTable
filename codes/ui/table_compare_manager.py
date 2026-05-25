@@ -16,7 +16,8 @@ from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QEvent, QObject, QTimer, QThread, pyqtSignal
 
 from codes.pdf_extractor import (
-    ZoomableTableWidget, save_mid_data
+    ZoomableTableWidget, save_mid_data,
+    load_ai_correction_cache, save_ai_correction_cache
 )
 
 
@@ -264,18 +265,31 @@ class TableCompareManager(QObject):
         
         btn_layout.addSpacing(10)
         
-        # AI命名按钮
-        self.ai_name_btn = QPushButton("🤖 AI命名")
-        self.ai_name_btn.setToolTip("使用 DeepSeek 为表格生成规范的标题和摘要")
-        self.ai_name_btn.setFocusPolicy(Qt.NoFocus)
-        self.ai_name_btn.clicked.connect(self.on_ai_name_clicked)
-        self.ai_name_btn.setStyleSheet("""
-            QPushButton { background-color: #8E44AD; color: white; padding: 2px 12px; border-radius: 4px;
-                          font-weight: bold; }
-            QPushButton:hover { background-color: #7D3C98; }
+        # AI纠错当前表按钮
+        self.ai_correct_current_btn = QPushButton("🔍 AI纠错当前表")
+        self.ai_correct_current_btn.setToolTip("仅对当前选中的表格进行 AI 分析修正\n提示：结果会自动缓存，下次打开无需重新分析\n按住 Shift 点击可强制重新分析")
+        self.ai_correct_current_btn.setFocusPolicy(Qt.NoFocus)
+        self.ai_correct_current_btn.clicked.connect(self.on_ai_correct_current_clicked)
+        self.ai_correct_current_btn.setStyleSheet("""
+            QPushButton { background-color: #17A589; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #148F77; }
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
-        btn_layout.addWidget(self.ai_name_btn)
+        btn_layout.addWidget(self.ai_correct_current_btn)
+
+        # AI纠错全部按钮
+        self.ai_correct_all_btn = QPushButton("🔍 AI纠错全部")
+        self.ai_correct_all_btn.setToolTip("对所有表格进行 AI 分析并修正命名、层级和区域错误\n提示：结果会自动缓存，下次打开无需重新分析\n按住 Shift 点击可强制重新分析")
+        self.ai_correct_all_btn.setFocusPolicy(Qt.NoFocus)
+        self.ai_correct_all_btn.clicked.connect(self.on_ai_correct_all_clicked)
+        self.ai_correct_all_btn.setStyleSheet("""
+            QPushButton { background-color: #2980B9; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #2471A3; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.ai_correct_all_btn)
         
         # 删除空格按钮
         self.remove_spaces_btn = QPushButton("🧹 删除空格")
@@ -1969,8 +1983,9 @@ class TableCompareManager(QObject):
         """启动 AI 命名后台线程"""
         from codes.pdf_extractor import load_config
 
-        self.ai_name_btn.setEnabled(False)
-        self.ai_name_btn.setText("🤖 命名中...")
+        if hasattr(self, 'ai_name_btn') and self.ai_name_btn:
+            self.ai_name_btn.setEnabled(False)
+            self.ai_name_btn.setText("🤖 命名中...")
 
         config = load_config()
         ds_api_key = config.get("deepseek_api_key", "")
@@ -1979,8 +1994,9 @@ class TableCompareManager(QObject):
                 self.main_window, "未配置",
                 "请先在「配置」页面填写 DeepSeek API Key。"
             )
-            self.ai_name_btn.setEnabled(True)
-            self.ai_name_btn.setText("🤖 AI命名")
+            if hasattr(self, 'ai_name_btn') and self.ai_name_btn:
+                self.ai_name_btn.setEnabled(True)
+                self.ai_name_btn.setText("🤖 AI命名")
             return
 
         # 准备传给 worker 的数据（只取必要字段）
@@ -2020,8 +2036,9 @@ class TableCompareManager(QObject):
                     tbl["llm_summary"] = summary
                     updated_count += 1
 
-        self.ai_name_btn.setEnabled(True)
-        self.ai_name_btn.setText("🤖 AI命名")
+        if hasattr(self, 'ai_name_btn') and self.ai_name_btn:
+            self.ai_name_btn.setEnabled(True)
+            self.ai_name_btn.setText("🤖 AI命名")
 
         if updated_count > 0:
             self.main_window.status_bar.showMessage(
@@ -2039,6 +2056,321 @@ class TableCompareManager(QObject):
 
         # 清理 worker
         self._ai_worker = None
+
+    # ==================== AI 纠错功能 ====================
+
+    def _get_table_only_tables(self):
+        """获取所有表格类型的表格（排除非表格页），预置原始索引"""
+        all_tables = self.main_window.processed_results.get('tables', [])
+        result = []
+        for orig_idx, t in enumerate(all_tables):
+            if t.get('parse_status') == 'success':
+                t["__index__"] = orig_idx  # 预置原始索引，引擎不会覆盖
+                result.append(t)
+        return result
+
+    def on_ai_correct_current_clicked(self):
+        """AI纠错当前表 - 仅处理当前选中的表格 (Shift+Click = 强制重新分析)"""
+        all_tables = self.main_window.processed_results.get('tables', [])
+        if not all_tables:
+            QMessageBox.warning(self.main_window, "无数据", "请先处理PDF文件，提取表格后再使用AI纠错功能。")
+            return
+
+        # 获取当前选中的表格
+        current_idx = self._get_current_table_index()
+        if current_idx is None:
+            QMessageBox.warning(self.main_window, "未选中表格", "请先在表格列表中选中一个表格。")
+            return
+
+        current_table = all_tables[current_idx]
+
+        # 检查是否为表格类型
+        if current_table.get('parse_status') != 'success':
+            QMessageBox.information(
+                self.main_window, "非表格页",
+                f"当前页面（P{current_table.get('page', '?')}页）不是表格类型，无需 AI 纠错。"
+            )
+            return
+
+        force = bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
+        cache_hint = ""
+        if not force:
+            pdf_path = getattr(self.main_window, 'current_file', None)
+            if pdf_path:
+                cached = load_ai_correction_cache(pdf_path)
+                if cached and any(r.table_index == current_idx for r in cached):
+                    cache_hint = "\n（已有缓存结果，将直接加载。按住 Shift 点击可强制重新分析）"
+
+        page = current_table.get('page', '?')
+        reply = QMessageBox.question(
+            self.main_window,
+            "AI 纠错（当前表）",
+            f"将对当前表格（P{page}页，表格 #{current_idx}）进行 AI 分析。\n\n"
+            f"这会调用 DeepSeek API，可能需要几秒钟处理时间。{cache_hint}\n继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 预置原始索引，引擎 guard 不会覆盖
+        current_table["__index__"] = current_idx
+        self._run_ai_correction([current_table], force=force)
+
+    def on_ai_correct_all_clicked(self):
+        """AI纠错全部 - 处理所有表格类型的表 (Shift+Click = 强制重新分析)"""
+        all_tables = self.main_window.processed_results.get('tables', [])
+        if not all_tables:
+            QMessageBox.warning(self.main_window, "无数据", "请先处理PDF文件，提取表格后再使用AI纠错功能。")
+            return
+
+        # 只处理表格类型的表
+        table_tables = self._get_table_only_tables()
+        non_table_count = len(all_tables) - len(table_tables)
+
+        if not table_tables:
+            QMessageBox.information(
+                self.main_window, "无表格",
+                f"当前文档共 {len(all_tables)} 页，但没有表格类型的页面，无需 AI 纠错。"
+            )
+            return
+
+        force = bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
+        cache_hint = ""
+        if not force:
+            pdf_path = getattr(self.main_window, 'current_file', None)
+            if pdf_path:
+                cached = load_ai_correction_cache(pdf_path)
+                if cached:
+                    cached_count = len([r for r in cached
+                                        if r.table_index in set(t.get("__index__", -1) for t in table_tables)])
+                    if cached_count == len(table_tables):
+                        cache_hint = "\n（全部表格已有缓存结果，将直接加载。按住 Shift 点击可强制重新分析）"
+
+        # 确认
+        extra = f"（已自动跳过 {non_table_count} 个非表格页）" if non_table_count > 0 else ""
+        reply = QMessageBox.question(
+            self.main_window,
+            "AI 纠错（全部）",
+            f"将对 {len(table_tables)} 张表格进行 AI 分析（命名 + 层级 + 区域判断）。{extra}{cache_hint}\n\n"
+            "这会调用 DeepSeek API，可能需要较长时间处理。\n继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._run_ai_correction(table_tables, force=force)
+
+    def _run_ai_correction(self, tables, force=False):
+        """通用 AI 纠错启动方法
+        Args:
+            tables: 待处理的表格列表（已预置 __index__ 为原始索引）
+            force: True 跳过缓存，强制重新分析
+        """
+        pdf_path = getattr(self.main_window, 'current_file', None)
+
+        # ====== 缓存检查（非强制模式） ======
+        if pdf_path and not force:
+            cached_results = load_ai_correction_cache(pdf_path)
+            if cached_results:
+                cached_indices = set(r.table_index for r in cached_results)
+                requested_indices = set(t.get("__index__", -1) for t in tables)
+                if requested_indices.issubset(cached_indices):
+                    # 所有请求的表都在缓存中 → 直接使用缓存
+                    filtered = [r for r in cached_results if r.table_index in requested_indices]
+                    print(f"[AI CACHE] 命中缓存 ({len(filtered)}/{len(requested_indices)} 张表)，跳过分析")
+                    self._on_ai_correction_finished(filtered)
+                    return
+                else:
+                    missing = requested_indices - cached_indices
+                    print(f"[AI CACHE] 缓存未全覆盖，缺少表: {missing}，重新分析")
+
+        # 获取 PDF context（从 ProcessingWorker 或缓存中）
+        pdf_context = getattr(self.main_window, '_pdf_context', None)
+
+        # 禁用两个纠错按钮
+        self._disable_correction_buttons()
+
+        self._ai_correction_worker = AICorrectionWorker(
+            tables, pdf_context, pdf_path=pdf_path
+        )
+        self._ai_correction_worker.progress.connect(self._on_ai_correction_progress)
+        self._ai_correction_worker.finished.connect(self._on_ai_correction_finished)
+        self._ai_correction_worker.error.connect(self._on_ai_correction_error)
+        self._ai_correction_worker.start()
+
+        self.main_window.status_bar.showMessage("🔍 AI纠错: 规则预检中...")
+
+    def _disable_correction_buttons(self):
+        """禁用所有 AI 纠错按钮"""
+        if hasattr(self, 'ai_correct_current_btn') and self.ai_correct_current_btn:
+            self.ai_correct_current_btn.setEnabled(False)
+        if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
+            self.ai_correct_all_btn.setEnabled(False)
+
+    def _enable_correction_buttons(self):
+        """恢复所有 AI 纠错按钮"""
+        if hasattr(self, 'ai_correct_current_btn') and self.ai_correct_current_btn:
+            self.ai_correct_current_btn.setEnabled(True)
+        if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
+            self.ai_correct_all_btn.setEnabled(True)
+
+    def cancel_ai_correction_worker(self):
+        """取消正在运行的 AI 纠错后台线程（切换PDF时调用）"""
+        worker = getattr(self, '_ai_correction_worker', None)
+        if worker and worker.isRunning():
+            # 断开信号，防止旧线程的结果误写入新PDF的数据
+            try:
+                worker.progress.disconnect(self._on_ai_correction_progress)
+            except TypeError:
+                pass
+            try:
+                worker.finished.disconnect(self._on_ai_correction_finished)
+            except TypeError:
+                pass
+            try:
+                worker.error.disconnect(self._on_ai_correction_error)
+            except TypeError:
+                pass
+            worker.quit()
+            worker.wait(2000)  # 等待最多 2 秒
+            print("[AI CORE] 已取消旧PDF的后台纠错任务")
+        self._ai_correction_worker = None
+        self._enable_correction_buttons()
+
+    def _on_ai_correction_progress(self, percent, message):
+        """AI 纠错进度更新"""
+        self.main_window.status_bar.showMessage(f"🔍 AI纠错: [{percent}%] {message}")
+
+    def _on_ai_correction_finished(self, correction_results):
+        """AI 纠错完成 - 切换到 AI优化 Tab"""
+        self._enable_correction_buttons()
+
+        # 一致性守卫：worker 对应的 PDF 与当前 PDF 不一致则丢弃
+        worker = self._ai_correction_worker
+        if worker and hasattr(worker, 'pdf_path'):
+            current = getattr(self.main_window, 'current_file', None)
+            if current and worker.pdf_path and current != worker.pdf_path:
+                print(f"[AI CORE] 丢弃过期纠错结果 (worker PDF={worker.pdf_path}, current={current})")
+                self._ai_correction_worker = None
+                return
+
+        stats = self._count_correction_stats(correction_results)
+        self.main_window.status_bar.showMessage(
+            f"🔍 AI纠错完成: 高置信度{stats['high']} 中{stats['medium']} 需人工{stats['unresolvable']}"
+        )
+
+        # 将结果加载到 AI优化 Tab
+        ai_tab = getattr(self.main_window, 'ai_correction_tab', None)
+        if ai_tab:
+            ai_tab.set_results(correction_results, self.main_window.processed_results)
+            # 切换到 AI优化 Tab
+            tabs = self.main_window.tabs
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == "🔍 AI优化":
+                    tabs.setCurrentIndex(i)
+                    break
+
+        # 缓存结果（合并模式：不覆盖已有的其他表缓存）
+        pdf_path = getattr(self.main_window, 'current_file', None)
+        if pdf_path and correction_results:
+            try:
+                # 读取已有缓存
+                existing = load_ai_correction_cache(pdf_path) or []
+                # 合并：本次结果覆盖同 table_index 的旧结果
+                existing_map = {r.table_index: r for r in existing}
+                for r in correction_results:
+                    existing_map[r.table_index] = r
+                merged = list(existing_map.values())
+                save_ai_correction_cache(pdf_path, merged)
+            except Exception as e:
+                print(f"[AI CACHE] 保存缓存失败: {e}")
+
+        self._ai_correction_worker = None
+
+    def _on_ai_correction_error(self, error_msg):
+        """AI 纠错错误处理"""
+        self._enable_correction_buttons()
+        QMessageBox.critical(self.main_window, "AI纠错失败", f"纠错过程中发生错误：\n\n{error_msg}")
+        self._ai_correction_worker = None
+
+    def _apply_corrections(self, accepted_results, confirm_status):
+        """将确认的修正应用到 processed_results
+
+        Args:
+            accepted_results: [CorrectionResult] 被接受的修正
+            confirm_status: {table_index: "accepted"/"rejected"/"pending"}
+        """
+        tables = self.main_window.processed_results.get('tables', [])
+        if not tables:
+            return
+
+        updated_count = 0
+
+        for r in accepted_results:
+            idx = r.table_index
+            if idx >= len(tables):
+                continue
+
+            tbl = tables[idx]
+
+            # 应用命名
+            if r.name_title:
+                tbl["llm_title"] = r.name_title
+                tbl["llm_summary"] = r.name_summary
+                updated_count += 1
+
+            # 应用层级（保存到表格的扩展字段）
+            if r.hierarchy:
+                tbl["ai_hierarchy"] = r.hierarchy
+                tbl["ai_hierarchy_verified"] = r.hierarchy_verified
+
+            # 应用区域判断
+            if r.region_merge_prev is not None or r.region_merge_next is not None:
+                tbl["ai_region"] = {
+                    "is_complete": r.region_is_complete,
+                    "merge_prev": r.region_merge_prev,
+                    "merge_next": r.region_merge_next,
+                    "split_rows": r.region_split_rows
+                }
+
+            # 应用修正数据
+            if r.corrected_data:
+                # 保留原始数据用于撤销
+                if "original_data" not in tbl:
+                    tbl["original_data"] = _deep_copy_list(tbl.get("data", []))
+                tbl["data"] = r.corrected_data
+                updated_count += 1
+
+            # 保存纠错元数据
+            tbl["ai_correction_status"] = r.status
+            tbl["ai_correction_confidence"] = r.confidence
+            tbl["ai_correction_applied_rules"] = r.applied_rules
+            tbl["ai_correction_summary"] = r.changes_summary
+
+        if updated_count > 0:
+            # 刷新列表和预览
+            self.apply_table_filter()
+            self.has_unsaved_changes = True
+            self._schedule_auto_save()
+
+            self.main_window.status_bar.showMessage(
+                f"✅ 已应用 AI 纠错：{updated_count} 张表格已更新", 5000
+            )
+        else:
+            self.main_window.status_bar.showMessage(
+                "⚠️ AI 纠错：没有应用任何修改", 3000
+            )
+
+    def _count_correction_stats(self, results):
+        """统计纠错结果"""
+        stats = {"high": 0, "medium": 0, "low": 0, "unresolvable": 0}
+        for r in results:
+            stats[r.confidence] = stats.get(r.confidence, 0) + 1
+        return stats
 
 
 class AINameWorker(QThread):
@@ -2075,3 +2407,36 @@ class AINameWorker(QThread):
             })
 
         self.finished.emit(final_results)
+
+
+class AICorrectionWorker(QThread):
+    """AI 纠错后台工作线程"""
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, tables, pdf_context=None, pdf_path=None):
+        super().__init__()
+        self.tables = tables
+        self.pdf_context = pdf_context
+        self.pdf_path = pdf_path
+
+    def run(self):
+        from codes.pdf_extractor.ai_correction import CorrectionEngine
+
+        try:
+            engine = CorrectionEngine(self.tables, self.pdf_context)
+            engine.progress.connect(self.progress.emit)
+
+            results = engine.run()
+            self.finished.emit(results)
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{str(e)}\n{traceback.format_exc()}")
+
+
+# 辅助函数：深拷贝列表
+def _deep_copy_list(data):
+    """深拷贝二维列表"""
+    return [[cell for cell in row] for row in data]
