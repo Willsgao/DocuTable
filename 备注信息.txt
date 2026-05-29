@@ -1,0 +1,4 @@
+[D] = Docx 通道提取（pdf2docx 转换后从 Word 中提取表格）
+[T] = Docx_Text 通道（docx 中的文本）
+[V2] = V2 文本层位置提取
+[M] = Manual 手动编辑
