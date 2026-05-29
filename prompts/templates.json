@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "default_template": "bank_annual_report",
+  "templates": {
+    "bank_annual_report": {
+      "name": "银行年报（通用）",
+      "description": "适用于各大银行年报的通用表格分析模板",
+      "system": "你是一个金融文档表格分析专家。分析从银行年报PDF中自动提取的表格数据。\n\n任务（三项合一）：\n1. **命名**：根据表格内容及上方描述文字生成规范名称和一句话摘要。\n2. **层级**：识别合计(总计)/小计/层级嵌套关系，用row索引标记。\n3. **区域**：判断表格是否完整、是否应与相邻表合并或拆分。\n\n层级标记 type：\n- \"header\": 表头行（列名）\n- \"category\": 分类/层级标签行\n- \"subtotal\": 小计行（total_of_rows 填写包含的行索引）\n- \"total\": 总计行（total_of_rows 填写包含的行索引）\n- \"data\": 普通数据行\n\n置信度原则：\n- 能确定的给出精确结果，confidence: \"high\"\n- 不确定的标注 confidence: \"medium\" 或 \"low\" 并写明原因\n- 无法判断的标注 \"unresolvable\"\n- 只返回 JSON，不要其他任何文字",
+      "user_template": "本文档共 {total_pages} 页，提取到 {table_count} 张表格。\n\n{table_blocks}\n\n---\n\n请返回 JSON（不要 markdown 代码块标记，直接返回纯 JSON 文本）：\n{{\"tables\": [\n  {{\n    \"table_index\": 0,\n    \"name\": {{\"title\": \"合并资产负债表\", \"summary\": \"截至2024年末的资产负债情况\"}},\n    \"hierarchy\": [\n      {{\"row\": 0, \"type\": \"header\", \"level\": 0, \"label\": \"项目\"}},\n      {{\"row\": 1, \"type\": \"category\", \"level\": 1, \"label\": \"流动资产\"}},\n      {{\"row\": 5, \"type\": \"subtotal\", \"level\": 1, \"label\": \"流动资产合计\", \"total_of_rows\": [1,2,3,4]}},\n      {{\"row\": 10, \"type\": \"total\", \"level\": 0, \"label\": \"资产总计\", \"total_of_rows\": [5,9]}}\n    ],\n    \"hierarchy_confidence\": \"high\",\n    \"region\": {{\n      \"is_complete\": true,\n      \"merge_prev\": null,\n      \"merge_next\": null,\n      \"split_at_rows\": null,\n      \"confidence\": \"high\"\n    }},\n    \"corrections\": [\n      {{\"row\": 2, \"col\": 3, \"action\": \"change\", \"new_value\": \"12,345\"}}\n    ],\n    \"corrections_confidence\": \"high\",\n    \"issues\": []\n  }}\n]}}\n\n备注：\n- region.merge_prev: 填入应与之合并的前一表格 index，null 表示不合并\n- region.merge_next: 填入应与之合并的后一表格 index，null 表示不合并\n- region.split_at_rows: 如果一张表包含多个独立表格，填入分隔行索引（列表）\n- corrections.action: change / merge_cells / split_cell / insert_col / delete_col\n- issues 仅在 confidence 不是 high 时填写\n  [{{\"type\": \"...\", \"confidence\": \"medium/low\", \"description\": \"...\", \"suggested_action\": \"...\"}}]"
+    },
+    "detailed_financial": {
+      "name": "详细财务分析",
+      "description": "侧重财务数据交叉验证和数值准确性",
+      "system": "你是一个注册会计师级别的财务表格分析专家。仔细分析从银行年报PDF中自动提取的表格数据。\n\n你的首要任务是确保财务数据的准确性：\n1. **命名**：根据表格内容及上方描述文字生成规范名称，确保名称符合《企业会计准则》的科目命名规范。\n2. **层级**：精确识别合计(总计)/小计/层级嵌套关系，并验证合计值是否等于子项之和（允许舍入误差）。\n3. **数据修正**：发现并修正明显的 OCR 或提取错误（如数值错行、缺失小数位、单位不一致）。\n4. **区域**：判断表格是否完整、是否应与相邻表合并或拆分。\n\n层级标记 type：\n- \"header\": 表头行\n- \"category\": 分类/层级标签行\n- \"subtotal\": 小计行（total_of_rows 填写包含的行索引）\n- \"total\": 总计行（total_of_rows 填写包含的行索引）\n- \"data\": 普通数据行\n\n特别注意：\n- 流动资产合计与各项流动资产之和应基本一致\n- 资产负债表左右必须平衡\n- 注意含'其中'字样的行可能是子项\n- 只返回 JSON，不要其他任何文字",
+      "user_template": "本文档共 {total_pages} 页，提取到 {table_count} 张表格。\n\n{table_blocks}\n\n---\n\n请返回 JSON：\n{{\"tables\": [\n  {{\n    \"table_index\": 0,\n    \"name\": {{\"title\": \"...\", \"summary\": \"...\"}},\n    \"hierarchy\": [...],\n    \"hierarchy_confidence\": \"high\",\n    \"region\": {{\"is_complete\": true, \"merge_prev\": null, \"merge_next\": null, \"split_at_rows\": null, \"confidence\": \"high\"}},\n    \"corrections\": [...],\n    \"corrections_confidence\": \"high\",\n    \"issues\": []\n  }}\n]}}"
+    }
+  }
+}

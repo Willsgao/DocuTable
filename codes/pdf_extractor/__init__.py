@@ -35,7 +35,9 @@ from .ai_correction import (
     RuleChecker,
     RuleAutoFixer,
     LLMCorrector,
-    CorrectionEngine
+    CorrectionEngine,
+    PromptTemplateManager,
+    _trim_edge_empty_cells
 )
 
 from .pdf_context import PDFContext
@@ -68,6 +70,8 @@ __all__ = [
     'RuleAutoFixer',
     'LLMCorrector',
     'CorrectionEngine',
+    'PromptTemplateManager',
+    '_trim_edge_empty_cells',
     # pdf context
     'PDFContext',
 ]

@@ -80,18 +80,21 @@ TAG_COLORS = {
 # ============================================================
 
 class PromptEditDialog(QDialog):
-    """Prompt 预览与编辑弹窗，支持模式切换"""
+    """Prompt 预览与编辑弹窗，支持模式切换 + 模板选择"""
 
     PROMPT_MODES = {
         "text_only": "纯文本模式（当前）",
         "multimodal": "多模态模式（预留）",
     }
 
-    def __init__(self, system_prompt, user_prompt, analysis_scope="全部", parent=None):
+    def __init__(self, system_prompt, user_prompt, analysis_scope="全部", parent=None,
+                 templates=None):
         super().__init__(parent)
         self._default_system = system_prompt
         self._default_user = user_prompt
         self._analysis_scope = analysis_scope
+        self._templates = templates or []  # [(id, name), ...]
+        self._current_template_id = None
 
         self.setWindowTitle(f"📝 预览 & 编辑 Prompt（分析范围: {analysis_scope}）")
         self.setMinimumSize(900, 700)
@@ -104,7 +107,7 @@ class PromptEditDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        # ===== 顶部：模式选择器 =====
+        # ===== 顶部：模式选择器 + 模板选择器 =====
         top_bar = QHBoxLayout()
         top_bar.addWidget(QLabel("📋 模式:"))
         self.mode_combo = QComboBox()
@@ -112,6 +115,17 @@ class PromptEditDialog(QDialog):
             self.mode_combo.addItem(f"{mode_label} ({mode_key})", mode_key)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         top_bar.addWidget(self.mode_combo)
+
+        top_bar.addSpacing(12)
+        top_bar.addWidget(QLabel("📑 模板:"))
+        self.template_combo = QComboBox()
+        self.template_combo.addItem("默认（不加载模板）", None)
+        for tid, tname in self._templates:
+            self.template_combo.addItem(tname, tid)
+        self.template_combo.currentIndexChanged.connect(self._on_template_changed)
+        self.template_combo.setToolTip("选择预设的 Prompt 模板，自动填入 System/User Prompt")
+        top_bar.addWidget(self.template_combo)
+
         top_bar.addStretch(1)
 
         scope_label = QLabel(f"分析范围: {self._analysis_scope}")
@@ -208,6 +222,9 @@ class PromptEditDialog(QDialog):
     def _restore_default(self):
         self._load_prompts(self._default_system, self._default_user)
 
+    # 信号：用户选择了模板
+    template_changed = pyqtSignal(str)  # template_id
+
     def _on_mode_changed(self, index):
         mode_key = self.mode_combo.itemData(index)
         if mode_key == "multimodal":
@@ -225,9 +242,26 @@ class PromptEditDialog(QDialog):
             # 切回 text_only 时恢复默认
             self._restore_default()
 
+    def _on_template_changed(self, index):
+        """用户从模板下拉框选择了一个模板"""
+        template_id = self.template_combo.itemData(index)
+        if template_id is None:
+            # 选择了"默认"，恢复到原始 prompt
+            self._restore_default()
+            return
+
+        self._current_template_id = template_id
+        # 发送信号通知外部加载模板内容
+        self.template_changed.emit(template_id)
+
+    def apply_template_prompts(self, system_prompt, user_prompt):
+        """外部调用：将模板生成的 prompt 填入编辑器"""
+        self._load_prompts(system_prompt, user_prompt)
+
     def get_edited_prompts(self):
-        """获取编辑后的 (system_prompt, user_prompt)"""
-        return self.system_edit.toPlainText(), self.user_edit.toPlainText()
+        """获取编辑后的 (system_prompt, user_prompt, template_id)"""
+        return (self.system_edit.toPlainText(), self.user_edit.toPlainText(),
+                self._current_template_id)
 
 
 # ============================================================
@@ -253,6 +287,9 @@ class AICorrectionTab(QWidget):
         # Prompt 查看（事后只读）
         self._prompt_system = ""
         self._prompt_user = ""
+
+        # Token 消耗统计
+        self._total_usage = None  # {"prompt_tokens": ..., "cost_estimate": ...}
 
         self._init_ui()
         self._connect_signals()
@@ -562,6 +599,7 @@ class AICorrectionTab(QWidget):
         # 清除 prompt
         self._prompt_system = ""
         self._prompt_user = ""
+        self._total_usage = None
 
         # 重置按钮状态
         self.show_hierarchy_btn.setChecked(False)
@@ -956,7 +994,7 @@ class AICorrectionTab(QWidget):
         return "\n".join(parts)
 
     def _build_prompt_html(self):
-        """构建 Prompt 查看 HTML（只读）"""
+        """构建 Prompt 查看 HTML（只读）+ Token 消耗统计"""
         if not self._prompt_system and not self._prompt_user:
             return "<p style='color: #E67E22; padding: 10px;'>暂无 Prompt 数据（尚未执行 AI 分析）</p>"
 
@@ -969,7 +1007,34 @@ class AICorrectionTab(QWidget):
                      "font-family: 'Consolas', 'Courier New', monospace; "
                      "white-space: pre-wrap; word-break: break-word; "
                      "max-height: 300px; overflow-y: auto; color: #333; }"
+                     ".usage-box { background: linear-gradient(135deg, #EBF5FB, #D6EAF8); "
+                     "border: 1px solid #2980B9; border-radius: 6px; padding: 12px; "
+                     "margin-bottom: 12px; font-size: 13px; }"
+                     ".usage-box h4 { margin: 0 0 8px 0; color: #1A5276; }"
+                     ".usage-row { display: flex; justify-content: space-between; }"
+                     ".usage-item { text-align: center; flex: 1; }"
+                     ".usage-value { font-size: 18px; font-weight: bold; color: #2C3E50; }"
+                     ".usage-label { font-size: 11px; color: #7F8C8D; }"
                      "</style>")
+
+        # Token 消耗统计
+        if self._total_usage:
+            u = self._total_usage
+            prompt_tokens = u.get("prompt_tokens", 0)
+            completion_tokens = u.get("completion_tokens", 0)
+            total_tokens = u.get("total_tokens", 0)
+            cost = u.get("cost_estimate", 0)
+            api_calls = u.get("api_calls", 1)
+            model = u.get("model", "unknown")
+
+            lines.append("<div class='usage-box'>")
+            lines.append(f"<h4>📊 Token 消耗统计（模型: {model}，API 调用: {api_calls} 次）</h4>")
+            lines.append("<div class='usage-row'>")
+            lines.append(f"<div class='usage-item'><div class='usage-value'>{prompt_tokens:,}</div><div class='usage-label'>输入 Token</div></div>")
+            lines.append(f"<div class='usage-item'><div class='usage-value'>{completion_tokens:,}</div><div class='usage-label'>输出 Token</div></div>")
+            lines.append(f"<div class='usage-item'><div class='usage-value'>{total_tokens:,}</div><div class='usage-label'>总计 Token</div></div>")
+            lines.append(f"<div class='usage-item'><div class='usage-value'>¥{cost:.4f}</div><div class='usage-label'>估算费用</div></div>")
+            lines.append("</div></div>")
 
         # System Prompt
         sys_chars = len(self._prompt_system)
@@ -1111,10 +1176,11 @@ class AICorrectionTab(QWidget):
     def get_confirm_status(self):
         return dict(self._confirm_status)
 
-    def set_prompts(self, system_prompt, user_prompt):
-        """设置本次分析使用的 Prompt（事后只读查看）"""
+    def set_prompts(self, system_prompt, user_prompt, total_usage=None):
+        """设置本次分析使用的 Prompt 和 Token 消耗（事后只读查看）"""
         self._prompt_system = system_prompt or ""
         self._prompt_user = user_prompt or ""
+        self._total_usage = total_usage or None
 
     def has_results(self):
         """是否有已加载的纠错结果"""

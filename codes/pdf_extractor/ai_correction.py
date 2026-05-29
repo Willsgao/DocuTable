@@ -21,15 +21,17 @@ Layer 4: CorrectionEngine — 总协调器，串联 L1→L2→L3
 """
 
 import json as _json
+import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import requests
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from .utils import load_config
+from .utils import load_config, get_project_root
 
 
 # ============================================================
@@ -82,6 +84,11 @@ class CorrectionResult:
     # == 预留：多模态分析结果 ==
     layout_analysis: Optional[dict] = None
     # {"table_bbox": [x0,y0,x1,y1], "merged_cells": [...], ...}
+
+    # == Token 消耗统计 ==
+    usage: Optional[dict] = None
+    # {"prompt_tokens": 1234, "completion_tokens": 567, "total_tokens": 1801,
+    #  "cost_estimate": 0.001, "model": "deepseek-chat"}
 
 
 # ============================================================
@@ -184,6 +191,48 @@ def _trim_all_cells(data, applied):
     if changed:
         applied.append("trim_cells")
     return data, applied
+
+
+def _trim_edge_empty_cells(data):
+    """仅删除每行左右两端的空单元格，保留内部空单元格。
+    用于表格提取后的自动清洗流程。
+
+    策略：
+    - 找到该行第一个非空单元格的索引（左边界）
+    - 找到该行最后一个非空单元格的索引（右边界）
+    - 删除左边界之前和右边界之后的所有单元格
+    - 保持内部结构不变（包括中间的空白列）
+
+    Returns:
+        (new_data, removed_count)
+    """
+    if not data:
+        return data, 0
+
+    result = []
+    total_removed = 0
+
+    for row in data:
+        # 找第一个和最后一个非空单元格索引
+        first_non_empty = -1
+        last_non_empty = -1
+        for i, cell in enumerate(row):
+            if cell is not None and str(cell).strip():
+                if first_non_empty < 0:
+                    first_non_empty = i
+                last_non_empty = i
+
+        if first_non_empty < 0:
+            # 全空行，保留原样
+            result.append(list(row))
+        else:
+            # 只保留 [first_non_empty .. last_non_empty] 范围内的单元格
+            trimmed_row = row[first_non_empty:last_non_empty + 1]
+            removed = len(row) - len(trimmed_row)
+            total_removed += removed
+            result.append(list(trimmed_row))
+
+    return result, total_removed
 
 
 def _normalize_numbers(data, applied):
@@ -366,6 +415,85 @@ class RuleAutoFixer:
 # Layer 3: LLM 深度分析
 # ============================================================
 
+# ============================================================
+# Prompt 模板管理器
+# ============================================================
+
+class PromptTemplateManager:
+    """Prompt 模板管理器 — 加载、保存、切换模板"""
+
+    TEMPLATES_FILE = "prompts/templates.json"
+    DEFAULT_SYSTEM_FILE = "prompts/default_system.txt"
+    DEFAULT_USER_FILE = "prompts/default_user.txt"
+
+    def __init__(self):
+        self._root = get_project_root()
+        self._templates_data = None
+
+    @property
+    def templates_file(self):
+        return self._root / self.TEMPLATES_FILE
+
+    @property
+    def default_system_file(self):
+        return self._root / self.DEFAULT_SYSTEM_FILE
+
+    @property
+    def default_user_file(self):
+        return self._root / self.DEFAULT_USER_FILE
+
+    def _load_templates(self):
+        """加载模板配置文件"""
+        if self._templates_data is not None:
+            return self._templates_data
+        try:
+            if self.templates_file.exists():
+                with open(self.templates_file, 'r', encoding='utf-8') as f:
+                    self._templates_data = _json.load(f)
+            else:
+                self._templates_data = {"version": 1, "default_template": "", "templates": {}}
+        except Exception:
+            self._templates_data = {"version": 1, "default_template": "", "templates": {}}
+        return self._templates_data
+
+    def get_template_list(self):
+        """获取模板名称列表，返回 [(template_id, display_name), ...]"""
+        data = self._load_templates()
+        templates = data.get("templates", {})
+        return [(tid, t.get("name", tid)) for tid in templates]
+
+    def get_template(self, template_id):
+        """获取指定模板的 (system_prompt, user_template)"""
+        data = self._load_templates()
+        t = data.get("templates", {}).get(template_id, {})
+        return t.get("system", ""), t.get("user_template", "")
+
+    def get_default_template_id(self):
+        """获取默认模板 ID"""
+        data = self._load_templates()
+        return data.get("default_template", "")
+
+    def get_default_system_prompt(self):
+        """从默认文件读取 system prompt"""
+        try:
+            if self.default_system_file.exists():
+                with open(self.default_system_file, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except Exception:
+            pass
+        return ""
+
+    def get_default_user_prompt_template(self):
+        """从默认文件读取 user prompt 模板"""
+        try:
+            if self.default_user_file.exists():
+                with open(self.default_user_file, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except Exception:
+            pass
+        return ""
+
+
 class LLMCorrector:
     """LLM 深度分析器 — 一次 API 调用完成命名 + 层级 + 区域判断"""
 
@@ -374,6 +502,18 @@ class LLMCorrector:
     MAX_OUTPUT_TOKENS = 8000       # 输出 token 上限
     TOKENS_PER_TABLE_EST = 300     # 每表 token 估算
     MAX_INPUT_TOKENS = 48000       # 输入 token 安全上限
+    MAX_JSON_RETRIES = 1           # JSON 解析失败时的最大重试次数
+
+    # 常见模型的成本单价（元/1M tokens）
+    PRICING = {
+        "deepseek-chat":      {"input": 1.0, "output": 2.0},
+        "deepseek-reasoner":  {"input": 4.0, "output": 16.0},
+        "doubao-pro-32k":     {"input": 0.8, "output": 2.0},
+        "doubao-pro-128k":    {"input": 5.0, "output": 9.0},
+        "qwen-plus":          {"input": 2.0, "output": 6.0},
+        "gpt-3.5-turbo":      {"input": 3.5, "output": 10.5},
+        "gpt-4o":             {"input": 18.3, "output": 73.1},
+    }
 
     PROMPT_MODE = "text_only"      # 当前纯文本模式，未来可改为 "multimodal"
 
@@ -386,6 +526,17 @@ class LLMCorrector:
         # 存储最近一次实际发送的 prompt（供 UI 事后查看）
         self.last_system_prompt = ""
         self.last_user_prompt = ""
+        # Token 消耗统计（跨批次的累计值）
+        self.total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_estimate": 0.0,
+            "model": self.model,
+            "api_calls": 0,
+        }
+        # Prompt 模板管理器
+        self._template_mgr = PromptTemplateManager()
 
     def analyze_all(self, tables, check_results, context=None, progress_callback=None,
                     custom_system_prompt=None, custom_user_prompt=None):
@@ -433,12 +584,15 @@ class LLMCorrector:
         if progress_callback:
             progress_callback(30, "调用 LLM API...")
 
-        response_data = self._call_api(system_prompt, user_prompt)
+        response_data, batch_usage = self._call_api(system_prompt, user_prompt)
+
+        # 累计 token 消耗
+        self._accumulate_usage(batch_usage)
 
         if progress_callback:
             progress_callback(70, "解析 LLM 响应...")
 
-        return self._parse_response(response_data, tables)
+        return self._parse_response(response_data, tables, batch_usage)
 
     def _batched_call(self, tables, check_results, batch_size, context, progress_callback):
         """分批次 API 调用"""
@@ -473,47 +627,12 @@ class LLMCorrector:
         """构建三合一 Prompt（命名 + 层级 + 区域）"""
         total_pages = max((t.get("page", 1) for t in tables), default=1)
 
-        system_prompt = """你是一个金融文档表格分析专家。分析从银行年报PDF中自动提取的表格数据。
+        # 使用模板管理器获取默认 system prompt
+        system_prompt = self._template_mgr.get_default_system_prompt()
+        if not system_prompt:
+            system_prompt = """你是一个金融文档表格分析专家。分析从银行年报PDF中自动提取的表格数据。\n\n任务（三项合一）：\n1. **命名**：根据表格内容及上方描述文字生成规范名称和一句话摘要。\n2. **层级**：识别合计(总计)/小计/层级嵌套关系，用row索引标记。\n3. **区域**：判断表格是否完整、是否应与相邻表合并或拆分。\n\n层级标记 type：\n- \"header\": 表头行（列名）\n- \"category\": 分类/层级标签行\n- \"subtotal\": 小计行（total_of_rows 填写包含的行索引）\n- \"total\": 总计行（total_of_rows 填写包含的行索引）\n- \"data\": 普通数据行\n\n置信度原则：\n- 能确定的给出精确结果，confidence: \"high\"\n- 不确定的标注 confidence: \"medium\" 或 \"low\" 并写明原因\n- 无法判断的标注 \"unresolvable\"\n- 只返回 JSON，不要其他任何文字"""
 
-任务（三项合一）：
-1. **命名**：根据表格内容及上方描述文字生成规范名称和一句话摘要。
-2. **层级**：识别合计(总计)/小计/层级嵌套关系，用row索引标记。
-3. **区域**：判断表格是否完整、是否应与相邻表合并或拆分。
-
-层级标记 type：
-- "header": 表头行（列名）
-- "category": 分类/层级标签行
-- "subtotal": 小计行（total_of_rows 填写包含的行索引）
-- "total": 总计行（total_of_rows 填写包含的行索引）
-- "data": 普通数据行
-
-置信度原则：
-- 能确定的给出精确结果，confidence: "high"
-- 不确定的标注 confidence: "medium" 或 "low" 并写明原因
-- 无法判断的标注 "unresolvable"
-- 只返回 JSON，不要其他任何文字"""
-
-        table_blocks = []
-        for t in tables:
-            idx = t.get("__index__", 0)
-            page = t.get("page", 1)
-            ext = t.get("extractor", "unknown")
-            ctx = self._enrich_context(t, context)
-            preview = self._build_table_preview(t.get("data", []))
-            ck = check_results.get(idx, {})
-
-            block = f"""---
-### 表格 #{idx}（PDF 第 {page} 页 / 共 {total_pages} 页，提取方式 {ext}）
-
-#### 规则预检：
-{self._format_check_result(ck)}
-
-#### 表格上方文字：
-{ctx if ctx else "（无）"}
-
-#### 表格数据：
-{preview}"""
-            table_blocks.append(block)
+        table_blocks = self._build_table_blocks(tables, check_results, context)
 
         user_prompt = f"""本文档共 {total_pages} 页，提取到 {len(tables)} 张表格。
 
@@ -607,7 +726,11 @@ class LLMCorrector:
         return "\n".join(lines) if lines else "（无异常）"
 
     def _call_api(self, system_prompt, user_prompt, max_retries=2):
-        """调用 LLM API，含重试机制"""
+        """调用 LLM API，含重试机制 + JSON 解析失败时自动重试
+
+        Returns:
+            (parsed_data, usage_dict) 或 ({"error": ...}, {})
+        """
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
@@ -628,26 +751,60 @@ class LLMCorrector:
                 resp.raise_for_status()
                 result = resp.json()
 
+                # 提取 usage 信息
+                usage = self._extract_usage(result)
+
                 if 'choices' in result and len(result['choices']) > 0:
                     content = result['choices'][0]['message']['content']
-                    return self._try_parse_json(content)
+                    parsed = self._try_parse_json(content)
+
+                    # JSON 解析成功
+                    if "error" not in parsed:
+                        return parsed, usage
+
+                    # JSON 解析失败 → 尝试重试（将错误反馈给 LLM）
+                    if self.MAX_JSON_RETRIES > 0 and attempt < max_retries:
+                        json_error = parsed.get("error", "未知解析错误")
+                        print(f"[LLM] JSON 解析失败 (尝试 {attempt + 1}): {json_error}，正在重试...")
+
+                        # 构建修复请求
+                        data["messages"].append(
+                            {"role": "assistant", "content": content}
+                        )
+                        data["messages"].append({
+                            "role": "user",
+                            "content": (
+                                f"你上次的回复无法解析为有效 JSON。错误信息: {json_error}\n\n"
+                                "请严格按照 JSON 格式重新输出，确保：\n"
+                                "1. 所有字符串使用双引号\n"
+                                "2. 没有尾随逗号\n"
+                                "3. 括号完整闭合\n"
+                                "4. 不要包含 markdown 代码块标记\n"
+                                "5. 只返回纯 JSON"
+                            )
+                        })
+                        # 增加 temperature 避免重复同样错误
+                        data["temperature"] = min(0.3, data["temperature"] + 0.1)
+                        continue
+
+                    return parsed, usage
                 else:
-                    return {"error": "API 返回格式错误", "raw": str(result)}
+                    return {"error": "API 返回格式错误", "raw": str(result)}, usage
 
             except requests.exceptions.Timeout:
                 if attempt < max_retries:
                     time.sleep(2)
                     continue
-                return {"error": "API 请求超时"}
+                return {"error": "API 请求超时"}, {}
             except requests.exceptions.HTTPError as e:
-                return {"error": f"HTTP {e.response.status_code}: {e.response.reason}"}
+                return {"error": f"HTTP {e.response.status_code}: {e.response.reason}"}, {}
             except Exception as e:
                 if attempt < max_retries:
                     time.sleep(2)
                     continue
-                return {"error": str(e)}
+                return {"error": str(e)}, {}
 
-        return {"error": "所有重试均失败"}
+        return {"error": "所有重试均失败"}, {}
 
     def _try_parse_json(self, content):
         """尝试多种方式解析 JSON"""
@@ -682,22 +839,76 @@ class LLMCorrector:
 
         return {"error": "JSON 解析失败", "raw": content[:500]}
 
-    def _parse_response(self, response_data, tables):
-        """解析 LLM 响应为 CorrectionResult 列表"""
+    def _extract_usage(self, api_response):
+        """从 API 响应中提取 token 使用量并估算成本"""
+        usage_raw = api_response.get("usage", {})
+        if not usage_raw:
+            return {}
+
+        prompt_tokens = usage_raw.get("prompt_tokens", 0)
+        completion_tokens = usage_raw.get("completion_tokens", 0)
+        total_tokens = usage_raw.get("total_tokens", prompt_tokens + completion_tokens)
+
+        # 估算成本
+        pricing = self.PRICING.get(self.model, {"input": 0, "output": 0})
+        input_cost = (prompt_tokens / 1_000_000) * pricing["input"]
+        output_cost = (completion_tokens / 1_000_000) * pricing["output"]
+        cost = input_cost + output_cost
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cost_estimate": round(cost, 6),
+            "model": self.model,
+        }
+
+    def _accumulate_usage(self, usage):
+        """累计 token 使用量到 total_usage"""
+        if not usage:
+            return
+        self.total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        self.total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        self.total_usage["total_tokens"] += usage.get("total_tokens", 0)
+        self.total_usage["cost_estimate"] += usage.get("cost_estimate", 0)
+        self.total_usage["cost_estimate"] = round(self.total_usage["cost_estimate"], 6)
+        self.total_usage["api_calls"] += 1
+
+    def _parse_response(self, response_data, tables, batch_usage=None):
+        """解析 LLM 响应为 CorrectionResult 列表
+
+        Args:
+            response_data: LLM 返回的 JSON 数据
+            tables: 原始表格列表
+            batch_usage: 本批次的 token 消耗统计（可选）
+        """
         results = []
 
-        if "error" in response_data:
-            # LLM 调用失败 → 所有表降级为 needs_review
+        # 容错：LLM 可能直接返回 JSON 数组 [{...}, {...}] 而非 {"tables": [...]}
+        if isinstance(response_data, list):
+            llm_tables = response_data
+        elif isinstance(response_data, dict):
+            if "error" in response_data:
+                # LLM 调用失败 → 所有表降级为 needs_review
+                for t in tables:
+                    results.append(CorrectionResult(
+                        table_index=t.get("__index__", 0),
+                        status="needs_review",
+                        confidence="medium",
+                        changes_summary=f"LLM 分析失败: {response_data.get('error', '未知错误')}"
+                    ))
+                return results
+            llm_tables = response_data.get("tables", [])
+        else:
+            # 既非 list 也非 dict → 降级处理
             for t in tables:
                 results.append(CorrectionResult(
                     table_index=t.get("__index__", 0),
                     status="needs_review",
                     confidence="medium",
-                    changes_summary=f"LLM 分析失败: {response_data.get('error', '未知错误')}"
+                    changes_summary="LLM 返回格式异常，无法解析"
                 ))
             return results
-
-        llm_tables = response_data.get("tables", [])
         if not isinstance(llm_tables, list):
             for t in tables:
                 results.append(CorrectionResult(
@@ -793,6 +1004,11 @@ class LLMCorrector:
             # 多模态预留
             result.layout_analysis = None
 
+            # Token 消耗统计（每批次只第一个表携带 usage，避免重复累加）
+            first_batch_idx = tables[0].get("__index__", -1) if tables else -1
+            if idx == first_batch_idx and batch_usage:
+                result.usage = batch_usage
+
             results.append(result)
 
         return results
@@ -854,6 +1070,76 @@ class LLMCorrector:
                 changes_summary="未配置 API Key，跳过 LLM 分析"
             ))
         return results
+
+    # ==================== 模板管理接口 ====================
+
+    def get_template_list(self):
+        """获取可用模板列表 [(id, name), ...]"""
+        return self._template_mgr.get_template_list()
+
+    def get_default_template_id(self):
+        """获取默认模板 ID"""
+        return self._template_mgr.get_default_template_id()
+
+    def apply_template(self, template_id, tables, check_results, context=None):
+        """应用指定模板构建 prompt
+
+        Args:
+            template_id: 模板 ID
+            tables: 表格列表
+            check_results: 预检结果
+            context: PDFContext 实例（可选）
+
+        Returns:
+            (system_prompt, user_prompt) 或 (None, None) 如果模板不存在
+        """
+        sys_tpl, usr_tpl = self._template_mgr.get_template(template_id)
+        if not sys_tpl and not usr_tpl:
+            return None, None
+
+        # 如果模板没有 user_template，使用默认构建
+        if not usr_tpl:
+            _, usr_tpl = self._build_prompt(tables, check_results, context)
+            return sys_tpl, usr_tpl
+
+        # 用模板的 user_template 构建（替换变量）
+        total_pages = max((t.get("page", 1) for t in tables), default=1)
+        table_blocks = self._build_table_blocks(tables, check_results, context)
+        user_prompt = usr_tpl.replace("{total_pages}", str(total_pages))
+        user_prompt = user_prompt.replace("{table_count}", str(len(tables)))
+        user_prompt = user_prompt.replace("{table_blocks}", "".join(table_blocks))
+
+        return sys_tpl, user_prompt
+
+    def _build_table_blocks(self, tables, check_results, context):
+        """构建表格块文本（提取自 _build_prompt，供模板化使用）"""
+        total_pages = max((t.get("page", 1) for t in tables), default=1)
+        table_blocks = []
+        for t in tables:
+            idx = t.get("__index__", 0)
+            page = t.get("page", 1)
+            ext = t.get("extractor", "unknown")
+            ctx = self._enrich_context(t, context)
+            preview = self._build_table_preview(t.get("data", []))
+            ck = check_results.get(idx, {})
+
+            block = f"""---
+### 表格 #{idx}（PDF 第 {page} 页 / 共 {total_pages} 页，提取方式 {ext}）
+
+#### 规则预检：
+{self._format_check_result(ck)}
+
+#### 表格上方文字：
+{ctx if ctx else "（无）"}
+
+#### 表格数据：
+{preview}"""
+            table_blocks.append(block)
+        return table_blocks
+
+    def get_total_usage(self):
+        """获取累计 token 消耗统计"""
+        return dict(self.total_usage)
 
     # ==================== 多模态扩展接口（预留） ====================
 
@@ -1103,6 +1389,7 @@ class CorrectionEngine(QObject):
         self.pdf_context = pdf_context
         self.last_prompts = None  # 存储最近一次发送的 (system_prompt, user_prompt)
         self._corrector = None    # 保留 LLMCorrector 引用以便外部读取
+        self.last_total_usage = None  # 存储最近一次 LLM 调用的 token 消耗统计
 
     def run(self, custom_system_prompt=None, custom_user_prompt=None):
         """主流程：L1 → L2 → L3"""
@@ -1157,6 +1444,9 @@ class CorrectionEngine(QObject):
                 self._corrector.last_user_prompt
             )
 
+            # 保存 token 消耗统计
+            self.last_total_usage = self._corrector.get_total_usage()
+
             # 合并 LLM 结果到 results
             llm_map = {r.table_index: r for r in llm_results}
             for r in results:
@@ -1186,7 +1476,7 @@ class CorrectionEngine(QObject):
             # ============ 数值交叉验证 ============
             self.progress.emit(95, "数值交叉验证中...")
             for r in results:
-                if r.hierarchy:
+                if r.hierarchy and 0 <= r.table_index < len(self.tables):
                     data_to_verify = r.corrected_data or self.tables[r.table_index].get("data", [])
                     verified, discrepancies = _verify_hierarchy_numeric(data_to_verify, r.hierarchy)
                     r.hierarchy_verified = verified

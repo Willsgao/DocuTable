@@ -2516,16 +2516,40 @@ class ExcelExporter:
 # ============================================================
 
 def _remove_spaces_data(data):
-    """删除空单元格：每行非空左对齐，空单元格右移。返回新数组。"""
+    """智能删除空单元格：仅删除每行左右两端的空单元格，保留内部空单元格。
+
+    策略：
+    - 找到该行第一个非空单元格的索引（左边界）
+    - 找到该行最后一个非空单元格的索引（右边界）
+    - 删除左边界之前和右边界之后的所有单元格
+    - 保持内部单元格结构不变（中间的空白列会被保留）
+
+    Returns:
+        新数组（list of lists）
+    """
     import copy
-    result = copy.deepcopy(data)
-    for row in result:
-        non_empty = [cell for cell in row if cell and str(cell).strip()]
-        for i in range(len(row)):
-            if i < len(non_empty):
-                row[i] = non_empty[i]
-            else:
-                row[i] = ""
+    if not data:
+        return []
+
+    result = []
+    for row in data:
+        # 找第一个和最后一个非空单元格索引
+        first = -1
+        last = -1
+        for i, cell in enumerate(row):
+            if cell is not None and str(cell).strip():
+                if first < 0:
+                    first = i
+                last = i
+
+        if first < 0:
+            # 全空行，保留原样
+            result.append(list(row))
+        else:
+            # 只保留 [first .. last] 范围内的单元格
+            trimmed = row[first:last + 1]
+            result.append(list(trimmed))
+
     return result
 
 
@@ -2693,7 +2717,7 @@ def _auto_clean_tables(results, progress_callback=None):
                 if prev_data[r][c] != table["data"][r][c]:
                     total_cleaned_cells += 1
 
-        # 3. 删除空格（左对齐压缩）
+        # 3. 智能删除空格（仅两端空单元格）
         prev_data = copy.deepcopy(table["data"])
         cleaned = _remove_spaces_data(table["data"])
         table["data"] = cleaned

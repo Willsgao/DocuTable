@@ -1,0 +1,40 @@
+本文档共 {total_pages} 页，提取到 {table_count} 张表格。
+
+{table_blocks}
+
+---
+
+请返回 JSON（不要 markdown 代码块标记，直接返回纯 JSON 文本）：
+{"tables": [
+  {{
+    "table_index": 0,
+    "name": {"title": "合并资产负债表", "summary": "截至2024年末的资产负债情况"},
+    "hierarchy": [
+      {"row": 0, "type": "header", "level": 0, "label": "项目"},
+      {"row": 1, "type": "category", "level": 1, "label": "流动资产"},
+      {"row": 5, "type": "subtotal", "level": 1, "label": "流动资产合计", "total_of_rows": [1,2,3,4]},
+      {"row": 10, "type": "total", "level": 0, "label": "资产总计", "total_of_rows": [5,9]}
+    ],
+    "hierarchy_confidence": "high",
+    "region": {{
+      "is_complete": true,
+      "merge_prev": null,
+      "merge_next": null,
+      "split_at_rows": null,
+      "confidence": "high"
+    }},
+    "corrections": [
+      {"row": 2, "col": 3, "action": "change", "new_value": "12,345"}
+    ],
+    "corrections_confidence": "high",
+    "issues": []
+  }}
+]}}
+
+备注：
+- region.merge_prev: 填入应与之合并的前一表格 index，null 表示不合并
+- region.merge_next: 填入应与之合并的后一表格 index，null 表示不合并
+- region.split_at_rows: 如果一张表包含多个独立表格，填入分隔行索引（列表）
+- corrections.action: change / merge_cells / split_cell / insert_col / delete_col
+- issues 仅在 confidence 不是 high 时填写
+  [{"type": "...", "confidence": "medium/low", "description": "...", "suggested_action": "..."}]

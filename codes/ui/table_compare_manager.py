@@ -308,7 +308,7 @@ class TableCompareManager(QObject):
         
         # 删除空格按钮
         self.remove_spaces_btn = QPushButton("🧹 删除空格")
-        self.remove_spaces_btn.setToolTip("清除当前表格中所有单元格的前后及中间空格，并左对齐")
+        self.remove_spaces_btn.setToolTip("仅删除每行左右两端的空单元格，内部的保留")
         self.remove_spaces_btn.setFocusPolicy(Qt.NoFocus)
         self.remove_spaces_btn.clicked.connect(self.remove_spaces)
         self.remove_spaces_btn.setStyleSheet("""
@@ -1505,37 +1505,59 @@ class TableCompareManager(QObject):
         self.table_widget.resizeColumnsToContents()
     
     def remove_spaces(self):
-        """删除空单元格：每行内，非空单元格向左移动对齐，空单元格移到右侧"""
+        """智能删除空单元格：仅在处理文本行时，删除每行左右两端的空单元格，保持内部空单元格不变"""
         self.save_current_table_state()
         table = self.table_widget
         removed_count = 0
         for row in range(table.rowCount()):
-            # 收集当前行所有非空单元格内容
-            cells = []
+            # 找到该行第一个和最后一个非空单元格
+            first_non_empty = -1
+            last_non_empty = -1
             for col in range(table.columnCount()):
                 item = table.item(row, col)
                 text = item.text().strip() if item else ""
-                if text:  # 非空，保留
-                    cells.append(text)
-                else:
-                    removed_count += 1
+                if text:
+                    if first_non_empty < 0:
+                        first_non_empty = col
+                    last_non_empty = col
 
-            # 将非空内容左对齐填充，右侧留空
-            for col in range(table.columnCount()):
+            if first_non_empty < 0:
+                # 全空行 → 跳过
+                continue
+
+            # 统计左侧被删除的空单元格数
+            removed_count += first_non_empty  # 左侧空单元格数
+
+            # 统计右侧被删除的空单元格数
+            right_empty = table.columnCount() - 1 - last_non_empty
+            removed_count += right_empty
+
+            # 将 first_non_empty..last_non_empty 范围左移到 0..N-1
+            new_col = 0
+            for col in range(first_non_empty, last_non_empty + 1):
+                src = table.item(row, col)
+                dst = table.item(row, new_col)
+                if dst is None:
+                    dst = QTableWidgetItem()
+                    table.setItem(row, new_col, dst)
+                dst.setText(src.text() if src else "")
+                dst.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                new_col += 1
+
+            # 多出的列清空
+            for col in range(new_col, table.columnCount()):
                 item = table.item(row, col)
                 if item is None:
                     item = QTableWidgetItem()
                     table.setItem(row, col, item)
-                if col < len(cells):
-                    item.setText(cells[col])
-                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                else:
+                if item.text():
                     item.setText("")
 
         table.resizeColumnsToContents()
         QMessageBox.information(
             self.main_window, "删除空格",
-            f"已处理完成，共清理 {removed_count} 个空单元格，各行已左对齐。"
+            f"已处理完成，共清理 {removed_count} 个两端空单元格。\n"
+            "注意：仅删除了每行左右两端的空单元格，内部的不会删除。"
         )
 
     def clean_data(self):
@@ -2294,14 +2316,35 @@ class TableCompareManager(QObject):
                                  f"构建 Prompt 时出错：\n{str(e)}")
             return
 
+        # 获取可用模板列表
+        templates = corrector.get_template_list()
+
         # 弹出编辑弹窗
         dlg = PromptEditDialog(sys_prompt, usr_prompt, analysis_scope=scope_label,
-                               parent=self.main_window)
+                               parent=self.main_window, templates=templates)
+
+        # 模板切换信号
+        def on_template_selected(template_id):
+            tpl_sys, tpl_usr = corrector.apply_template(
+                template_id, scope_tables, check_results, pdf_context
+            )
+            if tpl_sys and tpl_usr:
+                dlg.apply_template_prompts(tpl_sys, tpl_usr)
+            else:
+                QMessageBox.warning(self.main_window, "模板加载失败",
+                                    f"无法加载模板 '{template_id}'，请检查模板配置。")
+
+        dlg.template_changed.connect(on_template_selected)
+
         if dlg.exec_() != QDialog.Accepted:
             return  # 用户取消
 
-        # 获取编辑后的 prompt
-        edited_sys, edited_usr = dlg.get_edited_prompts()
+        # 获取编辑后的 prompt（新格式返回三元组）
+        result = dlg.get_edited_prompts()
+        if len(result) == 3:
+            edited_sys, edited_usr, _template_id = result
+        else:
+            edited_sys, edited_usr = result
 
         # 确认发送
         reply = QMessageBox.question(
@@ -2405,11 +2448,12 @@ class TableCompareManager(QObject):
         if ai_tab:
             ai_tab.set_results(correction_results, self.main_window.processed_results)
 
-            # 传递实际发送的 Prompt（供事后查看）
+            # 传递实际发送的 Prompt 和 Token 消耗（供事后查看）
             if worker and hasattr(worker, 'engine') and worker.engine:
                 prompts = getattr(worker.engine, 'last_prompts', None)
+                usage = getattr(worker.engine, 'last_total_usage', None)
                 if prompts:
-                    ai_tab.set_prompts(prompts[0], prompts[1])
+                    ai_tab.set_prompts(prompts[0], prompts[1], usage)
 
             # 切换到 AI优化 Tab
             tabs = self.main_window.tabs
