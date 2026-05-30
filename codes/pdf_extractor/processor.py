@@ -1001,16 +1001,30 @@ class PDFProcessor:
             print(f"  [docx] 错误：未安装 pdf2docx 库，请执行 pip install pdf2docx")
             return []
 
-        buf = BytesIO()
+        import tempfile
+        import multiprocessing
+        cpu_count = min(multiprocessing.cpu_count(), 6)  # 最多6核，避免资源争抢
+
+        # pdf2docx 多进程模式需要落盘（子进程间通过 JSON 文件交换数据）
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp:
+            tmp_path = tmp.name
+
         cv = Converter(_pdf_path)
         cv.convert(
-            buf,
+            tmp_path,
             start=0,
             end=None,
             layout=False,           # 流式模式：表格识别更准
             table_deduction=False,  # 保守策略
+            multi_processing=True,
+            cpu_count=cpu_count,
         )
         cv.close()
+
+        buf = BytesIO()
+        with open(tmp_path, 'rb') as f:
+            buf.write(f.read())
+        os.unlink(tmp_path)
         buf.seek(0)
 
         elapsed = time.time() - t0
@@ -1195,31 +1209,161 @@ class PDFProcessor:
                 print(f"  [docx] 表格{tbl_idx+1}解析失败: {e}")
                 continue
 
-        # 步骤4：用 PDF 文本匹配校验页码（兜底：分页符不可靠时用文本指纹）
+        # 步骤4：V2-Lite 坐标匹配校验页码
         if context and results:
             if progress_callback:
-                progress_callback(33, "docx: 校验表格页码...")
+                progress_callback(33, "docx: V2-Lite 坐标匹配校验页码...")
+            # V2-Lite 扫描＋Jaccard匹配＋bbox冲突检测＋排序 全部在内部完成
             results = self._verify_docx_page_numbers(results, context)
-            # 确保页码单调递增
-            for i in range(1, len(results)):
-                if results[i].get("page", 0) < results[i-1].get("page", 0):
-                    results[i]["page"] = results[i-1]["page"]
-            # 按页码排序
-            results.sort(key=lambda x: x.get("page", 0))
+            # results 已按页码排序，无需再次排序
 
         if progress_callback:
             progress_callback(36, f"docx提取完成: {len(results)}个表格")
         print(f"  [docx] 共提取 {len(results)} 个表格")
         return results
 
-    def _verify_docx_page_numbers(self, results, context):
-        """为每个 docx 表格匹配真实 PDF 页码（精确子串匹配）。
+    # ---- V2-Lite 轻量区域扫描 + 坐标校验 ----
+
+    def _scan_table_regions_lite(self, context):
+        """V2-Lite: 轻量扫描所有页面的表格区域坐标。
+
+        不重组表格数据，只记录每页检测到的表格区域位置和区域内文本。
+        利用 context.get_words() 缓存，速度极快（<1秒/200页）。
+
+        Returns:
+            [{page: int(1-based), regions: [(x0, y0, x1, y1, region_text), ...]}]
+        """
+        import fitz
+
+        cfg = self.V2_CONFIG
+        total = context.page_count
+        result = []
+
+        for pn in range(total):
+            try:
+                page = context.get_page(pn)
+            except Exception:
+                result.append({"page": pn + 1, "regions": []})
+                continue
+
+            page_rect = page.rect
+            words = context.get_words(pn)
+
+            if not words:
+                result.append({"page": pn + 1, "regions": []})
+                continue
+
+            # 金融关键词 + 文本长度过滤（与 V2 一致）
+            full_text = " ".join(w["text"] for w in words)
+            if not any(kw in full_text for kw in cfg["financial_keywords"]):
+                result.append({"page": pn + 1, "regions": []})
+                continue
+            if len(full_text) < cfg["min_text_length"]:
+                result.append({"page": pn + 1, "regions": []})
+                continue
+
+            # 检测表格区域（无框表格：纯文本密度法）
+            table_regions = self._detect_table_region_by_text(
+                words, page_rect.width, page_rect.height
+            )
+
+            regions_info = []
+            for (rx0, ry0, rx1, ry1) in table_regions:
+                # 提取区域内文本并清洗
+                region_words = [
+                    w for w in words
+                    if rx0 <= w["x0"] <= rx1 and ry0 <= w["y0"] <= ry1
+                    and w["text"].strip()
+                ]
+                region_text = " ".join(w["text"] for w in region_words)
+                if region_text:
+                    regions_info.append((rx0, ry0, rx1, ry1, region_text))
+
+            result.append({"page": pn + 1, "regions": regions_info})
+
+        total_regions = sum(len(r["regions"]) for r in result)
+        pages_with_regions = sum(1 for r in result if r["regions"])
+        print(
+            f"  [V2-Lite] 扫描完成: {pages_with_regions}/{total} 页有表格, "
+            f"共 {total_regions} 个区域"
+        )
+        return result
+
+    @staticmethod
+    def _build_table_data_fingerprint(table_data):
+        """从表格数据行（跳过表头）中提取唯一数据指纹。
 
         策略：
-        1. 取表格前2行非空单元格拼接为"签名文本"
-        2. 在 PDF 各页文本中精确搜索每个签名片段
-        3. 命中≥2个片段的那一页即为表格所在页
-        4. 未匹配的表格用相邻已匹配表格的位置插值推定
+        1. 跳过前2行（通常是表头/子表头）
+        2. 收集所有非空、长度≥3 的单元格值
+        3. 优先取数值型（最唯一，如 12,345,678 几乎不可能在其他页重复）
+        4. 补足文本型（≥5 字更有区分度）
+        5. 最多 25 个指纹片段
+
+        Returns:
+            set of str: 指纹片段集合
+        """
+        fingerprints = set()
+        numeric_values = []
+        text_values = []
+
+        # 如果行数 ≤ 2，也把头行包含进来（小表没有数据行）
+        start_row = 2 if len(table_data) > 3 else 0
+
+        for row in table_data[start_row:]:
+            for cell in row:
+                if not cell:
+                    continue
+                s = str(cell).strip()
+                if not s or len(s) < 3:
+                    continue
+
+                # 数值型检测（带千分位、百分号、括号负号）
+                cleaned = (
+                    s.replace(",", "").replace("%", "")
+                    .replace("\u2030", "").replace("(", "-").replace(")", "")
+                )
+                try:
+                    float(cleaned)
+                    numeric_values.append(s)
+                    continue
+                except ValueError:
+                    pass
+
+                # 文本型（≥5 字更有区分度）
+                if len(s) >= 5:
+                    text_values.append(s)
+
+        # 优先数值，后补文本
+        seen = set()
+        for v in numeric_values:
+            if v not in seen:
+                fingerprints.add(v)
+                seen.add(v)
+            if len(fingerprints) >= 25:
+                break
+
+        if len(fingerprints) < 25:
+            for v in text_values:
+                if v not in seen:
+                    fingerprints.add(v)
+                    seen.add(v)
+                if len(fingerprints) >= 25:
+                    break
+
+        return fingerprints
+
+    def _verify_docx_page_numbers(self, results, context):
+        """基于 V2-Lite 物理坐标匹配的页码验证。
+
+        架构：
+        阶段0：V2-Lite 扫描所有页面，获得准确的表格区域坐标（页码+bbox）和文本
+        阶段1：为每个 docx 表格构建数据指纹（跳过表头，取唯一数据值）
+        阶段2：每个 docx 表与所有 V2-Lite 区域做 Jaccard 相似度匹配
+        阶段3：高置信度匹配 → 修正页码；低置信度 → 靠近锚点的酌情修正
+        阶段4：未匹配表格用邻居插值兜底
+        阶段5：V2-Lite bbox 同页 Y 冲突检测（替代不可靠的文本估测）
+        阶段6：按页码排序（不强制单调递增——pdf2docx 顺序可能与物理页序不同）
         """
         if not results or not context:
             return results
@@ -1228,100 +1372,300 @@ class PDFProcessor:
         if total_pages <= 1:
             return results
 
-        # 预加载所有页面文本
-        page_texts = {}
-        for pn in range(total_pages):
-            try:
-                page_texts[pn] = context.get_page_text(pn)
-            except Exception:
-                page_texts[pn] = ""
+        num_tables = len(results)
 
-        assigned = 0
-        assigned_indices = set()
-        for idx, r in enumerate(results):
+        # ===== 阶段0：V2-Lite 扫描 =====
+        region_map = self._scan_table_regions_lite(context)
+
+        # 构建所有区域的统一索引（保留 bbox 信息）
+        # all_regions = [(page, token_set, y0, y1), ...]
+        all_regions = []
+        for page_info in region_map:
+            page_num = page_info["page"]
+            for region in page_info["regions"]:
+                _, ry0, _, ry1, region_text = region
+                region_tokens = set(
+                    t.lower() for t in region_text.split() if len(t) >= 2
+                )
+                if region_tokens:
+                    all_regions.append((page_num, region_tokens, ry0, ry1))
+
+        if not all_regions:
+            print("  [docx] V2-Lite 未检测到任何表格区域，保留 docx 原始页码")
+            return results
+
+        # ===== 阶段1：为每个 docx 表格构建数据指纹 =====
+        table_fingerprints = []
+        for r in results:
             rows = r.get("data", [])
-            if not rows:
+            fp = self._build_table_data_fingerprint(rows)
+            fp_lower = {v.lower() for v in fp}
+            table_fingerprints.append(fp_lower)
+
+        # ===== 阶段2：Jaccard 相似度匹配（同时记录 bbox）=====
+        # matches[ti] = (page, score, common_cnt, y0, y1) or None
+        matches = [None] * num_tables
+
+        MIN_COMMON = 2
+        HIGH_CONF_JACCARD = 0.08
+
+        for ti, fp in enumerate(table_fingerprints):
+            if not fp:
                 continue
 
-            # 从前2行提取签名片段（长度≥3，去重，最多4个）
-            sig_parts = []
-            for row in rows[:2]:
-                for cell in row:
-                    if cell and str(cell).strip():
-                        s = str(cell).strip()
-                        if len(s) >= 3 and s not in sig_parts:
-                            sig_parts.append(s)
-                            if len(sig_parts) >= 4:
-                                break
-                if len(sig_parts) >= 4:
-                    break
+            best_page = 0
+            best_score = 0.0
+            best_common = 0
+            best_y0 = 0.0
+            best_y1 = 0.0
 
-            if len(sig_parts) < 2:
+            for page_num, region_tokens, ry0, ry1 in all_regions:
+                common = fp & region_tokens
+                common_count = len(common)
+                if common_count < MIN_COMMON:
+                    continue
+
+                union = fp | region_tokens
+                if not union:
+                    continue
+                jaccard = common_count / len(union)
+                combined = jaccard + 0.015 * common_count
+
+                if combined > best_score:
+                    best_score = combined
+                    best_page = page_num
+                    best_common = common_count
+                    best_y0 = ry0
+                    best_y1 = ry1
+
+            if best_page > 0:
+                matches[ti] = (best_page, best_score, best_common, best_y0, best_y1)
+
+        # ===== 阶段3：根据置信度修正页码 =====
+        for ti in range(num_tables):
+            if matches[ti] is None:
+                ctx_preview = results[ti].get("context_text", "")[:50]
+                print(f"  [docx] 表{ti+1}: 无匹配 [{ctx_preview}]")
                 continue
 
-            # 精确子串匹配：哪页命中最多个签名片段
-            best_page = 1
-            best_hits = 0
-            best_detail = ""
+            matched_page, score, common_cnt, _y0, _y1 = matches[ti]
+            old_page = results[ti].get("page", 0)
+            delta = abs(matched_page - old_page)
 
-            for pn in range(total_pages):
-                pt = page_texts.get(pn, "")
-                if not pt:
-                    continue
+            if score >= HIGH_CONF_JACCARD:
+                results[ti]["page"] = matched_page
+                status = "高置信度修正" if old_page != matched_page else "确认一致"
+            elif delta <= 2:
+                results[ti]["page"] = matched_page
+                status = "近锚点弱匹配"
+            else:
+                status = "低置信度保留"
+                continue  # 不修正，保留 docx 原始页码
 
-                hits = sum(1 for sp in sig_parts if sp in pt)
-                if hits > best_hits:
-                    best_hits = hits
-                    best_page = pn + 1
-                    best_detail = f"{hits}/{len(sig_parts)}"
+            ctx_preview = results[ti].get("context_text", "")[:40]
+            print(
+                f"  [docx] {status}: 表{ti+1} P{old_page}→P{results[ti]['page']}"
+                f" (J={score:.3f}, 公共词={common_cnt}, Δ={delta}) [{ctx_preview}]"
+            )
 
-            old_page = r.get("page", 0)
-            if best_hits >= 2:
-                r["page"] = best_page
-                assigned += 1
-                assigned_indices.add(idx)
-                if old_page != best_page:
-                    print(
-                        f"  [docx] 页码纠正: P{old_page}→P{best_page}"
-                        f"(命中{best_detail})"
-                    )
+        # ===== 阶段4：未匹配表格用邻居插值 =====
+        high_conf_indices = {
+            ti for ti in range(num_tables)
+            if matches[ti] is not None and matches[ti][1] >= HIGH_CONF_JACCARD
+        }
+        weak_indices = {
+            ti for ti in range(num_tables)
+            if matches[ti] is not None and matches[ti][1] < HIGH_CONF_JACCARD
+        }
+        all_matched = high_conf_indices | weak_indices
 
-        # ---- 兜底：签名未匹配的表格用位置插值分配页码 ----
-        all_indices = set(range(len(results)))
-        unassigned = [
-            i for i in all_indices
-            if i not in assigned_indices and results[i].get("data")
-        ]
-        if unassigned and assigned_indices:
-            known = [(i, results[i]["page"]) for i in sorted(assigned_indices)]
-            print(f"  [docx] 插值兜底: {len(unassigned)} 个表格通过位置推算页码...")
+        if high_conf_indices:
+            known = sorted([(i, results[i]["page"]) for i in all_matched])
+            unassigned = [
+                i for i in range(num_tables)
+                if i not in all_matched
+            ]
 
-            for ui in unassigned:
-                prev_page = None
-                next_page = None
-                for ki, kp in known:
-                    if ki < ui:
-                        prev_page = kp
-                    elif ki > ui:
-                        next_page = kp
-                        break
+            if unassigned and known:
+                print(
+                    f"  [docx] 插值兜底: {len(unassigned)} 个表格通过邻居推算页码..."
+                )
+                for ui in unassigned:
+                    prev_page = 0
+                    prev_idx = 0
+                    next_page = 0
 
-                if prev_page and next_page:
-                    estimated = (
-                        prev_page if prev_page == next_page
-                        else (prev_page + next_page) // 2
-                    )
-                elif prev_page:
-                    estimated = prev_page
-                elif next_page:
-                    estimated = next_page
-                else:
-                    continue
+                    for ki, kp in known:
+                        if ki < ui:
+                            prev_page = kp
+                            prev_idx = ki
+                        elif ki > ui:
+                            next_page = kp
+                            break
 
-                results[ui]["page"] = max(1, estimated)
-                assigned += 1
+                    if prev_page and next_page:
+                        if prev_page == next_page:
+                            estimated = prev_page
+                        else:
+                            next_idx = min(k for k, _ in known if k > ui)
+                            ratio = (ui - prev_idx) / max(1, next_idx - prev_idx)
+                            estimated = round(
+                                prev_page + (next_page - prev_page) * ratio
+                            )
+                    elif prev_page:
+                        estimated = prev_page
+                    elif next_page:
+                        estimated = next_page
+                    else:
+                        continue
 
-        print(f"  [docx] 页码分配完成: {assigned}/{len(results)} 个表格已定位(含插值)")
+                    old_page = results[ui].get("page", 0)
+                    results[ui]["page"] = max(1, min(estimated, total_pages))
+                    if results[ui]["page"] != old_page:
+                        print(
+                            f"  [docx] 插值: 表{ui+1} P{old_page}"
+                            f"→P{results[ui]['page']}"
+                        )
+        else:
+            print(
+                f"  [docx] 全部{num_tables}个表格无法匹配，保留 docx 原始页码"
+            )
+
+        # ===== 阶段5：【铁律】原始顺序 bbox Y 冲突检测（跨页上下文决策） =====
+        # 原则：
+        #   1. 绝不重排序。只在原始相邻关系上检测物理不可能。
+        #   2. 同一页上先出现的表必须在物理上方（y0 更小），颠倒则冲突。
+        #   3. 决策综合考量：
+        #      a) 目标页是否已有表格（有则更"自然"）
+        #      b) V2-Lite 匹配置信度（低分表更可能分错）
+        #      c) 单调性约束
+        y_conflicts = 0
+        max_iterations = num_tables * 3  # 安全上限，防止死循环
+        iteration = 0
+        i = 1
+        while i < num_tables and iteration < max_iterations:
+            iteration += 1
+
+            # 不同页 → 无冲突
+            if results[i]["page"] != results[i - 1]["page"]:
+                i += 1
+                continue
+
+            # 无有效 bbox → 无法判断，跳过
+            if matches[i] is None or matches[i - 1] is None:
+                i += 1
+                continue
+
+            prev_y0 = matches[i - 1][3]
+            cur_y0 = matches[i][3]
+            if prev_y0 <= 0 or cur_y0 <= 0:
+                i += 1
+                continue
+
+            # 无冲突：前表确实在上方
+            if prev_y0 <= cur_y0:
+                i += 1
+                continue
+
+            # ===== Y 颠倒冲突！ =====
+            P = results[i]["page"]
+
+            # —— 可行性检查 ——
+            can_back = P > 1
+            if i >= 2:
+                can_back = can_back and (results[i - 2]["page"] <= P - 1)
+
+            can_forward = P < total_pages
+
+            # —— 跨页上下文：目标页是否有表格 ——
+            has_tables_on_back = any(
+                j < i - 1 and results[j]["page"] == P - 1
+                for j in range(i - 1)
+            )
+            has_tables_on_forward = any(
+                j > i and results[j]["page"] == P + 1
+                for j in range(i + 1, num_tables)
+            )
+
+            # —— 决策逻辑 ——
+            prev_score = matches[i - 1][1]
+            cur_score = matches[i][1]
+
+            if not can_back and not can_forward:
+                # 完全卡死：强制后移，阶段6单调递增兜底
+                go_back = False
+            elif can_back and not can_forward:
+                go_back = True
+            elif can_forward and not can_back:
+                go_back = False
+            elif has_tables_on_back and not has_tables_on_forward:
+                # 只有前页有表格 → 后退更自然
+                go_back = True
+            elif has_tables_on_forward and not has_tables_on_back:
+                # 只有后页有表格 → 前进更自然
+                go_back = False
+            else:
+                # 两页都有或都没有 → V2-Lite 置信度决断
+                # 低分表更可能分错页 → 低分表搬家
+                go_back = prev_score < cur_score
+
+            # —— 执行 ——
+            if go_back:
+                old_page = results[i - 1]["page"]
+                results[i - 1]["page"] = P - 1
+                y_conflicts += 1
+                reason = f"P{P-1}{'有' if has_tables_on_back else '无'}表"
+                print(
+                    f"  [docx] Y颠倒→前移: 表{i}(prev) P{old_page}→P{P-1}"
+                    f" (prev_y0={prev_y0:.0f} > cur_y0={cur_y0:.0f}"
+                    f", s={prev_score:.3f}, {reason})"
+                )
+                # ★ 回溯：前表页码变了，需重检它与 table i-2 的关系
+                i = max(1, i - 1)
+            else:
+                old_page = results[i]["page"]
+                results[i]["page"] = min(P + 1, total_pages)
+                y_conflicts += 1
+                reason = f"P{P+1}{'有' if has_tables_on_forward else '无'}表"
+                print(
+                    f"  [docx] Y颠倒→后移: 表{i+1}(cur) P{old_page}→P{P+1}"
+                    f" (prev_y0={prev_y0:.0f} > cur_y0={cur_y0:.0f}"
+                    f", s={cur_score:.3f}, {reason})"
+                )
+                i += 1  # 继续检查下一对
+
+        if iteration >= max_iterations:
+            print(
+                f"  [docx] ⚠ Y颠倒检测达到迭代上限({max_iterations})，强制停止"
+            )
+        if y_conflicts:
+            print(f"  [docx] Y颠倒修正: {y_conflicts} 个")
+
+        # ===== 阶段6：【铁律】原始顺序单调递增 + 页数边界约束 =====
+        # 核心约束：
+        # 1. results 列表顺序 = 文档物理出现顺序，绝不打乱
+        # 2. results[i].page >= results[i-1].page（单调非递减，同页可重叠）
+        # 3. 所有页码 ∈ [1, total_pages]（不能超出 PDF 总页数）
+        for i in range(1, num_tables):
+            prev_page = results[i - 1].get("page", 0)
+            cur_page = results[i].get("page", 0)
+            if cur_page < prev_page:
+                results[i]["page"] = prev_page
+                print(
+                    f"  [docx] 单调递增修正: 表{i+1} P{cur_page}→P{prev_page}"
+                )
+
+        # 页数边界约束：不超出 PDF 总页数
+        for r in results:
+            r["page"] = max(1, min(r["page"], total_pages))
+
+        hc = len(high_conf_indices)
+        wc = len(weak_indices)
+        nm = num_tables - hc - wc
+        print(
+            f"  [docx] 页码分配: 高置信度={hc}, 弱匹配={wc}, "
+            f"未匹配={nm} / {num_tables}"
+        )
         return results
 
     # ---- 表格去重与标题提取 ----
