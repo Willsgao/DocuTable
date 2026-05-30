@@ -1152,8 +1152,7 @@ class TableCompareManager(QObject):
         
         # 更新页号
         tables[table_idx]['page'] = new_page
-        
-        # 重新按页码排序
+        # 按页码重排
         tables.sort(key=lambda x: x.get('page', 0))
         self.main_window.processed_results['tables'] = tables
         

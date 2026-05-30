@@ -1200,7 +1200,7 @@ class PDFProcessor:
             if progress_callback:
                 progress_callback(33, "docx: 校验表格页码...")
             results = self._verify_docx_page_numbers(results, context)
-            # 确保页码单调递增，防止后列表跑前面
+            # 确保页码单调递增
             for i in range(1, len(results)):
                 if results[i].get("page", 0) < results[i-1].get("page", 0):
                     results[i]["page"] = results[i-1]["page"]
@@ -1213,10 +1213,13 @@ class PDFProcessor:
         return results
 
     def _verify_docx_page_numbers(self, results, context):
-        """为每个 docx 表格匹配真实 PDF 页码。
+        """为每个 docx 表格匹配真实 PDF 页码（精确子串匹配）。
 
-        策略：提取表格前 N 个非空单元格拼接成"签名文本"，
-        在 PDF 各页中搜索最长连续匹配，确定表格属于哪一页。
+        策略：
+        1. 取表格前2行非空单元格拼接为"签名文本"
+        2. 在 PDF 各页文本中精确搜索每个签名片段
+        3. 命中≥2个片段的那一页即为表格所在页
+        4. 未匹配的表格用相邻已匹配表格的位置插值推定
         """
         if not results or not context:
             return results
@@ -1225,7 +1228,7 @@ class PDFProcessor:
         if total_pages <= 1:
             return results
 
-        # 预加载所有页面文本（只做一次，避免重复页访问）
+        # 预加载所有页面文本
         page_texts = {}
         for pn in range(total_pages):
             try:
@@ -1234,13 +1237,13 @@ class PDFProcessor:
                 page_texts[pn] = ""
 
         assigned = 0
-        assigned_indices = set()  # 成功赋值的表格索引
+        assigned_indices = set()
         for idx, r in enumerate(results):
             rows = r.get("data", [])
             if not rows:
                 continue
 
-            # 提取签名：前两行非空文本拼接
+            # 从前2行提取签名片段（长度≥3，去重，最多4个）
             sig_parts = []
             for row in rows[:2]:
                 for cell in row:
@@ -1256,9 +1259,9 @@ class PDFProcessor:
             if len(sig_parts) < 2:
                 continue
 
-            # 用最长连续匹配找最佳页码
+            # 精确子串匹配：哪页命中最多个签名片段
             best_page = 1
-            best_len = 0
+            best_hits = 0
             best_detail = ""
 
             for pn in range(total_pages):
@@ -1266,31 +1269,30 @@ class PDFProcessor:
                 if not pt:
                     continue
 
-                # 计算该页匹配的签名片段数
-                matched = [sp for sp in sig_parts if sp in pt]
-                match_count = len(matched)
-
-                if match_count > best_len:
-                    best_len = match_count
+                hits = sum(1 for sp in sig_parts if sp in pt)
+                if hits > best_hits:
+                    best_hits = hits
                     best_page = pn + 1
-                    best_detail = f"{match_count}/{len(sig_parts)}"
-                elif match_count == best_len and match_count > 0:
-                    # 平票：选更靠前的页（表格通常不会在前置页面完整复现）
-                    pass
+                    best_detail = f"{hits}/{len(sig_parts)}"
 
             old_page = r.get("page", 0)
-            if best_len >= 2:  # 至少匹配 2 个签名片段才采信
+            if best_hits >= 2:
                 r["page"] = best_page
                 assigned += 1
                 assigned_indices.add(idx)
                 if old_page != best_page:
-                    print(f"  [docx] 页码纠正: P{old_page}→P{best_page}(命中{best_detail})")
+                    print(
+                        f"  [docx] 页码纠正: P{old_page}→P{best_page}"
+                        f"(命中{best_detail})"
+                    )
 
         # ---- 兜底：签名未匹配的表格用位置插值分配页码 ----
         all_indices = set(range(len(results)))
-        unassigned = [i for i in all_indices if i not in assigned_indices and results[i].get("data")]
+        unassigned = [
+            i for i in all_indices
+            if i not in assigned_indices and results[i].get("data")
+        ]
         if unassigned and assigned_indices:
-            # 已分配表格： (index, page) 对
             known = [(i, results[i]["page"]) for i in sorted(assigned_indices)]
             print(f"  [docx] 插值兜底: {len(unassigned)} 个表格通过位置推算页码...")
 
@@ -1305,7 +1307,10 @@ class PDFProcessor:
                         break
 
                 if prev_page and next_page:
-                    estimated = prev_page if prev_page == next_page else (prev_page + next_page) // 2
+                    estimated = (
+                        prev_page if prev_page == next_page
+                        else (prev_page + next_page) // 2
+                    )
                 elif prev_page:
                     estimated = prev_page
                 elif next_page:
@@ -1345,14 +1350,14 @@ class PDFProcessor:
         V2 基于视觉坐标推测，存在合并单元格错位风险。
 
         规则：
-        1. docx 所有表格无条件保留(主力通道)
+        1. docx 所有表格无条件保留(主力通道)，保持原始阅读顺序不动
         2. 同一页中 V2 表格与任一 docx 表格指纹命中 >= 2 个公共词则丢弃 V2(避免重复)
-        3. V2 独有的表格(docx 漏掉的无框表/小表)作为补充保留
+        3. V2 独有的表格(docx 漏掉的无框表/小表)按页码插入到 docx 序列的正确位置
         """
         if not docx_tables:
             return list(v2_tables)
 
-        merged = []
+        merged = list(docx_tables)  # docx 保持原顺序，绝不动
         # 收集所有已匹配的 V2 表格（用于后续排除）
         matched_v2_ids = set()
 
@@ -1361,9 +1366,6 @@ class PDFProcessor:
             dt_page = dt.get("page", 0)
             dt_data = dt.get("data", [])
             dt_fp = PDFProcessor._table_fingerprint(dt_data)
-
-            # 添加到结果
-            merged.append(dt)
 
             # 在同页 V2 表格中找匹配
             if dt_fp:
@@ -1380,13 +1382,24 @@ class PDFProcessor:
                             matched_v2_ids.add(vi)
                             print(f"  [去重] P{dt_page}: docx表{di+1} ← V2表{vi+1}(匹配{len(common)}个公共词)")
 
-        # 添加未被匹配的 V2 表格
+        # 收集未匹配的 V2 表格，按页码排序后插入到 docx 序列（绝不动 docx 顺序）
+        unmatched_v2 = []
         for vi, vt in enumerate(v2_tables):
             if vi not in matched_v2_ids:
-                merged.append(vt)
+                unmatched_v2.append(vt)
 
-        # 稳定排序：按页码分组，页内保持 docx 提取顺序（阅读顺序）
-        merged.sort(key=lambda x: x.get("page", 0))
+        if unmatched_v2:
+            unmatched_v2.sort(key=lambda x: x.get("page", 0))  # V2内部按页码排
+            # 从后往前插入，避免索引偏移
+            for vt in reversed(unmatched_v2):
+                vt_page = vt.get("page", 0)
+                insert_pos = len(merged)
+                for i in range(len(merged)):
+                    if merged[i].get("page", 0) > vt_page:
+                        insert_pos = i
+                        break
+                merged.insert(insert_pos, vt)
+
         v2_supplement = len(v2_tables) - len(matched_v2_ids)
         print(f"  [去重] 汇总: docx主力={len(docx_tables)}个 + V2补漏={v2_supplement}个 = 共{len(merged)}个表格")
         return merged
@@ -2554,7 +2567,11 @@ def _remove_spaces_data(data):
 
 
 def _clean_data_cells(data):
-    """清洗数值类单元格：含中文或英文的跳过，其余移除下划线/空格等非数值字符。原地修改。"""
+    """清洗数值类单元格：含中文或英文的跳过，其余移除非数值字符。原地修改。
+
+    纯横线单元格（--、---、—等）视为省略标记，保留不动。
+    横线与数字混合时（如 ---100），横线被清洗掉。
+    """
     import re
     for row in data:
         for c in range(len(row)):
@@ -2565,11 +2582,15 @@ def _clean_data_cells(data):
             if not text:
                 row[c] = ""
                 continue
+            # 省略标记（只含横线/破折号，无文本数字）→ 保留不动
+            if re.fullmatch(r'[\-\u2014\u2015\u2500\uFF0D]+', text):
+                row[c] = text
+                continue
             # 含中文或英文字母 → 跳过
             if re.search(r'[\u4e00-\u9fff]|[a-zA-Z]', text):
                 row[c] = text
                 continue
-            # 清洗：保留数字、逗号、小数点、负号、括号、百分号
+            # 清洗：保留数字、逗号、小数点、负号、括号、百分号（仅删下划线等杂质）
             cleaned = re.sub(r'[^0-9,\.\-\(\)\%]', '', text).strip()
             row[c] = cleaned
     return data
@@ -2587,13 +2608,47 @@ def _is_numeric_data(text):
     return bool(re.search(r'[0-9]', t))
 
 
+def _remove_empty_rows(data):
+    """删除表格中的全空行。只含空字符串或 None 的行会被移除。原地修改。"""
+    if not data:
+        return data
+    data[:] = [
+        row for row in data
+        if any(cell is not None and str(cell).strip() for cell in row)
+    ]
+    return data
+
+
+def _compact_empty_cells(data):
+    """删除每行内部的空单元格，压缩为紧凑列。打标记 cells_compacted。
+
+    与 _remove_spaces_data 不同：后者只删两端空单元格，此函数删除行内所有空单元格。
+    """
+    if not data:
+        return data, False
+
+    compacted = False
+    for r in range(len(data)):
+        row = data[r]
+        # 保留非空单元格（含省略标记 —）
+        compact = [
+            cell for cell in row
+            if cell is not None and str(cell).strip()
+        ]
+        if len(compact) < len(row):
+            compacted = True
+            data[r] = compact
+
+    return data, compacted
+
+
 def _auto_merge_split_tables(results):
     """检测并合并被 pdf2docx 拆分断裂的相邻表格。
     仅合并 data（清洗后），original_data 不动。"""
-    import re
 
-    # 先按 page 排序
     results.sort(key=lambda x: x.get("page", 0))
+
+    import re
 
     # 收集所有有效表格的索引（排除没有 data 的）
     valid_indices = [i for i, t in enumerate(results) if t.get("data")]
@@ -2692,7 +2747,7 @@ def _auto_merge_split_tables(results):
 
 
 def _auto_clean_tables(results, progress_callback=None):
-    """对解析结果自动清洗：保存原始数据 → 删除空格 → 清洗数值 → 合并断裂表格。"""
+    """对解析结果自动清洗：保存原始 → 清洗数值 → 删空格 → 删空行 → 合并断裂。"""
     import copy
 
     if progress_callback:
@@ -2726,7 +2781,22 @@ def _auto_clean_tables(results, progress_callback=None):
                 if prev_data[r][c] != cleaned[r][c]:
                     total_removed_spaces += 1
 
-    # 4. 自动合并断裂表格
+        # 4. 删除全空行（不影响含省略标记 -- 的行）
+        row_before = len(table["data"])
+        _remove_empty_rows(table["data"])
+        row_after = len(table["data"])
+        if row_before != row_after:
+            print(f"  [清洗] 表格{i+1} 删除空行: {row_before}→{row_after}行")
+
+        # 5. 删除行内空单元格（紧凑化，打标记 cells_compacted）
+        data_before = sum(len(row) for row in table["data"])
+        table["data"], compacted = _compact_empty_cells(table["data"])
+        if compacted:
+            data_after = sum(len(row) for row in table["data"])
+            table["cells_compacted"] = True
+            print(f"  [清洗] 表格{i+1} 紧凑化: {data_before}→{data_after}个单元格")
+
+    # 6. 自动合并断裂表格
     results = _auto_merge_split_tables(results)
 
     if progress_callback:
@@ -2776,14 +2846,14 @@ class ProcessingWorker(QThread):
                 cb = lambda v, m: self.progress.emit(v, m)
 
                 if self.mode == "auto" and not is_image:
-                    # ---- auto 模式：docx(pdf2word) 主力提取（V2 不再作为补充，省时） ----
+                    # ---- auto 模式：docx(pdf2word) 主力提取 + V2 锚点校准页码 ----
                     self.progress.emit(20, "pdf2word 提取表格(约2-5分钟)...")
                     docx_tables = self.pdf_processor._extract_tables_via_docx(
                         pdf_path=self.pdf_path,
                         context=context,
                         progress_callback=cb
                     )
-                    v2_tables = []  # auto 模式不跑 V2，docx 已覆盖
+                    v2_tables = []  # auto 模式不跑完整 V2，docx 已覆盖
                 else:
                     # ---- text_only 模式：纯 V2 ----
                     self.progress.emit(20, "V2提取表格...")
@@ -2935,6 +3005,7 @@ class ProcessingWorker(QThread):
                     "parse_message": "未提取到表格数据"
                 })
 
+            # 按页码排序
             results.sort(key=lambda x: x["page"])
 
             self.progress.emit(95, "正在整理数据...")
@@ -2957,6 +3028,8 @@ class ProcessingWorker(QThread):
 
             # ---- 自动清洗数据 + 合并断裂表格 ----
             results = _auto_clean_tables(results, progress_callback=lambda v, m: self.progress.emit(v, m))
+            # 最终确保按页码排序
+            results.sort(key=lambda x: x["page"])
 
             self.progress.emit(98, "处理完成")
 
