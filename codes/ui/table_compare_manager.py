@@ -19,6 +19,7 @@ from codes.pdf_extractor import (
     ZoomableTableWidget, save_mid_data,
     load_ai_correction_cache, save_ai_correction_cache
 )
+from codes.pdf_extractor.processor import _auto_merge_split_tables
 from codes.pdf_extractor.ai_correction import RuleChecker, LLMCorrector
 from codes.ui.ai_correction_dialog import PromptEditDialog
 
@@ -2539,14 +2540,27 @@ class TableCompareManager(QObject):
             tbl["ai_correction_summary"] = r.changes_summary
 
         if updated_count > 0:
+            # LLM 纠错完成后：自动尝试跨页合并
+            merge_count = 0
+            try:
+                tables_before = len(tables)
+                _auto_merge_split_tables(tables, cross_page=True)
+                merge_count = tables_before - len(tables)
+                if merge_count > 0:
+                    self.main_window.processed_results['tables'] = tables
+                    self.main_window.processed_results['total_tables'] = len(tables)
+            except Exception as e:
+                print(f"[AI CORRECTION] 跨页合并失败: {e}")
+
             # 刷新列表和预览
             self.apply_table_filter()
             self.has_unsaved_changes = True
             self._schedule_auto_save()
 
-            self.main_window.status_bar.showMessage(
-                f"✅ 已应用 AI 纠错：{updated_count} 张表格已更新", 5000
-            )
+            msg = f"✅ 已应用 AI 纠错：{updated_count} 张表格已更新"
+            if merge_count > 0:
+                msg += f" | 🔗 自动合并 {merge_count} 对跨页表格"
+            self.main_window.status_bar.showMessage(msg, 8000)
         else:
             self.main_window.status_bar.showMessage(
                 "⚠️ AI 纠错：没有应用任何修改", 3000
