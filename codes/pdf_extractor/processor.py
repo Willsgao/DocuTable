@@ -2883,14 +2883,39 @@ def _compact_empty_cells(data):
     """删除每行内部的空单元格，压缩为紧凑列。打标记 cells_compacted。
 
     与 _remove_spaces_data 不同：后者只删两端空单元格，此函数删除行内所有空单元格。
+
+    特殊处理：如果一行只有首列有内容、后续全空，判定为跨列标题行，
+    保留原始列数不压缩，避免表格结构断裂。
     """
     if not data:
         return data, False
 
+    # 计算全局最大列数，用于识别跨列标题行
+    max_cols = max((len(row) for row in data), default=0)
+
+    # 辅助：判断是否为跨列标题行（仅首列有内容）
+    def _is_header_only(row):
+        if not row or len(row) < 2 or max_cols < 2:
+            return False
+        first = row[0]
+        if first is None or not str(first).strip():
+            return False
+        return all(
+            cell is None or not str(cell).strip()
+            for cell in row[1:]
+        )
+
     compacted = False
     for r in range(len(data)):
         row = data[r]
-        # 保留非空单元格（含省略标记 —）
+
+        if _is_header_only(row):
+            # 跨列标题行：保持原始列数不变，仅裁剪到 max_cols
+            while len(row) > max_cols and not str(row[-1]).strip():
+                row.pop()
+            continue
+
+        # 常规压缩：保留非空单元格（含省略标记 —）
         compact = [
             cell for cell in row
             if cell is not None and str(cell).strip()
@@ -2900,6 +2925,317 @@ def _compact_empty_cells(data):
             data[r] = compact
 
     return data, compacted
+
+
+def _deduplicate_columns(data):
+    """删除因合并单元格展开导致的完全重复相邻列。
+
+    pdf2docx 在展开跨列合并的标题格时，会把标题文本复制到每个子列，
+    导致相邻多列内容完全相同。此函数检测并删除重复列。
+
+    判定条件：如果两个相邻列在【所有行】中的值完全相同 → 列 c+1 被删除。
+    从右向左扫描以避免索引偏移，迭代直到无重复列。
+
+    Args:
+        data: list[list[str]]
+
+    Returns:
+        (cleaned_data, removed_count): 去重后数据 + 删除的列数
+    """
+    if len(data) < 2:
+        return data, 0
+
+    max_cols = max((len(row) for row in data), default=0)
+    if max_cols < 2:
+        return data, 0
+
+    removed_count = 0
+    # 从右向左扫描，避免删除后索引偏移影响左侧比较
+    for c in range(max_cols - 2, -1, -1):
+        all_match = True
+        for row in data:
+            v1 = str(row[c]).strip() if c < len(row) and row[c] else ""
+            v2 = str(row[c + 1]).strip() if c + 1 < len(row) and row[c + 1] else ""
+            if v1 != v2:
+                all_match = False
+                break
+
+        if all_match:
+            for row in data:
+                if c + 1 < len(row):
+                    row.pop(c + 1)
+            removed_count += 1
+
+    return data, removed_count
+
+
+def _clean_merged_cell_bleed(data):
+    """清除 pdf2docx 合并单元格展开时渗透到下行脚注的数值假数据。
+
+    pdf2docx 在处理跨行合并格时，会把合并区域的文本展开到每行。
+    如果脚注/注释行占据了一个宽合并格，pdf2docx 可能把上方数据行的
+    数值也渗透进脚注行的右侧列。
+
+    检测逻辑：如果某行的数值列（第 1 列起，非空）跟上一行对应列全部
+    一模一样，且首列文本与上行不同，判定为渗透，清空该行的数值部分。
+
+    纯文本列（首列）不受影响，仅清空后续数值/金额列。
+
+    Args:
+        data: list[list[str]]
+
+    Returns:
+        (cleaned_data, cleaned_count): 清洗后数据 + 受影响行数
+    """
+    if len(data) < 2:
+        return data, 0
+    
+    cleaned_count = 0
+    for i in range(1, len(data)):
+        prev_row = data[i - 1]
+        curr_row = data[i]
+        
+        # 首列文本必须与上行不同（排除重复表头等正常情况）
+        prev_text = str(prev_row[0]).strip() if prev_row else ""
+        curr_text = str(curr_row[0]).strip() if curr_row else ""
+        if not curr_text or curr_text == prev_text:
+            continue
+        
+        # 取 min 列数，比较第 1 列起的所有列
+        n_cols = min(len(prev_row), len(curr_row))
+        if n_cols <= 1:
+            continue
+        
+        # 检查数值列是否跟上一行完全一致
+        all_match = True
+        has_content = False
+        for c in range(1, n_cols):
+            p = str(prev_row[c]).strip() if prev_row[c] else ""
+            q = str(curr_row[c]).strip() if curr_row[c] else ""
+            if p or q:
+                has_content = True
+            if p != q:
+                all_match = False
+                break
+        
+        # 所有数值列与上行完全一致 → 渗透，清空
+        if has_content and all_match:
+            for c in range(1, len(curr_row)):
+                curr_row[c] = ""
+            cleaned_count += 1
+    
+    return data, cleaned_count
+
+
+def _infer_numeric_pattern(data, skip_col):
+    """从同一表格的其他列推断常见数值格式，用于拆分拼接列。
+
+    扫描非跳过列的值，寻找小数/百分比等常见金融数值格式，
+    返回一个正则模式字符串给 re.findall 使用。
+
+    Args:
+        data: list[list[str]]
+        skip_col: 要跳过（不参考）的列索引
+
+    Returns:
+        str: 正则模式，如 r'\d+\.\d{2}' 或默认回退模式
+    """
+    import re
+
+    max_cols = max((len(row) for row in data), default=0)
+
+    for c in range(max_cols):
+        if c == skip_col:
+            continue
+        for row in data:
+            val = str(row[c]).strip() if c < len(row) and row[c] else ""
+            if not val:
+                continue
+            # 检测 "1.33" 格式（1-3位小数）
+            if re.match(r'^-?\d+\.\d{1,3}$', val):
+                return r'-?\d+\.\d{1,3}'
+            # 检测 "1.33%" 格式
+            if re.match(r'^-?\d+\.\d{1,3}\s*%$', val):
+                return r'-?\d+\.\d{1,3}\s*%'
+            # 检测 "(1.33)" 格式
+            if re.match(r'^\(\d+\.\d{1,3}\)$', val):
+                return r'\(\d+\.\d{1,3}\)'
+            # 检测负数 "-1.33"
+            if re.match(r'^ -\d+\.\d{1,3}$', val):
+                return r' -\d+\.\d{1,3}'
+
+    # 回退：宽数值模式（匹配含逗号分隔符、可选百分号、可选括号的数值）
+    return r'\(?-?[\d,]+\.?\d*[%％]?\)?'
+
+
+def _find_reference_row_count(data, skip_col, target_rows):
+    """找同一表格中格式正常的"参考列"，用于确定拼接串应拆分成几个独立值。
+
+    参考列条件：与目标列填充了相同数量的数据行，且每行值各不相同。
+
+    Args:
+        data: list[list[str]]
+        skip_col: 不参考的列索引
+        target_rows: 目标列有非空值的行索引列表
+
+    Returns:
+        int: 参考列建议的拆分数量；若无合适参考列则返回 len(target_rows)
+    """
+    max_cols = max((len(row) for row in data), default=0)
+    target_set = set(target_rows)
+
+    for c in range(max_cols):
+        if c == skip_col:
+            continue
+        # 收集该列在有值的行索引及值集合
+        filled_rows = set()
+        values_set = set()
+        for r, row in enumerate(data):
+            val = str(row[c]).strip() if c < len(row) and row[c] else ""
+            if val:
+                filled_rows.add(r)
+                values_set.add(val)
+
+        # 条件1: 该列填充的行数 >= 目标行数的一半（排除稀疏列）
+        # 条件2: 值各不相同（不是被复制的假数据列）
+        # 条件3: 填充行与目标行有较高重叠
+        overlap = len(filled_rows & target_set)
+        if (len(filled_rows) >= len(target_rows) * 0.5
+                and len(values_set) >= len(filled_rows) * 0.7
+                and overlap >= len(target_rows) * 0.7):
+            return len(filled_rows)
+
+    return len(target_rows)
+
+
+def _try_split_numeric_patterns(concat_str):
+    """尝试多种正则模式拆分拼接串，返回拆分后的 token 列表。
+
+    按精确度从高到低依次尝试，每种模式要求 tokens 拼回去等于原串
+    （即 join(tokens) == concat_str），确保拆分无遗漏/无重叠。
+
+    Args:
+        concat_str: 拼接串
+
+    Returns:
+        list[str] or None: 拆分成功返回 token 列表，失败返回 None
+    """
+    # 模式列表：从精确到宽松
+    candidates = [
+        r'\d+\.\d{2}',           # 1.33  (两位小数)
+        r'\d+\.\d{3}',           # 1.331 (三位小数)
+        r'\d+\.\d{2}%',          # 1.33%
+        r'\d+\.\d{1,3}\s*%',     # 1.33% / 5.6 %
+        r'\(\d+\.\d{1,3}\)',     # (1.33)
+        r'-\d+\.\d{1,3}',        # -1.33
+        r'\d+\.\d{1,3}',         # 1.33 / 10.5 (通用小数)
+        r'[\d,]+\.\d*[%％]?',    # 1,234.56 / 5% (宽数值)
+    ]
+
+    import re
+
+    for pattern in candidates:
+        tokens = re.findall(pattern, concat_str)
+        if len(tokens) <= 1:
+            continue
+        # 关键验证：拼回去必须等于原串
+        if ''.join(tokens) == concat_str:
+            return tokens
+
+    return None
+
+
+def _split_concatenated_column(data):
+    """拆分因 pdf2docx 垂直合并格展开导致的拼接值列。
+
+    pdf2docx 在展开垂直跨行合并单元格时，有时会把合并区域内所有行的文本
+    拼接成一个长串，然后复制到展开后的每一行对应列中。
+    此函数通过多策略检测并拆分为每行一个独立值。
+
+    检测条件：
+      1. 某列在所有非空行中值完全一致
+      2. 该值长度 > 10 字符（排除普通的共享值/短标签）
+
+    拆分策略（按优先级）：
+      策略1: 从同行其他列推断数值格式 → 正则拆分 → 验证 token 数与数据行数匹配
+      策略2: 固定模式库逐一尝试 → 验证拆分回原串一致
+      策略3: 用参考列确定 N → 尝试等分子串
+      全部失败: 保留原值，不修改
+
+    Args:
+        data: list[list[str]]
+
+    Returns:
+        (cleaned_data, split_count): 拆分后数据 + 成功拆分的列数
+    """
+    import re
+
+    if not data or len(data) < 2:
+        return data, 0
+
+    max_cols = max((len(row) for row in data), default=0)
+    if max_cols < 2:
+        return data, 0
+
+    split_count = 0
+
+    for c in range(max_cols):
+        # ---- 阶段A: 检测拼接列 ----
+        value_rows = []        # 该列有非空值的行索引
+        first_val = None
+        all_same = True
+
+        for r, row in enumerate(data):
+            val = str(row[c]).strip() if c < len(row) and row[c] else ""
+            if val:
+                if first_val is None:
+                    first_val = val
+                elif val != first_val:
+                    all_same = False
+                value_rows.append(r)
+
+        if not value_rows or not all_same:
+            continue
+        if len(first_val) <= 10:
+            continue
+
+        n_rows = len(value_rows)
+        concat = first_val
+
+        # ---- 阶段B: 策略1 — 从同行列推断格式 ----
+        numeric_pattern = _infer_numeric_pattern(data, c)
+        tokens = re.findall(numeric_pattern, concat)
+
+        # 验证：非空 token 数量与数据行数匹配
+        valid_tokens = [t for t in tokens if t.strip()]
+        if len(valid_tokens) == n_rows:
+            for idx, r in enumerate(value_rows):
+                data[r][c] = valid_tokens[idx]
+            split_count += 1
+            continue
+
+        # ---- 阶段C: 策略2 — 固定模式库逐一尝试 ----
+        tokens = _try_split_numeric_patterns(concat)
+        if tokens and len(tokens) == n_rows:
+            for idx, r in enumerate(value_rows):
+                data[r][c] = tokens[idx]
+            split_count += 1
+            continue
+
+        # ---- 阶段D: 策略3 — 参考列确定N + 等分子串 ----
+        ref_n = _find_reference_row_count(data, c, value_rows)
+        if ref_n > 1 and len(concat) % ref_n == 0:
+            seg_len = len(concat) // ref_n
+            segments = [concat[i:i + seg_len] for i in range(0, len(concat), seg_len)]
+            # 每段至少含数字或字母，避免切出纯空白
+            if all(any(ch.isdigit() or ch.isalpha() for ch in s) for s in segments):
+                for idx, r in enumerate(value_rows[:ref_n]):
+                    if idx < len(segments):
+                        data[r][c] = segments[idx]
+                split_count += 1
+                continue
+
+    return data, split_count
 
 
 def _auto_merge_split_tables(results):
@@ -3058,6 +3394,11 @@ def _auto_clean_tables(results, progress_callback=None):
         if row_before != row_after:
             print(f"  [清洗] 表格{i+1} 删除空行: {row_before}→{row_after}行")
 
+        # 4.5 删除因合并单元格展开导致的完全重复相邻列
+        table["data"], dup_cols = _deduplicate_columns(table["data"])
+        if dup_cols > 0:
+            print(f"  [清洗] 表格{i+1} 列去重: 删除 {dup_cols} 个重复列")
+
         # 5. 删除行内空单元格（紧凑化，打标记 cells_compacted）
         data_before = sum(len(row) for row in table["data"])
         table["data"], compacted = _compact_empty_cells(table["data"])
@@ -3065,6 +3406,16 @@ def _auto_clean_tables(results, progress_callback=None):
             data_after = sum(len(row) for row in table["data"])
             table["cells_compacted"] = True
             print(f"  [清洗] 表格{i+1} 紧凑化: {data_before}→{data_after}个单元格")
+
+        # 5.5 清除 pdf2docx 合并格渗透的假数据
+        table["data"], bleed_count = _clean_merged_cell_bleed(table["data"])
+        if bleed_count > 0:
+            print(f"  [清洗] 表格{i+1} 清除合并格渗透: {bleed_count}行")
+
+        # 5.6 拆分垂直合并格导致的拼接值列
+        table["data"], split_count = _split_concatenated_column(table["data"])
+        if split_count > 0:
+            print(f"  [清洗] 表格{i+1} 拆分拼接列: {split_count}列")
 
     # 6. 自动合并断裂表格
     results = _auto_merge_split_tables(results)
