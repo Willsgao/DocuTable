@@ -3629,6 +3629,9 @@ class ProcessingWorker(QThread):
             # 按页码排序
             results.sort(key=lambda x: x["page"])
 
+            # ---- [旁路] liteparse 通道：解析表格页的空间布局文本 ----
+            self._run_liteparse_side_channel(results, total_pages)
+
             self.progress.emit(95, "正在整理数据...")
 
             # 获取图片缓存目录（如果之前没有设置）
@@ -3671,3 +3674,50 @@ class ProcessingWorker(QThread):
         finally:
             if context:
                 context.close()
+
+    def _run_liteparse_side_channel(self, results, total_pages):
+        """[旁路] 调用 liteparse 解析表格页的空间布局文本。
+
+        仅对 pdf2docx/V2 已识别出的表格页做 liteparse 解析，
+        结果缓存到 data/mid_cache/<pdf>/liteparse/，
+        供后续差分对比使用。
+
+        此步骤失败不阻塞主流程。
+        """
+        try:
+            from codes.liteparse_extractor import LiteParseParser
+
+            # 收集表格页页码（剔除 failed/empty 类型）
+            table_page_numbers = sorted(set(
+                r["page"] for r in results
+                if r.get("parse_status") == "success" and r.get("data")
+            ))
+            if not table_page_numbers:
+                print("  [liteparse] 无表格页，跳过")
+                return
+
+            # 受 max_pages 约束
+            if self.max_pages:
+                table_page_numbers = [
+                    p for p in table_page_numbers if p <= self.max_pages
+                ]
+            if not table_page_numbers:
+                return
+
+            self.progress.emit(93, f"liteparse 正在解析 {len(table_page_numbers)} 个表格页...")
+            print(f"  [liteparse] 开始解析表格页: {table_page_numbers}")
+
+            parser = LiteParseParser()
+            result = parser.parse_table_pages_only(
+                self.pdf_path, table_page_numbers
+            )
+
+            print(f"  [liteparse] 完成: "
+                  f"{result.page_count_with_table} 页含表格, "
+                  f"耗时 {result.parse_time_sec:.1f}s")
+
+        except ImportError:
+            print("  [liteparse] liteparse 未安装，跳过旁路解析")
+            print("  [liteparse] 安装方法: pip install liteparse")
+        except Exception as e:
+            print(f"  [liteparse] 旁路解析异常（不影响主流程）: {e}")
