@@ -1070,19 +1070,47 @@ class PDFProcessor:
                 para_text = _extract_paragraph_text(child)
                 # 检查段落中是否包含分页符
                 has_page_break = False
+
+                # 方式1：w:br type='page'（显式分页符）
                 for br in child.iter(f'{W}br'):
                     br_type = br.get(f'{W}type')
                     if br_type == 'page':
                         current_page += 1
                         has_page_break = True
                         break
-                # 也检查 lastRenderedPageBreak
-                for lrpb in child.iter(f'{W}lastRenderedPageBreak'):
-                    current_page += 1
-                    has_page_break = True
-                    break
 
-                # 分支：检测页眉页脚中的纯数字页码（如 13、14、15）
+                # 方式2：w:lastRenderedPageBreak（Word 渲染分页标记）
+                if not has_page_break:
+                    for lrpb in child.iter(f'{W}lastRenderedPageBreak'):
+                        current_page += 1
+                        has_page_break = True
+                        break
+
+                # 方式3：段落属性中的分页设置（w:pageBreakBefore）
+                if not has_page_break:
+                    pPr = child.find(f'{W}pPr')
+                    if pPr is not None:
+                        # 段前分页
+                        pbf = pPr.find(f'{W}pageBreakBefore')
+                        if pbf is not None:
+                            val = pbf.get(f'{W}val')
+                            if val not in ('0', 'false'):
+                                current_page += 1
+                                has_page_break = True
+
+                # 方式4：sectPr 内嵌在段落中（节分隔符通常也意味着换页）
+                if not has_page_break:
+                    pPr = child.find(f'{W}pPr')
+                    if pPr is not None:
+                        sectPr = pPr.find(f'{W}sectPr')
+                        if sectPr is not None:
+                            sect_type = sectPr.find(f'{W}type')
+                            # 仅在 type='nextPage' 或无 type（默认 nextPage）时递增
+                            if sect_type is None or sect_type.get(f'{W}val') == 'nextPage':
+                                current_page += 1
+                                has_page_break = True
+
+                # 方式5：检测页眉页脚中的纯数字页码（如 13、14、15）
                 if context and para_text and not has_page_break:
                     stripped = para_text.strip()
                     if stripped.isdigit():
@@ -1107,6 +1135,11 @@ class PDFProcessor:
                 ctx_text = '\n'.join(pending_paragraphs[-3:]) if pending_paragraphs else ""
                 table_context_map[child] = ctx_text
                 pending_paragraphs.clear()  # 表格之后的段落属于下一个表格
+
+            elif tag == 'sectPr':
+                # body 级别的 sectPr（文档最后的节属性），也可能意味着换页
+                # 但文档末尾的 sectPr 不需要处理，跳过
+                pass
 
         if not page_table_map:
             print(f"  [docx] Word 中未检测到任何表格")
@@ -1222,14 +1255,275 @@ class PDFProcessor:
         print(f"  [docx] 共提取 {len(results)} 个表格")
         return results
 
+    # ---- 逐页 pdf2docx 转换（页码 100% 准确） ----
+
+    @staticmethod
+    def _parse_docx_tables_static(docx_buf, page_num):
+        """从 DOCX 缓冲区解析表格并标记页码（静态，子进程可 pickle）。"""
+        from docx import Document
+        W = ('{http://schemas.openxmlformats.org/'
+             'wordprocessingml/2006/main}')
+        doc = Document(docx_buf)
+        tables = []
+
+        for table in doc.tables:
+            try:
+                rows_data = []
+                merge_tracker = {}
+
+                for r, tr in enumerate(table.rows):
+                    row_cells = []
+                    col_idx = 0
+
+                    for cell in tr.cells:
+                        while merge_tracker.get((r, col_idx)):
+                            row_cells.append("")
+                            col_idx += 1
+
+                        tc = cell._tc
+                        tcPr = tc.find(f'{W}tcPr')
+                        col_span = 1
+                        row_start = True
+
+                        if tcPr is not None:
+                            gridSpan = tcPr.find(f'{W}gridSpan')
+                            if gridSpan is not None:
+                                col_span = int(gridSpan.get(f'{W}val', 1))
+                            vMerge = tcPr.find(f'{W}vMerge')
+                            if vMerge is not None:
+                                if vMerge.get(f'{W}val') != 'restart':
+                                    row_start = False
+
+                        if row_start:
+                            text = cell.text.strip()
+                            for span in range(col_span):
+                                row_cells.append(text if span == 0 else "")
+                        else:
+                            for span in range(col_span):
+                                row_cells.append("")
+
+                        col_idx += col_span
+
+                    if row_cells:
+                        rows_data.append(row_cells)
+
+                if rows_data:
+                    tables.append({
+                        "page": page_num,
+                        "type": "table",
+                        "data": rows_data,
+                        "text": "",
+                        "extractor": "docx_per_page",
+                        "confidence": 0.95,
+                        "rows": len(rows_data),
+                        "cols": (max(len(r) for r in rows_data)
+                                 if rows_data else 0),
+                        "has_border": True,
+                        "context_text": "",
+                    })
+            except Exception:
+                pass
+        return tables
+
+    @staticmethod
+    def _convert_batch_static(pdf_path, page_nums):
+        """每个进程处理一批页（静态方法，可被 pickle 序列化）。
+
+        在独立子进程中运行，PyMuPDF C 扩展状态完全隔离，
+        彻底避免多线程共享导致的 refcount 崩溃。
+        """
+        import tempfile
+        import os
+        from io import BytesIO
+        from pdf2docx import Converter
+
+        batch_tables = []
+        cv = None
+
+        try:
+            cv = Converter(pdf_path)
+
+            for page_num in page_nums:
+                tmp_path = None
+                try:
+                    fd, tmp_path = tempfile.mkstemp(suffix='.docx')
+                    os.close(fd)
+
+                    cv.convert(
+                        tmp_path,
+                        start=page_num - 1,
+                        end=page_num,
+                        layout=False,
+                        table_deduction=False,
+                        multi_processing=False,
+                        cpu_count=1,
+                    )
+
+                    with open(tmp_path, 'rb') as f:
+                        buf = BytesIO(f.read())
+                    batch_tables.extend(
+                        PDFProcessor._parse_docx_tables_static(buf, page_num))
+                    buf.close()
+
+                except Exception:
+                    pass
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+        finally:
+            if cv is not None:
+                try:
+                    cv.close()
+                except Exception:
+                    pass
+
+        return batch_tables
+
+    def _extract_tables_via_docx_per_page(self, pdf_path=None, context=None,
+                                           progress_callback=None):
+        """逐页 pdf2docx 转换：每页独立转 DOCX，表格页码 100% 准确。
+
+        相比一次性全文档转换，逐页方案从根本上消除了"猜页码→DP修正"
+        的信息损失链条，表格从哪页 DOCX 解析出来就属于哪页。
+
+        性能优化：
+        - 多进程并行转换（每进程独立 Python 解释器，完全隔离 PyMuPDF C 扩展）
+
+        TODO: 跨页表格合并（后续单独实现）
+
+        Args:
+            pdf_path: PDF 文件路径（向后兼容）
+            context:  PDFContext 共享上下文（优先使用）
+            progress_callback: callback(value, message) 推送进度
+        Returns:
+            [{page, type, data, extractor, confidence, context_text, ...}]
+        """
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        if context:
+            _pdf_path = context.pdf_path
+        else:
+            _pdf_path = pdf_path
+
+        total_pages = context.page_count if context else 0
+        if total_pages == 0:
+            import fitz
+            doc = fitz.open(_pdf_path)
+            total_pages = len(doc)
+            doc.close()
+
+        cpu_count = min(multiprocessing.cpu_count(), 6)
+
+        # 将页分配到各进程（每个进程处理一批页，复用 Converter）
+        pages_per_batch = (total_pages + cpu_count - 1) // cpu_count
+        page_batches = []
+        for t in range(cpu_count):
+            start = t * pages_per_batch + 1
+            end = min(start + pages_per_batch - 1, total_pages)
+            if start <= end:
+                page_batches.append(list(range(start, end + 1)))
+
+        print(f"  [docx-per-page] 逐页转换: {total_pages} 页, "
+              f"{cpu_count} 进程并行 × ~{pages_per_batch} 页/进程")
+        if progress_callback:
+            progress_callback(22,
+                f"docx: 逐页转换 {total_pages} 页 ({cpu_count}进程)...")
+
+        t0 = time.time()
+
+        # 多进程并行：每个子进程独立 Python 解释器，PyMuPDF C 扩展完全隔离
+        all_tables = []
+        total_batches = len(page_batches)
+        completed_batches = 0
+
+        with ProcessPoolExecutor(max_workers=cpu_count) as executor:
+            futures = {
+                executor.submit(
+                    PDFProcessor._convert_batch_static, _pdf_path, batch
+                ): idx
+                for idx, batch in enumerate(page_batches)
+            }
+
+            for future in as_completed(futures):
+                try:
+                    batch_tables = future.result()
+                    all_tables.extend(batch_tables)
+                except Exception as e:
+                    print(f"  [docx-per-page] 进程批处理异常: {e}")
+
+                completed_batches += 1
+                if progress_callback:
+                    pct = 22 + int(completed_batches / total_batches * 8)
+                    progress_callback(pct,
+                        f"docx: 批次 {completed_batches}/{total_batches}")
+
+        # 按页码排序
+        all_tables.sort(key=lambda t: t.get("page", 0))
+
+        elapsed = time.time() - t0
+        print(f"  [docx-per-page] 转换完成: {len(all_tables)} 个表格, "
+              f"耗时 {elapsed:.1f}s")
+
+        # 注意：不做上下文补充，避免 PyMuPDF C 扩展 refcount bug
+        # 子进程已完全隔离，主进程 all_tables 是纯 Python 数据（list[dict]），
+        # 不包含任何 PyMuPDF C 对象，后续 deepcopy 安全，无需 gc.collect()
+
+        # 打印摘要
+        pages_with_tables = len(set(t["page"] for t in all_tables))
+        print(f"  [docx-per-page] {len(all_tables)} 表 / "
+              f"{pages_with_tables} 页 / {total_pages} 页 → "
+              f"覆盖率 {pages_with_tables/total_pages*100:.0f}%")
+
+        if progress_callback:
+            progress_callback(30, f"docx: 提取完成 ({len(all_tables)}表格)")
+
+        return all_tables
+
+    def _enrich_per_page_context(self, all_tables, context):
+        """为逐页转换的表补充上下文文本（从 PDF 页文本提取，仅用于展示）。"""
+        try:
+            pages_with_tables = set(t["page"] for t in all_tables)
+
+            for pn in sorted(pages_with_tables):
+                try:
+                    page = context.get_page(pn - 1)
+                    page_text = page.get_text("text")
+                    if not page_text:
+                        continue
+                    # 取页面前 200 字符作为上下文（仅展示用途）
+                    ctx = page_text[:200].strip()
+
+                    if ctx:
+                        for t in all_tables:
+                            if t["page"] == pn and not t.get("context_text"):
+                                t["context_text"] = ctx
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"  [docx-per-page] 上下文补充异常: {e}")
+
     # ---- V2-Lite 页码分配（委托给独立模块 page_assigner） ----
 
     def _verify_docx_page_numbers(self, results, context):
         """基于 V2-Lite 物理坐标匹配的页码验证。
 
-        委托给独立的 page_assigner 模块，便于单独测试和优化。
+        - 逐页转换结果（extractor='docx_per_page'）：页码 100% 准确，跳过 DP
+        - 全量转换结果（extractor='docx_based'）：委托 page_assigner 修正
+
         详见 codes/pdf_extractor/page_assigner.py
         """
+        if not results:
+            return results
+
+        # 逐页转换 → 页码已准确，跳过 DP 验证
+        if results[0].get("extractor") == "docx_per_page":
+            print(f"  [docx] 逐页转换结果，页码已 100% 准确，跳过 DP 修正")
+            return results
+
         from codes.pdf_extractor.page_assigner import assign_docx_pages
         return assign_docx_pages(results, context)
 
@@ -1237,7 +1531,10 @@ class PDFProcessor:
 
     @staticmethod
     def _table_fingerprint(table_data, sample_cells=6):
-        """生成表格的轻量指纹：前 sample_cells 个非空单元格文本"""
+        """生成表格的轻量指纹：前 sample_cells 个非空单元格文本（向后兼容接口）
+
+        注意：增强版指纹请使用 _table_fingerprint_v2。
+        """
         cells = []
         for row in table_data[:2]:  # 只看前两行
             for cell in row:
@@ -1252,6 +1549,43 @@ class PDFProcessor:
         return frozenset(cells) if cells else None
 
     @staticmethod
+    def _table_fingerprint_v2(table_data, max_cells=20):
+        """增强版指纹：5行 + 20格 + 数值优先 + 行结构哈希
+
+        相比旧版 _table_fingerprint（只看前2行6格），增强版：
+        1. 扩展到5行，max_cells=20，大幅提升区分度
+        2. 数值型单元格优先（数值几乎不可能跨表重复）
+        3. 附加行结构签名（每行的列数序列），区分不同结构的表
+
+        Returns:
+            (frozenset, tuple) 或 None: (指纹集合, 行结构签名)
+        """
+        cells = []
+        numeric_cells = []
+        text_cells = []
+
+        for row in table_data[:5]:
+            for cell in row:
+                if not cell:
+                    continue
+                s = str(cell).strip()
+                if len(s) < 2:
+                    continue
+                cleaned = s.replace(",", "").replace("%", "").replace("(", "-").replace(")", "")
+                try:
+                    float(cleaned)
+                    numeric_cells.append(s.lower())
+                except ValueError:
+                    text_cells.append(s.lower())
+
+        cells = numeric_cells[:15] + text_cells[:5]
+
+        # 行结构签名：每行的列数序列
+        row_structure = tuple(len(row) for row in table_data[:5])
+
+        return (frozenset(cells[:max_cells]), row_structure) if cells else None
+
+    @staticmethod
     def _deduplicate_v2_docx(v2_tables, docx_tables):
         """去重合并：docx 为主力通道，V2 补漏 docx 未覆盖的表格。
 
@@ -1260,46 +1594,63 @@ class PDFProcessor:
 
         规则：
         1. docx 所有表格无条件保留(主力通道)，保持原始阅读顺序不动
-        2. 同一页中 V2 表格与任一 docx 表格指纹命中 >= 2 个公共词则丢弃 V2(避免重复)
-        3. V2 独有的表格(docx 漏掉的无框表/小表)按页码插入到 docx 序列的正确位置
+        2. 增强指纹匹配：行结构必须一致 + 公共词 >=3 + 公共词占比 >=40%
+        3. 搜索范围扩展到 ±1 页容忍（同一张表可能被 docx 和 V2 分配到相邻页）
+        4. V2 独有的表格(docx 漏掉的无框表/小表)按页码插入到 docx 序列的正确位置
         """
         if not docx_tables:
             return list(v2_tables)
 
         merged = list(docx_tables)  # docx 保持原顺序，绝不动
-        # 收集所有已匹配的 V2 表格（用于后续排除）
         matched_v2_ids = set()
 
-        # 对每个 docx 表格，找同页 V2 匹配项
+        # 对每个 docx 表格，在 ±1 页范围内找 V2 匹配项
         for di, dt in enumerate(docx_tables):
             dt_page = dt.get("page", 0)
             dt_data = dt.get("data", [])
-            dt_fp = PDFProcessor._table_fingerprint(dt_data)
+            dt_fp = PDFProcessor._table_fingerprint_v2(dt_data)
 
-            # 在同页 V2 表格中找匹配
-            if dt_fp:
-                for vi, vt in enumerate(v2_tables):
-                    if vi in matched_v2_ids:
-                        continue
-                    if vt.get("page") != dt_page:
-                        continue
-                    vt_data = vt.get("data", [])
-                    vt_fp = PDFProcessor._table_fingerprint(vt_data)
-                    if vt_fp and dt_fp:
-                        common = dt_fp & vt_fp
-                        if len(common) >= 2 and len(common) >= min(len(dt_fp), len(vt_fp)) * 0.5:
-                            matched_v2_ids.add(vi)
-                            print(f"  [去重] P{dt_page}: docx表{di+1} ← V2表{vi+1}(匹配{len(common)}个公共词)")
+            if not dt_fp:
+                continue
 
-        # 收集未匹配的 V2 表格，按页码排序后插入到 docx 序列（绝不动 docx 顺序）
+            dt_fp_set, dt_structure = dt_fp
+
+            for vi, vt in enumerate(v2_tables):
+                if vi in matched_v2_ids:
+                    continue
+                vt_page = vt.get("page", 0)
+                # ±1 页容忍
+                if abs(vt_page - dt_page) > 1:
+                    continue
+                vt_data = vt.get("data", [])
+                vt_fp = PDFProcessor._table_fingerprint_v2(vt_data)
+                if not vt_fp:
+                    continue
+
+                vt_fp_set, vt_structure = vt_fp
+
+                # 行结构不同 → 不可能是同一张表
+                if dt_structure != vt_structure:
+                    continue
+
+                common = dt_fp_set & vt_fp_set
+                min_size = min(len(dt_fp_set), len(vt_fp_set))
+                if min_size == 0:
+                    continue
+                # 增强匹配：>=3 个公共词 且 公共词占较小集合的 >=40%
+                if len(common) >= 3 and len(common) >= min_size * 0.4:
+                    matched_v2_ids.add(vi)
+                    page_note = f"P{dt_page}" if vt_page == dt_page else f"P{dt_page}/P{vt_page}(±1)"
+                    print(f"  [去重] {page_note}: docx表{di+1} ← V2表{vi+1}(匹配{len(common)}个公共词, 行结构={dt_structure})")
+
+        # 收集未匹配的 V2 表格，按页码排序后插入到 docx 序列
         unmatched_v2 = []
         for vi, vt in enumerate(v2_tables):
             if vi not in matched_v2_ids:
                 unmatched_v2.append(vt)
 
         if unmatched_v2:
-            unmatched_v2.sort(key=lambda x: x.get("page", 0))  # V2内部按页码排
-            # 从后往前插入，避免索引偏移
+            unmatched_v2.sort(key=lambda x: x.get("page", 0))
             for vt in reversed(unmatched_v2):
                 vt_page = vt.get("page", 0)
                 insert_pos = len(merged)
@@ -2553,7 +2904,14 @@ def _compact_empty_cells(data):
 
 def _auto_merge_split_tables(results):
     """检测并合并被 pdf2docx 拆分断裂的相邻表格。
-    仅合并 data（清洗后），original_data 不动。"""
+    仅合并 data（清洗后），original_data 不动。
+
+    注意：逐页转换结果（extractor='docx_per_page'）不会出现
+    跨页拆分问题，跳过合并以避免误合并同页不同表格。
+    """
+    # 逐页转换 → 无拆分断裂，直接返回
+    if results and results[0].get("extractor") == "docx_per_page":
+        return results
 
     results.sort(key=lambda x: x.get("page", 0))
 
@@ -2659,6 +3017,9 @@ def _auto_clean_tables(results, progress_callback=None):
     """对解析结果自动清洗：保存原始 → 清洗数值 → 删空格 → 删空行 → 合并断裂。"""
     import copy
 
+    # results 中的 data 字段是纯 Python list[list[str]]，
+    # deepcopy 不涉及 PyMuPDF C 对象，无需 gc.collect()
+
     if progress_callback:
         progress_callback(93, "正在自动清洗数据...")
 
@@ -2755,9 +3116,9 @@ class ProcessingWorker(QThread):
                 cb = lambda v, m: self.progress.emit(v, m)
 
                 if self.mode == "auto" and not is_image:
-                    # ---- auto 模式：docx(pdf2word) 主力提取 + V2 锚点校准页码 ----
-                    self.progress.emit(20, "pdf2word 提取表格(约2-5分钟)...")
-                    docx_tables = self.pdf_processor._extract_tables_via_docx(
+                    # ---- auto 模式：逐页 pdf2word (页码100%准确) ----
+                    self.progress.emit(20, "pdf2word 逐页提取表格...")
+                    docx_tables = self.pdf_processor._extract_tables_via_docx_per_page(
                         pdf_path=self.pdf_path,
                         context=context,
                         progress_callback=cb
