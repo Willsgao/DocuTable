@@ -1671,6 +1671,7 @@ class PDFProcessor:
         规则：
         1. 只有 1 行数据的跳过，除非是该页第一个表且含 >= 2 个数值
         2. 没有数值类型数据的跳过（纯文本块，不是表格）
+        3. 图表误判过滤：坐标轴刻度、孤立单字图例、饼图标签
         """
         import re
 
@@ -1686,8 +1687,72 @@ class PDFProcessor:
         def has_any_number(data):
             return count_numbers(data) > 0
 
+        def _is_chart_like_data(data):
+            """快速检测表格数据是否为图表标签（P0 兜底过滤）。"""
+            if not data or len(data) < 2:
+                return False
+
+            # 收集所有非空文本
+            all_texts = []
+            for row in data:
+                all_texts.extend(str(c).strip() for c in row if str(c).strip())
+
+            if not all_texts:
+                return True  # 全空
+
+            # 特征1：大量单中文字符（图例碎片）
+            single_cn_count = sum(
+                1 for t in all_texts
+                if re.match(r'^[\u4e00-\u9fff]$', t)
+            )
+            if single_cn_count >= 3 and single_cn_count >= len(all_texts) * 0.5:
+                return True
+
+            # 特征2：坐标轴刻度模式（每行只有1~2个纯数字）
+            # 检查每个数据行中的纯数字列数
+            narrow_numeric_rows = 0
+            for row in data:
+                numeric_cols = []
+                for cell in row:
+                    c = str(cell).strip()
+                    if not c:
+                        continue
+                    clean = c.replace(",", "").replace(" ", "")
+                    try:
+                        float(clean)
+                        numeric_cols.append(clean)
+                    except ValueError:
+                        pass
+                if 1 <= len(numeric_cols) <= 2:
+                    narrow_numeric_rows += 1
+
+            # 80%+ 的行只有1~2个数值 → 图表刻度
+            if narrow_numeric_rows >= len(data) * 0.8 and len(data) >= 3:
+                # 进一步验证：数值是否呈规律性变化
+                values = []
+                for row in data:
+                    for cell in row:
+                        c = str(cell).strip().replace(",", "")
+                        try:
+                            values.append(float(c))
+                        except ValueError:
+                            pass
+                if len(values) >= 3:
+                    # 检查是否为等差数列
+                    diffs = [values[i+1] - values[i] for i in range(len(values)-1)]
+                    abs_diffs = [abs(d) for d in diffs]
+                    if abs_diffs:
+                        mean = sum(abs_diffs) / len(abs_diffs)
+                        if mean > 0:
+                            std = (sum((d - mean) ** 2 for d in abs_diffs) / len(abs_diffs)) ** 0.5
+                            if std / mean < 0.2:
+                                return True
+
+            return False
+
         filtered = []
         removed = 0
+        chart_removed = 0
         kept_exceptions = 0
         last_page = None
 
@@ -1711,12 +1776,19 @@ class PDFProcessor:
                 removed += 1
                 continue
 
+            # 规则3：图表误判过滤（P0 兜底）
+            if _is_chart_like_data(data):
+                chart_removed += 1
+                continue
+
             filtered.append(t)
 
-        if removed or kept_exceptions:
+        if removed or chart_removed or kept_exceptions:
             parts = []
             if removed:
                 parts.append(f"移除{removed}个")
+            if chart_removed:
+                parts.append(f"图表过滤{chart_removed}个")
             if kept_exceptions:
                 parts.append(f"保留{kept_exceptions}个页首单行表(含数值)")
             print(f"  [质量过滤] {'; '.join(parts)}")
@@ -2969,62 +3041,253 @@ def _deduplicate_columns(data):
     return data, removed_count
 
 
-def _clean_merged_cell_bleed(data):
-    """清除 pdf2docx 合并单元格展开时渗透到下行脚注的数值假数据。
+def _deduplicate_subset_rows(data):
+    """消除 pdf2docx 合并格展开导致的子集重复行（幽灵行）。
 
-    pdf2docx 在处理跨行合并格时，会把合并区域的文本展开到每行。
-    如果脚注/注释行占据了一个宽合并格，pdf2docx 可能把上方数据行的
-    数值也渗透进脚注行的右侧列。
+    检测模式：相邻两行标签相同，且其中一行的【非空值】是另一行的严格子集。
+    较空的那行是合并格展开残留，删掉它，保留数据更完整的行。
 
-    检测逻辑：如果某行的数值列（第 1 列起，非空）跟上一行对应列全部
-    一模一样，且首列文本与上行不同，判定为渗透，清空该行的数值部分。
+    例如：
+      Row A: [信用减值损失, (120,700), 空,    空,      空,    空      ]
+      Row B: [信用减值损失, (120,700), (136,774), (11.75), 空, (154,535)]
+      → A 的非空值 {信用减值损失, (120,700)} ⊂ B 的非空值
+      → 删除 A，保留 B
 
-    纯文本列（首列）不受影响，仅清空后续数值/金额列。
+    注意：只检测相邻行，避免跨大范围误删（如"资产总额"和"负债总额"可能共享值）。
 
     Args:
         data: list[list[str]]
 
     Returns:
-        (cleaned_data, cleaned_count): 清洗后数据 + 受影响行数
+        (cleaned_data, removed_count)
+    """
+    if not data or len(data) < 2:
+        return data, 0
+
+    dedup_count = 0
+    rows_to_remove = set()
+    max_cols = max(len(r) for r in data)
+
+    for i in range(len(data) - 1):
+        if i in rows_to_remove:
+            continue
+
+        row_a = data[i]
+        row_b = data[i + 1]
+
+        # 条件1：标签相同（第一列）
+        label_a = str(row_a[0]).strip() if row_a and row_a[0] else ""
+        label_b = str(row_b[0]).strip() if row_b and row_b[0] else ""
+        if not label_a or label_a != label_b:
+            continue
+
+        # 条件2：逐列收集非空值
+        a_nonempty = set()
+        b_nonempty = set()
+
+        for c in range(max_cols):
+            va = str(row_a[c]).strip() if c < len(row_a) and row_a[c] else ""
+            vb = str(row_b[c]).strip() if c < len(row_b) and row_b[c] else ""
+
+            if va:
+                a_nonempty.add((c, va))
+            if vb:
+                b_nonempty.add((c, vb))
+
+        # 用归一化值比较（带列索引，防止不同列同值混淆）
+        a_vals = {_normalize_for_lookup(v) for _, v in a_nonempty}
+        b_vals = {_normalize_for_lookup(v) for _, v in b_nonempty}
+
+        # A 的所有非空归一化值都在 B 中，且 B 有 A 没有的值 → A 是幽灵行
+        if a_vals and a_vals.issubset(b_vals) and (b_vals - a_vals):
+            rows_to_remove.add(i)
+            dedup_count += 1
+            continue
+
+        # B 的所有非空归一化值都在 A 中，且 A 有 B 没有的值 → B 是幽灵行
+        if b_vals and b_vals.issubset(a_vals) and (a_vals - b_vals):
+            rows_to_remove.add(i + 1)
+            dedup_count += 1
+            continue
+
+    if rows_to_remove:
+        cleaned = [row for idx, row in enumerate(data) if idx not in rows_to_remove]
+        return cleaned, dedup_count
+
+    return data, 0
+
+
+# 汇总行关键词：这些行可能合法地共享上级行的数值（如资产总额=负债总额）
+_SUMMARY_KEYWORDS = [
+    "总额", "总计", "合计", "净额", "净收入", "净利息",
+    "净利", "净收益", "净值", "小计", "余额",
+]
+
+
+def _is_summary_row(first_col_text: str) -> bool:
+    """判断首列文本是否属于汇总/合计行，这些行的值可能合法地与上级行一致。"""
+    if not first_col_text:
+        return False
+    for kw in _SUMMARY_KEYWORDS:
+        if kw in first_col_text:
+            return True
+    return False
+
+
+def _clean_merged_cell_bleed(data):
+    """激进清除 pdf2docx 合并格渗透值，后续由 liteparse 补回合法值。
+
+    策略：同一列中，一个值出现在多个行，保留第一次出现（最可能是源头），
+    删除后续所有行的该列值。不设保护——汇总行也会被删。
+    
+    这会产生大量误删，但会由 _restore_from_liteparse 根据 liteparse 原文补回。
+    liteparse 是独立解析器，不受 pdf2docx 合并格影响，能准确判断原文中是否存在。
     """
     if len(data) < 2:
         return data, 0
-    
+
     cleaned_count = 0
-    for i in range(1, len(data)):
-        prev_row = data[i - 1]
-        curr_row = data[i]
-        
-        # 首列文本必须与上行不同（排除重复表头等正常情况）
-        prev_text = str(prev_row[0]).strip() if prev_row else ""
-        curr_text = str(curr_row[0]).strip() if curr_row else ""
-        if not curr_text or curr_text == prev_text:
-            continue
-        
-        # 取 min 列数，比较第 1 列起的所有列
-        n_cols = min(len(prev_row), len(curr_row))
-        if n_cols <= 1:
-            continue
-        
-        # 检查数值列是否跟上一行完全一致
-        all_match = True
-        has_content = False
-        for c in range(1, n_cols):
-            p = str(prev_row[c]).strip() if prev_row[c] else ""
-            q = str(curr_row[c]).strip() if curr_row[c] else ""
-            if p or q:
-                has_content = True
-            if p != q:
-                all_match = False
-                break
-        
-        # 所有数值列与上行完全一致 → 渗透，清空
-        if has_content and all_match:
-            for c in range(1, len(curr_row)):
-                curr_row[c] = ""
-            cleaned_count += 1
-    
+    max_cols = max(len(r) for r in data)
+
+    for c in range(1, max_cols):
+        first_seen = {}  # {normalized_value: row_index}
+        for r in range(len(data)):
+            if c >= len(data[r]):
+                continue
+            val = str(data[r][c]).strip() if data[r][c] else ""
+            if not val:
+                continue
+            norm = _normalize_for_lookup(val)
+            if norm not in first_seen:
+                first_seen[norm] = r
+            else:
+                # 后续出现 → 渗透，直接删除
+                data[r][c] = ""
+                cleaned_count += 1
+
     return data, cleaned_count
+
+
+def _normalize_for_lookup(val: str) -> str:
+    """归一化数值，用于在 liteparse 文本中查找匹配。
+
+    去掉千分位逗号、空格、括号转负号，统一格式。
+    """
+    s = val.strip().replace(',', '').replace(' ', '')
+    if s.startswith('(') and s.endswith(')'):
+        s = '-' + s[1:-1]
+    # 也保留原始千分位格式用于匹配
+    return s
+
+
+def _restore_from_liteparse(table_data, liteparse_text_items, original_data):
+    """将激进清洗中误删的值根据 liteparse 原文补回。
+
+    关键：只恢复在 liteparse 中同一行 Y 坐标范围内出现的值。
+    避免把其他行（如总生息资产）的合法值误恢复到当前行（如非生息资产）。
+
+    Args:
+        table_data: 清洗后的 2D 表格（某些单元格已被清空）
+        liteparse_text_items: [{text, x0, y0, x1, y1}, ...] 该页的文本片段
+        original_data: 清洗前的原始数据（用于获取被删前的值）
+
+    Returns:
+        (restored_data, restore_count)
+    """
+    if not liteparse_text_items or not original_data:
+        return table_data, 0
+
+    # 构建带坐标的 text_items 列表
+    items = []
+    for ti in liteparse_text_items:
+        if isinstance(ti, dict):
+            t = ti.get("text", "").strip()
+            y0 = ti.get("y0", 0)
+            y1 = ti.get("y1", 0)
+            if t and y1 > y0:
+                items.append({"text": t, "y0": y0, "y1": y1, "y_mid": (y0 + y1) / 2})
+
+    if not items:
+        return table_data, 0
+
+    restore_count = 0
+
+    for r in range(min(len(table_data), len(original_data))):
+        row = table_data[r]
+        orig_row = original_data[r]
+
+        # 1. 通过首列文本定位该行的 Y 坐标范围
+        row_label = str(row[0]).strip() if row[0] else ""
+        row_y_range = _find_row_y_range(row_label, items)
+        if row_y_range is None:
+            # 找不到行定位 → 退化为全文搜索
+            row_items = items
+        else:
+            y_min, y_max = row_y_range
+            row_items = [
+                it for it in items
+                if not (it["y1"] < y_min or it["y0"] > y_max)
+            ]
+
+        # 2. 对该行每个被清空的单元格，在行范围内的 items 中搜索
+        for c in range(min(len(row), len(orig_row))):
+            current = str(row[c]).strip() if row[c] else ""
+            original = str(orig_row[c]).strip() if orig_row[c] else ""
+
+            if current or not original:
+                continue
+
+            norm_orig = _normalize_for_lookup(original)
+            if not norm_orig:
+                continue
+
+            found = False
+            for it in row_items:
+                it_norm = _normalize_for_lookup(it["text"])
+                if norm_orig == it_norm or norm_orig in it_norm:
+                    found = True
+                    break
+
+            if found:
+                row[c] = original
+                restore_count += 1
+
+    return table_data, restore_count
+
+
+def _find_row_y_range(row_label: str, items: list, threshold: float = 5.0):
+    """通过行标签在 TextItems 中定位该行的 Y 坐标范围。
+
+    用 y_mid 聚类：跟标签的 y_mid 差在 threshold 内的 items 视为同行。
+    阈值设为 5pt —— 远小于典型行间距（~16-20pt），确保不会误收相邻行。
+    """
+    if not row_label or not items:
+        return None
+
+    label_items = [it for it in items if row_label in it["text"]]
+    if not label_items:
+        return None
+
+    # 用标签的 y_mid 来定位
+    label_y = label_items[0]["y_mid"]
+    row_items = [it for it in items if abs(it["y_mid"] - label_y) <= threshold]
+
+    if row_items:
+        y_min = min(it["y0"] for it in row_items)
+        y_max = max(it["y1"] for it in row_items)
+        return (y_min, y_max)
+
+    # 兜底：直接用标签 y_mid ± threshold
+    return (label_y - threshold, label_y + threshold)
+
+
+def _get_liteparse_page(liteparse_data: dict, page_num: int) -> dict | None:
+    """从 liteparse ParseResult 字典中获取指定页的数据。"""
+    pages = liteparse_data.get("pages", [])
+    for p in pages:
+        if p.get("page_number") == page_num:
+            return p
+    return None
 
 
 def _infer_numeric_pattern(data, skip_col):
@@ -3238,119 +3501,211 @@ def _split_concatenated_column(data):
     return data, split_count
 
 
-def _auto_merge_split_tables(results):
+def _auto_merge_split_tables(results, liteparse_data=None):
     """检测并合并被 pdf2docx 拆分断裂的相邻表格。
+    无论同页还是跨页，只要相邻都参与合并判断。
+
+    两层判定：
+    1. liteparse 辅助（同页多表 → region 数量判断）
+    2. 启发式规则（列数 + 表头 + 上下文阻断）
+
     仅合并 data（清洗后），original_data 不动。
-
-    注意：逐页转换结果（extractor='docx_per_page'）不会出现
-    跨页拆分问题，跳过合并以避免误合并同页不同表格。
     """
-    # 逐页转换 → 无拆分断裂，直接返回
-    if results and results[0].get("extractor") == "docx_per_page":
-        return results
-
-    results.sort(key=lambda x: x.get("page", 0))
-
     import re
 
-    # 收集所有有效表格的索引（排除没有 data 的）
-    valid_indices = [i for i, t in enumerate(results) if t.get("data")]
+    if not results:
+        return results
 
-    merged_any = True
-    merge_count = 0
+    is_docx_per_page = results[0].get("extractor") == "docx_per_page"
+    results.sort(key=lambda x: x.get("page", 0))
 
-    while merged_any:
-        merged_any = False
-        to_remove = set()
-        merges_this_round = []
+    # ---- liteparse 辅助的相邻拆分检测 ----
+    confident_merges = []
+    suggested_merges = []
 
-        for idx_i in range(len(valid_indices) - 1):
-            i = valid_indices[idx_i]
-            j = valid_indices[idx_i + 1]
+    if liteparse_data:
+        try:
+            from codes.table_validator.table_boundary import detect_adjacent_splits
+            confident_merges, suggested_merges = detect_adjacent_splits(
+                results, liteparse_data
+            )
+        except Exception as e:
+            print(f"  [auto-merge] liteparse 检测失败（降级为纯规则）: {e}")
+
+    # ---- 自动合并高置信对 ----
+    to_remove = set()
+    if confident_merges:
+        # 去重 & 拓扑排序（避免连环合并中的索引错乱）
+        merged_set = set()
+        for i, j in confident_merges:
             if i in to_remove or j in to_remove:
                 continue
-
-            table_a = results[i]
-            table_b = results[j]
-
-            # 条件1: 列数相同
-            cols_a = max((len(r) for r in table_a["data"]), default=0)
-            cols_b = max((len(r) for r in table_b["data"]), default=0)
-            if cols_a == 0 or cols_b == 0 or cols_a != cols_b:
-                continue
-
-            # 辅助：判断是否为本页第一个表格
-            def _is_first_on_page(idx):
-                page = results[idx].get("page", 0)
-                for k in valid_indices:
-                    if k == idx:
-                        break
-                    if results[k].get("page") == page and results[k].get("data"):
-                        return False
-                return True
-
-            # 规则：两表之间有2行以上实质文本 → 不合并（它们是独立的表）
-            ctx_b = table_b.get("context_text", "")
-            meaningful_lines = []
-            if ctx_b:
-                meaningful_lines = [l for l in ctx_b.split('\n') if l.strip() and not re.match(r'^[\d\-\s]+$', l.strip())]
-            if len(meaningful_lines) >= 2:
-                continue
-
-            # 规则：后表是本页第一个且有实质描述文字 → 不合并（新章节的开始）
-            if _is_first_on_page(j) and len(meaningful_lines) >= 1:
-                continue
-
-            # 条件2: table_b 首行全部是纯数值类（无表头）
-            first_row_b = table_b["data"][0] if table_b["data"] else []
-            if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
-                numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
-                if numeric_count < max(1, len(first_row_b) * 0.5):
-                    continue
-
-            # 执行合并：B 行追加到 A 末尾
-            page_a = table_a.get("page", 0)
-            page_b = table_b.get("page", 0)
-
-            # 确保每行列数一致
-            for row in table_b["data"]:
-                while len(row) < cols_a:
-                    row.append("")
-            table_a["data"].extend([row[:cols_a] for row in table_b["data"]])
-            table_a["rows"] = len(table_a["data"])
-
-            if "original_data" in table_b:
-                if "original_data" not in table_a:
-                    table_a["original_data"] = []
-                for row in table_b["original_data"]:
-                    while len(row) < cols_a:
-                        row.append("")
-                table_a["original_data"].extend([row[:cols_a] for row in table_b["original_data"]])
-
-            # 标记 B 为已合并（需移除）
+            _do_merge(results, i, j)
             to_remove.add(j)
-            merge_count += 1
-            merges_this_round.append((i, j, page_a, page_b, len(table_b["data"])))
+            merged_set.add((i, j))
 
-        # 批量移除
         if to_remove:
-            merged_any = True
             for j in sorted(to_remove, reverse=True):
                 results.pop(j)
-            valid_indices = [i for i, t in enumerate(results) if t.get("data")]
+            merge_type = "同/跨页" if not is_docx_per_page else "同页"
+            print(f"  [auto-merge] liteparse辅助{merge_type}合并: {len(to_remove)}对")
 
-        # 日志
-        for i, j, pa, pb, rows in merges_this_round:
-            print(f"  [auto-merge] P{pa}+P{pb}: 表格#{i}+#{j} → +{rows}行")
+    # ---- 对 suggested merges 打标记 ----
+    for i, j, reason in suggested_merges:
+        if j >= len(results):
+            continue
+        results[j]["_suggest_merge_to"] = i
+        results[j]["_merge_reason"] = reason
+        pa, pb = results[i].get("page", "?"), results[j].get("page", "?")
+        cross = "跨页" if pa != pb else "同页"
+        print(f"  [建议] {cross} P{pa}→P{pb}: 表格#{j} 🔗建议合并到表格#{i} ({reason})")
 
-    if merge_count > 0:
-        print(f"  [auto-merge] 共合并 {merge_count} 对断裂表格")
+    # ---- 启发式规则兜底（仅非 docx_per_page 的跨页合并） ----
+    if not is_docx_per_page:
+        valid_indices = [i for i, t in enumerate(results) if t.get("data")]
+
+        merged_any = True
+        merge_count = 0
+
+        while merged_any:
+            merged_any = False
+            to_remove_heuristic = set()
+            merges_this_round = []
+
+            for idx_i in range(len(valid_indices) - 1):
+                i = valid_indices[idx_i]
+                j = valid_indices[idx_i + 1]
+                if i in to_remove_heuristic or j in to_remove_heuristic:
+                    continue
+
+                table_a = results[i]
+                table_b = results[j]
+
+                cols_a = max((len(r) for r in table_a["data"]), default=0)
+                cols_b = max((len(r) for r in table_b["data"]), default=0)
+                if cols_a == 0 or cols_b == 0 or cols_a != cols_b:
+                    continue
+
+                # 辅助判断
+                def _is_first_on_page(idx):
+                    page = results[idx].get("page", 0)
+                    for k in valid_indices:
+                        if k == idx:
+                            break
+                        if results[k].get("page") == page and results[k].get("data"):
+                            return False
+                    return True
+
+                ctx_b = table_b.get("context_text", "")
+                meaningful_lines = []
+                if ctx_b:
+                    meaningful_lines = [l for l in ctx_b.split('\n') if l.strip() and not re.match(r'^[\d\-\s]+$', l.strip())]
+                if len(meaningful_lines) >= 2:
+                    continue
+                if _is_first_on_page(j) and len(meaningful_lines) >= 1:
+                    continue
+
+                first_row_b = table_b["data"][0] if table_b["data"] else []
+                if not first_row_b or not all(_is_numeric_data(cell) for cell in first_row_b):
+                    numeric_count = sum(1 for cell in first_row_b if _is_numeric_data(cell))
+                    if numeric_count < max(1, len(first_row_b) * 0.5):
+                        continue
+
+                _do_merge(results, i, j)
+                to_remove_heuristic.add(j)
+                merge_count += 1
+                merges_this_round.append((i, j, table_a.get("page", 0), table_b.get("page", 0), len(table_b["data"])))
+
+            if to_remove_heuristic:
+                merged_any = True
+                for j in sorted(to_remove_heuristic, reverse=True):
+                    results.pop(j)
+                valid_indices = [i for i, t in enumerate(results) if t.get("data")]
+
+            for i, j, pa, pb, rows in merges_this_round:
+                print(f"  [auto-merge] P{pa}+P{pb}: 表格#{i}+#{j} → +{rows}行")
+
+        if merge_count > 0:
+            print(f"  [auto-merge] 共合并 {merge_count} 对断裂表格")
 
     return results
 
 
-def _auto_clean_tables(results, progress_callback=None):
-    """对解析结果自动清洗：保存原始 → 清洗数值 → 删空格 → 删空行 → 合并断裂。"""
+def _do_merge(results, i, j):
+    """将 results[j] 合并到 results[i]，保持列数对齐。"""
+    table_a = results[i]
+    table_b = results[j]
+    cols_a = max((len(r) for r in table_a["data"]), default=0)
+
+    for row in table_b["data"]:
+        while len(row) < cols_a:
+            row.append("")
+    table_a["data"].extend([row[:cols_a] for row in table_b["data"]])
+    table_a["rows"] = len(table_a["data"])
+
+    if "original_data" in table_b:
+        if "original_data" not in table_a:
+            table_a["original_data"] = []
+        for row in table_b["original_data"]:
+            while len(row) < cols_a:
+                row.append("")
+        table_a["original_data"].extend([row[:cols_a] for row in table_b["original_data"]])
+
+
+def _precompute_scoped_items(results, liteparse_data):
+    """同页多表时，为每表预计算 liteparse region 限定后的 text_items。
+
+    将 scoped items 存入 table["_liteparse_items"]，
+    后续 _restore_from_liteparse 和 diff 对比优先使用。
+    """
+    if not liteparse_data:
+        return
+
+    try:
+        from codes.table_validator.table_boundary import get_scoped_items_for_table
+
+        # 按页分组
+        page_tables: dict = {}
+        for table in results:
+            if not table.get("data"):
+                continue
+            page_tables.setdefault(table.get("page", 0), []).append(table)
+
+        for page_num, tables_on_page in page_tables.items():
+            if len(tables_on_page) <= 1:
+                continue  # 单表不需要限定
+
+            lp_page = _get_liteparse_page(liteparse_data, page_num)
+            if not lp_page or not lp_page.get("table_regions"):
+                continue
+
+            for table in tables_on_page:
+                scoped = get_scoped_items_for_table(
+                    table, tables_on_page, lp_page
+                )
+                # 只有当 scoped 不是全量回退时才打标记
+                all_items = lp_page.get("text_items", [])
+                if scoped and (len(scoped) != len(all_items)):
+                    table["_liteparse_items"] = scoped
+
+            region_count = len(lp_page.get("table_regions", []))
+            table_count = len(tables_on_page)
+            if region_count != table_count:
+                print(f"  [预检] P{page_num}: liteparse {region_count}个区域 vs pdf2docx {table_count}个表"
+                      f"（已为各表限定文本范围）")
+
+    except Exception as e:
+        print(f"  [预检] scoped items 计算失败（降级为全页模式）: {e}")
+
+
+def _auto_clean_tables(results, progress_callback=None, liteparse_data=None):
+    """对解析结果自动清洗：保存原始 → 清洗数值 → 删空格 → 删空行 → 合并断裂。
+    
+    Args:
+        results: 表格列表
+        progress_callback: 进度回调
+        liteparse_data: liteparse ParseResult.to_dict()，用于激进清洗后恢复合法值
+    """
     import copy
 
     # results 中的 data 字段是纯 Python list[list[str]]，
@@ -3361,6 +3716,9 @@ def _auto_clean_tables(results, progress_callback=None):
 
     total_cleaned_cells = 0
     total_removed_spaces = 0
+
+    # ---- 预处理：同页多表时，为每表预计算 liteparse scoped text_items ----
+    _precompute_scoped_items(results, liteparse_data)
 
     for i, table in enumerate(results):
         if not table.get("data"):
@@ -3407,18 +3765,44 @@ def _auto_clean_tables(results, progress_callback=None):
             table["cells_compacted"] = True
             print(f"  [清洗] 表格{i+1} 紧凑化: {data_before}→{data_after}个单元格")
 
-        # 5.5 清除 pdf2docx 合并格渗透的假数据
+        # 5.3 消除幽灵行（子集重复行，合并格展开残留）
+        row_before_dedup = len(table["data"])
+        table["data"], phantom_count = _deduplicate_subset_rows(table["data"])
+        if phantom_count > 0:
+            row_after_dedup = len(table["data"])
+            print(f"  [清洗] 表格{i+1} 幽灵行去重: {row_before_dedup}→{row_after_dedup}行, 删除{phantom_count}行")
+
+        # 5.5 激进清除 pdf2docx 合并格渗透值（同一列重复出现即删）
+        # 后续由 liteparse 补回合法值
+        original_before_bleed = copy.deepcopy(table["data"])
         table["data"], bleed_count = _clean_merged_cell_bleed(table["data"])
         if bleed_count > 0:
-            print(f"  [清洗] 表格{i+1} 清除合并格渗透: {bleed_count}行")
+            print(f"  [清洗] 表格{i+1} 激进清除合并格渗透: {bleed_count}个单元格")
 
-        # 5.6 拆分垂直合并格导致的拼接值列
+        # 5.6 根据 liteparse 原文补回误删的合法值
+        if liteparse_data and bleed_count > 0:
+            # 优先使用 scoped text_items（同页多表时限定区域），降级使用全页 items
+            text_items = table.get("_liteparse_items")
+            if not text_items:
+                page_num = table.get("page", 0)
+                lp_page = _get_liteparse_page(liteparse_data, page_num)
+                if lp_page:
+                    text_items = lp_page.get("text_items", [])
+            if text_items:
+                table["data"], restore_count = _restore_from_liteparse(
+                    table["data"], text_items, original_before_bleed
+                )
+                if restore_count > 0:
+                    scope_tag = " (scoped)" if table.get("_liteparse_items") else ""
+                    print(f"  [清洗] 表格{i+1} liteparse补回合法值{scope_tag}: {restore_count}个单元格")
+
+        # 5.7 拆分垂直合并格导致的拼接值列
         table["data"], split_count = _split_concatenated_column(table["data"])
         if split_count > 0:
             print(f"  [清洗] 表格{i+1} 拆分拼接列: {split_count}列")
 
     # 6. 自动合并断裂表格
-    results = _auto_merge_split_tables(results)
+    results = _auto_merge_split_tables(results, liteparse_data=liteparse_data)
 
     if progress_callback:
         progress_callback(94, f"清洗完成({len(results)}个表格, {total_cleaned_cells}个单元格已清洗)")
@@ -3651,7 +4035,27 @@ class ProcessingWorker(QThread):
                 context.generate_all_previews(preview_dir)
 
             # ---- 自动清洗数据 + 合并断裂表格 ----
-            results = _auto_clean_tables(results, progress_callback=lambda v, m: self.progress.emit(v, m))
+            # 尝试加载 liteparse 数据，用于激进清洗后补回合法值
+            liteparse_data = None
+            try:
+                from codes.liteparse_extractor.cache_manager import load_parse_result
+                lp_result = load_parse_result(self.pdf_path)
+                if lp_result is not None:
+                    liteparse_data = lp_result.to_dict()
+            except Exception:
+                pass
+
+            # 保存真·原始数据（清洗前的提取原样），供追溯
+            import copy
+            for table in results:
+                if table.get("data") and "raw_data" not in table:
+                    table["raw_data"] = copy.deepcopy(table["data"])
+
+            results = _auto_clean_tables(
+                results,
+                progress_callback=lambda v, m: self.progress.emit(v, m),
+                liteparse_data=liteparse_data,
+            )
             # 最终确保按页码排序
             results.sort(key=lambda x: x["page"])
 

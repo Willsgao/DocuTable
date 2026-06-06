@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QDialog, QRadioButton, QSpinBox, QDialogButtonBox, QInputDialog,
     QTextBrowser
 )
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtGui import QKeySequence, QColor
 from PyQt5.QtCore import Qt, QEvent, QObject, QTimer, QThread, pyqtSignal
 
 from codes.pdf_extractor import (
@@ -22,6 +22,8 @@ from codes.pdf_extractor import (
 from codes.pdf_extractor.processor import _auto_merge_split_tables
 from codes.pdf_extractor.ai_correction import RuleChecker, LLMCorrector
 from codes.ui.ai_correction_dialog import PromptEditDialog
+from codes.ui.validation_dialog import CrossValidationDialog, CrossValidationWorker, LiteparseTableDialog
+from codes.table_validator.cell_differ import diff_table_with_liteparse, classify_rows_with_liteparse, _cluster_items_by_y, _normalize_for_search
 
 
 class TableCompareManager(QObject):
@@ -40,8 +42,14 @@ class TableCompareManager(QObject):
         self.filtered_indices = []
         self.filtered_index = 0
         
-        # 原始/清洗数据切换
-        self.showing_original = False
+        # 原始/清洗数据切换（三层：raw → original → data）
+        self.showing_data_layer = 0  # 0=data(清洗后), 1=original_data(清洗前), 2=raw_data(提取原样)
+        
+        # 差异标注模式
+        self.diff_mode = False
+        self.diff_highlight_btn = None
+        self.diff_stats_label = None
+        self._liteparse_cache = None  # 当前 PDF 的 liteparse 缓存
         
         # 控件引用（由 init_ui 设置）
         self.table_widget = None
@@ -241,7 +249,7 @@ class TableCompareManager(QObject):
 
         # 原始/清洗数据切换按钮
         self.toggle_original_btn = QPushButton("📋 查看原始数据")
-        self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
+        self.toggle_original_btn.setToolTip("切换: 清洗数据 → 清洗前 → 提取原样 (三层追溯)")
         self.toggle_original_btn.setFocusPolicy(Qt.NoFocus)
         self.toggle_original_btn.clicked.connect(self.toggle_original_view)
         self.toggle_original_btn.setStyleSheet("""
@@ -252,60 +260,66 @@ class TableCompareManager(QObject):
 
         btn_layout.addSpacing(10)
 
-        # 批量插入按钮
-        self.batch_insert_btn = QPushButton("📦 批量插入")
-        self.batch_insert_btn.setToolTip("一次性插入多行或多列")
-        self.batch_insert_btn.setFocusPolicy(Qt.NoFocus)
-        self.batch_insert_btn.clicked.connect(self.batch_insert)
-        btn_layout.addWidget(self.batch_insert_btn)
-        
-        # 统计按钮
-        self.calc_sum_btn = QPushButton("📊 计算选中区域")
-        self.calc_sum_btn.setToolTip("计算选中单元格的总和、平均值、数量")
-        self.calc_sum_btn.setFocusPolicy(Qt.NoFocus)
-        self.calc_sum_btn.clicked.connect(self.calculate_selected)
-        btn_layout.addWidget(self.calc_sum_btn)
-        
-        btn_layout.addSpacing(10)
-        
-        # AI纠错当前表按钮
-        self.ai_correct_current_btn = QPushButton("🔍 AI纠错当前表")
-        self.ai_correct_current_btn.setToolTip("仅对当前选中的表格进行 AI 分析修正\n提示：结果会自动缓存，下次打开无需重新分析\n按住 Shift 点击可强制重新分析")
-        self.ai_correct_current_btn.setFocusPolicy(Qt.NoFocus)
-        self.ai_correct_current_btn.clicked.connect(self.on_ai_correct_current_clicked)
-        self.ai_correct_current_btn.setStyleSheet("""
-            QPushButton { background-color: #17A589; color: white; padding: 2px 10px; border-radius: 4px;
+        # LLM 边界优化按钮（新：LLM边界检测 + liteparse文本填充）
+        self.llm_boundary_btn = QPushButton("🔮 LLM 边界优化")
+        self.llm_boundary_btn.setToolTip(
+            "LLM 分析 liteparse 整页文本，识别表格精确边界\n"
+            "自动合并同页碎片 + 跨页续表拼接\n"
+            "用 liteparse 精确文本填充每个单元格\n"
+            "⚠ 需要已配置 DeepSeek API（配置Tab）"
+        )
+        self.llm_boundary_btn.setFocusPolicy(Qt.NoFocus)
+        self.llm_boundary_btn.clicked.connect(self.on_llm_boundary_clicked)
+        self.llm_boundary_btn.setStyleSheet("""
+            QPushButton { background-color: #D35400; color: white; padding: 2px 10px; border-radius: 4px;
                           font-weight: bold; font-size: 11px; }
-            QPushButton:hover { background-color: #148F77; }
+            QPushButton:hover { background-color: #BA4A00; }
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
-        btn_layout.addWidget(self.ai_correct_current_btn)
+        btn_layout.addWidget(self.llm_boundary_btn)
 
-        # AI纠错全部按钮
-        self.ai_correct_all_btn = QPushButton("🔍 AI纠错全部")
-        self.ai_correct_all_btn.setToolTip("对所有表格进行 AI 分析并修正命名、层级和区域错误\n提示：结果会自动缓存，下次打开无需重新分析\n按住 Shift 点击可强制重新分析")
-        self.ai_correct_all_btn.setFocusPolicy(Qt.NoFocus)
-        self.ai_correct_all_btn.clicked.connect(self.on_ai_correct_all_clicked)
-        self.ai_correct_all_btn.setStyleSheet("""
-            QPushButton { background-color: #2980B9; color: white; padding: 2px 10px; border-radius: 4px;
-                          font-weight: bold; font-size: 11px; }
-            QPushButton:hover { background-color: #2471A3; }
-            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
-        """)
-        btn_layout.addWidget(self.ai_correct_all_btn)
+        btn_layout.addSpacing(8)
 
-        # 预览Prompt按钮
-        self.preview_prompt_btn = QPushButton("📝 预览Prompt")
-        self.preview_prompt_btn.setToolTip("查看并编辑即将发送给 LLM 的 Prompt\n支持切换模式查看不同模式下的 Prompt 内容")
-        self.preview_prompt_btn.setFocusPolicy(Qt.NoFocus)
-        self.preview_prompt_btn.clicked.connect(self.on_preview_prompt_clicked)
-        self.preview_prompt_btn.setStyleSheet("""
-            QPushButton { background-color: #8E44AD; color: white; padding: 2px 10px; border-radius: 4px;
+        # liteparse 表格分割按钮（纯规则，零 API 成本）
+        self.segmenter_btn = QPushButton("📊 表格分割验证")
+        self.segmenter_btn.setToolTip(
+            "仅用 liteparse 内置 table_regions 精确切分表格区域\n"
+            "生成完整覆盖度报告，验证分割是否准确完整\n"
+            "零 API 成本，纯规则驱动"
+        )
+        self.segmenter_btn.setFocusPolicy(Qt.NoFocus)
+        self.segmenter_btn.clicked.connect(self.on_segmenter_clicked)
+        self.segmenter_btn.setStyleSheet("""
+            QPushButton { background-color: #16A085; color: white; padding: 2px 10px; border-radius: 4px;
                           font-weight: bold; font-size: 11px; }
-            QPushButton:hover { background-color: #7D3C98; }
+            QPushButton:hover { background-color: #138D75; }
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
-        btn_layout.addWidget(self.preview_prompt_btn)
+        btn_layout.addWidget(self.segmenter_btn)
+
+        btn_layout.addSpacing(8)
+
+        # 差异标注按钮（liteparse 对比，零成本、规则驱动）
+        self.diff_highlight_btn = QPushButton("🔍 差异标注 ☐")
+        self.diff_highlight_btn.setToolTip(
+            "用 liteparse 文本数据行/列对齐对比 pdf2docx 表格\n"
+            "标红：同行同列值不一致\n"
+            "标黄：疑似多余行（liteparse 中无此行）\n"
+            "标橙：疑似多余列（liteparse 该行无此列数据）\n"
+            "统计栏：缺失行/列数量\n"
+            "零 API 成本，纯规则驱动"
+        )
+        self.diff_highlight_btn.setFocusPolicy(Qt.NoFocus)
+        self.diff_highlight_btn.setCheckable(True)
+        self.diff_highlight_btn.clicked.connect(self.toggle_diff_mode)
+        self.diff_highlight_btn.setStyleSheet("""
+            QPushButton { background-color: #E74C3C; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #CB4335; }
+            QPushButton:checked { background-color: #C0392B; color: white; font-weight: bold;
+                                  border: 2px solid #F1C40F; }
+        """)
+        btn_layout.addWidget(self.diff_highlight_btn)
         
         # 删除空格按钮
         self.remove_spaces_btn = QPushButton("🧹 删除空格")
@@ -417,7 +431,29 @@ class TableCompareManager(QObject):
         """)
         
         self.table_splitter.addWidget(self.table_widget)
-        
+
+        # liteparse 原文展示区（差异标注模式下显示，默认隐藏）
+        self.liteparse_browser = QTextBrowser()
+        self.liteparse_browser.setReadOnly(True)
+        self.liteparse_browser.setMinimumHeight(40)
+        self.liteparse_browser.setMaximumHeight(180)
+        self.liteparse_browser.setPlaceholderText("liteparse 解析原文（按行聚类）")
+        self.liteparse_browser.setOpenExternalLinks(False)
+        self.liteparse_browser.anchorClicked.connect(self._on_liteparse_view_toggle)
+        self.liteparse_browser.setStyleSheet("""
+            QTextBrowser {
+                border: 1px solid #5DADE2; border-radius: 4px;
+                background-color: #EBF5FB; color: #1A5276;
+                font-size: 11px; padding: 4px;
+            }
+        """)
+        self.liteparse_browser.hide()
+        # liteparse 视图状态
+        self._liteparse_view_mode = "clustered"  # "clustered" | "fulltext"
+        self._liteparse_full_text = ""
+        self._liteparse_text_items_cache = []
+        self.table_splitter.addWidget(self.liteparse_browser)
+
         # 设置分割线样式
         self.table_splitter.setStyleSheet("""
             QSplitter::handle { background-color: #BDC3C7; height: 3px; }
@@ -433,6 +469,17 @@ class TableCompareManager(QObject):
         """)
         self.stats_label.setFixedHeight(22)
         table_layout.addWidget(self.stats_label)
+        
+        # 差异标注统计标签（默认隐藏）
+        self.diff_stats_label = QLabel("")
+        self.diff_stats_label.setStyleSheet("""
+            QLabel { background-color: #FDEDEC; border: 1px solid #E74C3C;
+                     border-radius: 4px; padding: 2px 8px; color: #C0392B;
+                     font-weight: bold; }
+        """)
+        self.diff_stats_label.setFixedHeight(22)
+        self.diff_stats_label.hide()
+        table_layout.addWidget(self.diff_stats_label)
         
         # 锁定表格按钮
         self.lock_table_btn = QPushButton("🔓 解锁")
@@ -491,7 +538,7 @@ class TableCompareManager(QObject):
             data.append(row_data)
         
         # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
-        data_key = 'original_data' if self.showing_original else 'data'
+        data_key = self._get_current_data_key()
         tables[table_idx][data_key] = data
         self._last_displayed_table_idx = table_idx
         
@@ -536,7 +583,7 @@ class TableCompareManager(QObject):
                 row_data.append(item.text() if item else "")
             data.append(row_data)
         # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
-        data_key = 'original_data' if self.showing_original else 'data'
+        data_key = self._get_current_data_key()
         tables[self._last_displayed_table_idx][data_key] = data
     
     # ==================== 事件处理 ====================
@@ -760,9 +807,22 @@ class TableCompareManager(QObject):
             title_str = f" {title}" if title else ""
             # LLM 生成的标题加星号标记
             llm_mark = "✨" if table.get('llm_title') else ""
-            item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{title_str}"
+            # 建议合并标记（同页拆分检测）
+            merge_mark = ""
+            merge_tooltip = ""
+            if table.get('_suggest_merge_to') is not None:
+                merge_mark = "🔗"
+                reason = table.get('_merge_reason', '疑似被拆分的同一表格')
+                merge_tooltip = f"建议合并到上一个表格（{reason}）"
+                merge_to = table.get('_suggest_merge_to')
+                if merge_to is not None:
+                    merge_tooltip += f" → 表格#{merge_to}"
+
+            item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{merge_mark}{title_str}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
+            if merge_tooltip:
+                item.setToolTip(merge_tooltip)
             self.table_list_widget.addItem(item)
         
         self.table_list_widget.blockSignals(False)
@@ -1041,11 +1101,15 @@ class TableCompareManager(QObject):
         self.table_widget.blockSignals(True)
         self.table_widget.clear()
         
-        # 根据状态选择数据源：默认显示清洗后 data，切换后显示原始 original_data
-        data_key = 'original_data' if self.showing_original else 'data'
-        if self.showing_original and 'original_data' not in table:
-            data_key = 'data'  # 没有原始数据时降级到清洗数据
+        # 根据状态选择数据源：0=清洗后data, 1=original_data, 2=raw_data
+        data_key = self._get_current_data_key()
+        # 降级策略：优先使用当前层，没有则降级到下一层
         data = table.get(data_key, [])
+        if not data:
+            if data_key == 'raw_data':
+                data = table.get('original_data', []) or table.get('data', [])
+            elif data_key == 'original_data':
+                data = table.get('data', [])
         parse_type = table.get('type', '')
         parse_message = table.get('parse_message', '')
         
@@ -1103,23 +1167,470 @@ class TableCompareManager(QObject):
         self.table_widget.resizeColumnsToContents()
         self.table_widget.blockSignals(False)
         
-        # 更新统计标签（注明锁定状态）
+        # 差异标注高亮（开启时）
+        if self.diff_mode:
+            self._apply_diff_highlight(table, data)
+        
+        # 更新统计标签（注明锁定状态或差异标注状态）
         tip = "选中单元格查看统计信息"
         if self.table_locked:
             tip = "🔒 已锁定 | " + tip
         self.stats_label.setText(tip)
     
-    def toggle_original_view(self):
-        """切换原始数据和清洗后数据的视图"""
-        self.showing_original = not self.showing_original
-        if self.showing_original:
-            self.toggle_original_btn.setText("📋 查看清洗数据")
-            self.toggle_original_btn.setToolTip("当前显示原始提取数据，点击切换回清洗后数据")
+    # ==================== 差异标注 ====================
+    
+    def toggle_diff_mode(self):
+        """切换差异标注模式开关"""
+        self.diff_mode = not self.diff_mode
+        if self.diff_mode:
+            self.diff_highlight_btn.setText("🔍 差异标注 ☑")
+            self.diff_stats_label.show()
+            # 确保 liteparse 缓存已加载
+            self._load_liteparse_cache()
+            if hasattr(self, 'liteparse_browser'):
+                self.liteparse_browser.show()
         else:
+            self.diff_highlight_btn.setText("🔍 差异标注 ☐")
+            self.diff_stats_label.hide()
+            if hasattr(self, 'liteparse_browser'):
+                self.liteparse_browser.clear()
+                self.liteparse_browser.hide()
+        # 刷新当前表格
+        self.update_preview_display()
+    
+    def _load_liteparse_cache(self):
+        """懒加载当前 PDF 的 liteparse 缓存（自动感知文件切换）"""
+        pdf_path = getattr(self.main_window, 'current_file', None)
+        if not pdf_path:
+            self._liteparse_cache = None
+            return
+        
+        # 检查缓存对应的文件是否已变化
+        if self._liteparse_cache is not None:
+            cached_path = self._liteparse_cache.get("pdf_path", "")
+            if cached_path == pdf_path:
+                return  # 缓存有效
+        
+        try:
+            from codes.liteparse_extractor.cache_manager import load_parse_result
+            result = load_parse_result(pdf_path)
+            if result is not None:
+                self._liteparse_cache = result.to_dict()
+            else:
+                self._liteparse_cache = None
+        except Exception as e:
+            print(f"[Diff] 加载 liteparse 缓存失败: {e}")
+            self._liteparse_cache = None
+    
+    def _get_liteparse_page(self, page_num: int):
+        """从 liteparse 缓存获取指定页的数据"""
+        if not self._liteparse_cache:
+            return None
+        pages = self._liteparse_cache.get("pages", [])
+        for p in pages:
+            if p.get("page_number") == page_num:
+                return p
+        return None
+
+    def _show_liteparse_rows(self, text_items, full_text: str = ""):
+        """在 liteparse_browser 中显示 liteparse 原文（按行聚类）。
+
+        增强功能：
+        - x0 缩进检测：用 ▸ 标记 + CSS padding 显示行缩进层次
+        - 每个 cell 鼠标悬停 tooltip 显示精确的 x0/y0 坐标
+        - 支持"聚类视图" ↔ "原文视图"切换（保留空格对齐的原始格式）
+
+        Args:
+            text_items: liteparse 的 text_items 列表
+            full_text:   liteparse 的 full_text（保留原始空格排版），用于原文视图
+        """
+        if not hasattr(self, 'liteparse_browser') or not self.liteparse_browser:
+            return
+        if self.liteparse_browser.isHidden():
+            return
+
+        # 缓存数据，供视图切换时重渲染
+        self._liteparse_text_items_cache = text_items
+        self._liteparse_full_text = full_text
+
+        # 原文视图模式
+        if self._liteparse_view_mode == "fulltext":
+            self._show_liteparse_fulltext_view(full_text)
+            return
+
+        # ---- 聚类视图 ----
+        if not text_items:
+            self.liteparse_browser.setPlainText("（无 liteparse 数据）")
+            return
+
+        # 构建 items（与 cell_differ 相同的格式）
+        items = []
+        for ti in text_items:
+            if isinstance(ti, dict):
+                t = ti.get("text", "").strip()
+                y0 = ti.get("y0", 0)
+                y1 = ti.get("y1", 0)
+                if t and y1 > y0:
+                    items.append({
+                        "text": t,
+                        "x0": ti.get("x0", 0),
+                        "x1": ti.get("x1", 0),
+                        "y0": y0,
+                        "y1": y1,
+                        "y_mid": (y0 + y1) / 2,
+                    })
+
+        if not items:
+            self.liteparse_browser.setPlainText("（无有效 liteparse 数据）")
+            return
+
+        # 按 Y 聚类成行
+        lp_rows = _cluster_items_by_y(items)
+
+        # ---- 计算 x0 基线，用于缩进检测 ----
+        # 取所有行首列的 x0 最小值作为左对齐基线
+        first_cell_x0s = []
+        for row in lp_rows:
+            if row["items"]:
+                first_cell_x0s.append(row["items"][0]["x0"])
+        baseline_x0 = min(first_cell_x0s) if first_cell_x0s else 0
+        indent_threshold = 5.0  # pt，超过此值视为有缩进
+
+        # ---- 构建 HTML 显示 ----
+        view_links = (
+            '<span style="font-size:10px;color:#5DADE2;">'
+            '[<b>聚类视图</b>] '
+            '<a href="liteparse:fulltext" style="color:#7FB3D8;text-decoration:none;">原文视图</a>'
+            '</span>'
+        )
+        html_parts = [
+            '<div style="font-family: Consolas, monospace; font-size: 11px;">',
+            f'<b>\U0001f4c4 liteparse 解析原文（按行聚类，左→右）</b> {view_links}<br>',
+            '<table cellpadding="2" cellspacing="0" style="font-size: 11px;">',
+        ]
+
+        for idx, row in enumerate(lp_rows):
+            texts = row["texts"]
+            y_avg = round((row["y_min"] + row["y_max"]) / 2, 1)
+            bg = "#F0F8FF" if idx % 2 == 0 else "#FAFAFA"
+
+            # ---- 计算该行缩进 ----
+            first_item_x0 = row["items"][0]["x0"]
+            indent_pt = max(0, first_item_x0 - baseline_x0)
+            indent_px = int(indent_pt * 0.75)  # pt → px 近似
+
+            # 缩进标记
+            indent_html = ""
+            if indent_pt > indent_threshold:
+                indent_html = (
+                    f'<td style="color:#2980B9;font-size:10px;padding-left:{indent_px}px;'
+                    f'title="缩进 {indent_pt:.1f}pt">\u25b8</td>'
+                )
+
+            # 每个 cell 带 tooltip
+            cells_html = []
+            for item in row["items"]:
+                t = item["text"]
+                x0 = item.get("x0", 0)
+                y0 = item.get("y0", 0)
+                escaped = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                title_attr = f' title="x0={x0:.1f} y0={y0:.1f}"'
+                cells_html.append(f'<td{title_attr}>{escaped}</td>')
+
+            html_parts.append(
+                f'<tr style="background-color:{bg}">'
+                f'<td style="color:#999;font-size:10px;padding-right:8px;white-space:nowrap">'
+                f'[行{idx} Y≈{y_avg}]</td>'
+                f'{indent_html}'
+                f'<td>{"</td><td>|</td><td>".join(cells_html) if cells_html else "<td>-</td>"}</td>'
+                f'</tr>'
+            )
+
+        html_parts.append('</table>')
+        html_parts.append(
+            f'<br><span style="color:#999;font-size:10px;">'
+            f'共 {len(lp_rows)} 行, {len(items)} 个文本片段'
+            f' | 基线 x0={baseline_x0:.0f}pt, 缩进阈值={indent_threshold:.0f}pt'
+            f'</span>'
+        )
+        html_parts.append('</div>')
+
+        self.liteparse_browser.setHtml("".join(html_parts))
+
+    def _show_liteparse_fulltext_view(self, full_text: str):
+        """显示 liteparse 原文视图（保留空格对齐的版式文本）。"""
+        view_links = (
+            '<span style="font-size:10px;color:#5DADE2;">'
+            '<a href="liteparse:clustered" style="color:#7FB3D8;text-decoration:none;">聚类视图</a> '
+            '[<b>原文视图</b>]'
+            '</span>'
+        )
+        if not full_text:
+            html = (
+                '<div style="font-family: Consolas, monospace; font-size: 11px;">'
+                f'<b>\U0001f4c4 liteparse 解析原文（版式文本）</b> {view_links}<br>'
+                '<p style="color:#999;">（该页无 full_text 数据，请切换回聚类视图）</p>'
+                '</div>'
+            )
+        else:
+            # 转义 HTML 特殊字符，保留原始空格
+            escaped = full_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            html = (
+                '<div style="font-family: Consolas, monospace; font-size: 11px;">'
+                f'<b>\U0001f4c4 liteparse 解析原文（版式文本，保留空格）</b> {view_links}<br>'
+                f'<pre style="white-space:pre;margin:4px 0;color:#1A5276;">{escaped}</pre>'
+                '</div>'
+            )
+        self.liteparse_browser.setHtml(html)
+
+    def _on_liteparse_view_toggle(self, url):
+        """处理 liteparse 视图切换链接点击。"""
+        href = url.toString()
+        if href == "liteparse:fulltext":
+            self._liteparse_view_mode = "fulltext"
+        elif href == "liteparse:clustered":
+            self._liteparse_view_mode = "clustered"
+        else:
+            return
+        # 用缓存数据重渲染
+        self._show_liteparse_rows(self._liteparse_text_items_cache, self._liteparse_full_text)
+
+    def _apply_diff_highlight(self, table, data):
+        """对当前表格数据应用差异标注高亮
+
+        新格式（行/列层级对齐）：
+        {
+            "cell_diffs": {"r,c": {"status": ..., "cell_value": ..., "liteparse_value": ...}},
+            "extra_rows": [...],        # pdf2docx 多余行
+            "missing_row_texts": [...], # liteparse 中未被捕获的行
+            "extra_cols": {r: [c, ...]}, # 多余列
+            "missing_cols": {r: n},      # 缺失列
+            "unmatched_items": [...],    # 未消费的 liteparse 文本
+        }
+        兼容旧格式（顶层直接是 cell diff dict）。
+        """
+        if not self._liteparse_cache:
+            self._load_liteparse_cache()
+        if not self._liteparse_cache:
+            self.diff_stats_label.setText("⚠️ liteparse 缓存不可用，无法进行差异标注")
+            return
+
+        page_num = table.get("page", 0)
+        if not page_num:
+            self.diff_stats_label.setText("⚠️ 无法确定当前页面号")
+            return
+
+        lp_page = self._get_liteparse_page(page_num)
+        if not lp_page:
+            self.diff_stats_label.setText(f"⚠️ liteparse 未解析第 {page_num} 页")
+            return
+
+        # 同页多表时，优先使用 processor 预计算的 scoped text_items
+        text_items = table.get("_liteparse_items")
+        if not text_items:
+            text_items = lp_page.get("text_items", [])
+        if not text_items:
+            self.diff_stats_label.setText(f"⚠️ 第 {page_num} 页 liteparse 无文本数据")
+            return
+
+        try:
+            diff_results = diff_table_with_liteparse(data, text_items)
+            row_classification = classify_rows_with_liteparse(data, text_items)
+        except Exception as e:
+            print(f"[Diff] 对比失败: {e}")
+            return
+
+        # 兼容旧格式：如果顶层包含 status 字段，说明是旧版扁平格式
+        if diff_results and any(
+            isinstance(v, dict) and "status" in v
+            for v in diff_results.values()
+        ):
+            cell_diffs = diff_results
+            extra_rows = []
+            missing_row_texts = []
+            extra_cols = {}
+            missing_cols = {}
+        else:
+            cell_diffs = diff_results.get("cell_diffs", {})
+            extra_rows = diff_results.get("extra_rows", [])
+            missing_row_texts = diff_results.get("missing_row_texts", [])
+            extra_cols = diff_results.get("extra_cols", {})
+            missing_cols = diff_results.get("missing_cols", {})
+
+        # ---- 行级分类结果 ----
+        row_status = row_classification.get("row_status", {})
+        missing_lp_rows = row_classification.get("missing_rows", [])
+
+        # ---- 显示 liteparse 原文（按行聚类，左侧标签 + 右侧数据列） ----
+        self._show_liteparse_rows(text_items, full_text=lp_page.get("full_text", ""))
+
+        # ---- 行级标注：幽灵行 / 节标题行 / 多余行 ----
+        phantom_count = 0
+        section_count = 0
+        for r, status in row_status.items():
+            st = status.get("status", "")
+            reason = status.get("reason", "")
+            cols = self.table_widget.columnCount()
+
+            if st == "phantom":
+                # 幽灵行：灰色半透明 + 删除线 + 👻 图标
+                for c in range(cols):
+                    item = self.table_widget.item(r, c)
+                    if item is None:
+                        continue
+                    item.setBackground(QColor("#E8E8E8"))
+                    # 添加删除线字体
+                    font = item.font()
+                    font.setStrikeOut(True)
+                    item.setFont(font)
+                    item.setForeground(QColor("#999999"))
+                    if c == 0:
+                        item.setToolTip(f"👻 幽灵行\n{reason}\n💡 此行是相邻行的非空值子集，疑似 pdf2docx 多余行")
+                phantom_count += 1
+            elif st == "section":
+                # 节标题行：淡蓝背景
+                for c in range(cols):
+                    item = self.table_widget.item(r, c)
+                    if item is None:
+                        continue
+                    item.setBackground(QColor("#D6EAF8"))
+                    if c == 0:
+                        item.setToolTip(f"📑 节标题\n{reason}")
+                section_count += 1
+            elif st == "extra":
+                # 多余行（liteparse 中未找到）：黄色
+                for c in range(cols):
+                    item = self.table_widget.item(r, c)
+                    if item is None:
+                        continue
+                    item.setBackground(QColor("#FFF3CD"))
+                    if c == 0:
+                        item.setToolTip(f"⚠️ 多余行\n{reason}")
+
+        # ---- 单元格差异标红 ----
+        suspicious_count = 0
+        for key, info in cell_diffs.items():
+            try:
+                r, c = map(int, key.split(","))
+            except ValueError:
+                continue
+
+            # 跳过幽灵行的单元格差异标注
+            if row_status.get(r, {}).get("status") == "phantom":
+                continue
+
+            item = self.table_widget.item(r, c)
+            if item is None:
+                continue
+
+            status = info.get("status", "")
+            hint = info.get("liteparse_hint", "")
+            lp_value = info.get("liteparse_value", "")
+
+            if status == "suspicious":
+                item.setBackground(QColor("#FFE0E0"))
+                tooltip = f"⚠️ 可疑值\n{hint}"
+                if lp_value:
+                    tooltip += f"\n💡 建议值: {lp_value}"
+                item.setToolTip(tooltip)
+                suspicious_count += 1
+
+        # ---- 多余行标黄（保留旧逻辑，与 extra 互补） ----
+        for r in extra_rows:
+            # 跳过已经分类过的行
+            if r in row_status and row_status[r].get("status") in ("phantom", "section"):
+                continue
+            cols = self.table_widget.columnCount()
+            for c in range(cols):
+                item = self.table_widget.item(r, c)
+                if item is not None:
+                    item.setBackground(QColor("#FFF3CD"))
+                    if c == 0:
+                        item.setToolTip("⚠️ 疑似多余行：此行标签在 liteparse 中未找到")
+
+        # ---- 多余列标橙 ----
+        for r, cols in extra_cols.items():
+            # 跳过幽灵行
+            if row_status.get(r, {}).get("status") == "phantom":
+                continue
+            for c in cols:
+                item = self.table_widget.item(r, c)
+                if item is not None:
+                    item.setBackground(QColor("#FFE0B2"))
+                    item.setToolTip(f"⚠️ 疑似多余列：liteparse 该行只有 {c} 列数据")
+
+        # ---- 缺失列提示（在最后一列加提示） ----
+        for r, n_missing in missing_cols.items():
+            # 跳过幽灵行
+            if row_status.get(r, {}).get("status") == "phantom":
+                continue
+            lp_row = extra_cols.get(r, [])
+            cols = self.table_widget.columnCount()
+            last_col = cols - 1
+            if lp_row:
+                last_col = min(lp_row) - 1
+            item = self.table_widget.item(r, max(0, last_col))
+            if item is not None:
+                existing_tip = item.toolTip() or ""
+                tip = f"⚠️ 疑似缺失列：liteparse 该行多 {n_missing} 列数据"
+                if existing_tip:
+                    tip = existing_tip + "\n" + tip
+                item.setToolTip(tip)
+
+        # ---- 统计信息 ----
+        total_cells = sum(len(row) for row in data)
+        non_empty = sum(
+            1 for row in data for cell in row
+            if cell and str(cell).strip()
+        )
+
+        parts = [f"🔍 差异标注"]
+        if suspicious_count:
+            parts.append(f"可疑: {suspicious_count}")
+        if phantom_count:
+            parts.append(f"👻幽灵行: {phantom_count}")
+        if missing_lp_rows:
+            parts.append(f"缺失行: {len(missing_lp_rows)}")
+        if section_count:
+            parts.append(f"节标题: {section_count}")
+        if extra_rows:
+            parts.append(f"多余行: {len(extra_rows)}")
+        if extra_cols:
+            parts.append(f"多余列: {sum(len(v) for v in extra_cols.values())}")
+        if missing_cols:
+            parts.append(f"缺失列: {sum(missing_cols.values())}")
+        if not any([suspicious_count, phantom_count, missing_lp_rows, extra_rows, missing_row_texts, extra_cols, missing_cols]):
+            parts.append("全部一致 ✅")
+
+        parts.append(f"含值: {non_empty}")
+        parts.append(f"总单元格: {total_cells}")
+
+        self.diff_stats_label.setText(" | ".join(parts))
+    
+    # ==================== 原始/清洗切换 ====================
+
+    def toggle_original_view(self):
+        """三层数据切换：清洗后(0) → 清洗前(1) → 提取原样(2) → 清洗后(0)"""
+        self.showing_data_layer = (self.showing_data_layer + 1) % 3
+        if self.showing_data_layer == 0:
             self.toggle_original_btn.setText("📋 查看原始数据")
-            self.toggle_original_btn.setToolTip("切换查看原始提取数据（用于对比找错）")
+            self.toggle_original_btn.setToolTip("切换: 清洗数据 → 清洗前 → 提取原样 (当前: 清洗后)")
+        elif self.showing_data_layer == 1:
+            self.toggle_original_btn.setText("📋 查看清洗数据")
+            self.toggle_original_btn.setToolTip("切换: 清洗前 → 提取原样 → 清洗后 (当前: 清洗前 original_data)")
+        else:
+            self.toggle_original_btn.setText("📄 查看提取原样")
+            self.toggle_original_btn.setToolTip("切换: 提取原样 → 清洗后 → 清洗前 (当前: 提取原样 raw_data)")
         # 刷新当前表格显示
         self.update_preview_display()
+
+    def _get_current_data_key(self):
+        """获取当前数据层的键名"""
+        if self.showing_data_layer == 2:
+            return 'raw_data'
+        elif self.showing_data_layer == 1:
+            return 'original_data'
+        return 'data'
     
     def _change_table_page(self, filtered_row):
         """手动修改表格的 PDF 页号"""
@@ -2201,6 +2712,145 @@ class TableCompareManager(QObject):
 
         self._run_ai_correction(table_tables, force=force)
 
+    def on_segmenter_clicked(self):
+        """liteparse 表格分割验证 — 纯规则驱动，零 API 成本"""
+        # 加载 liteparse 缓存
+        self._load_liteparse_cache()
+        if not self._liteparse_cache:
+            QMessageBox.warning(
+                self.main_window, "无 liteparse 数据",
+                "未找到 liteparse 解析缓存。\n\n"
+                "请确保 PDF 提取时已运行 liteparse 旁路解析。"
+            )
+            return
+
+        self.segmenter_btn.setEnabled(False)
+        self.segmenter_btn.setText("📊 分割中...")
+
+        try:
+            from codes.table_validator.liteparse_table_segmenter import (
+                segment_tables_from_liteparse,
+                print_verification_report,
+            )
+
+            tables, report = segment_tables_from_liteparse(
+                self._liteparse_cache,
+                enable_cross_page=True,
+            )
+
+            if not tables and report.get("error"):
+                QMessageBox.warning(self.main_window, "分割失败",
+                                   f"表格分割未产生结果：\n{report['error']}")
+                return
+
+            # 生成可读报告
+            report_text = print_verification_report(tables, report)
+
+            # 用新的 LiteparseTableDialog 展示（含逐表浏览 + 导出）
+            dialog = LiteparseTableDialog(
+                tables, report, report_text, parent=self.main_window
+            )
+            dialog.exec_()
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self.main_window, "错误",
+                               f"表格分割失败：\n{str(e)}")
+        finally:
+            self.segmenter_btn.setEnabled(True)
+            self.segmenter_btn.setText("📊 表格分割验证")
+
+    def on_llm_boundary_clicked(self):
+        """LLM 边界优化 — 边界检测 + 碎片合并 + liteparse 文本填充"""
+        all_tables = self.main_window.processed_results.get('tables', [])
+        if not all_tables:
+            QMessageBox.warning(self.main_window, "无数据", "请先处理PDF文件，提取表格后再使用 LLM 边界优化。")
+            return
+
+        # 仅处理表格类型的表
+        table_tables = self._get_table_only_tables()
+        if not table_tables:
+            QMessageBox.information(self.main_window, "无表格", "当前文档没有表格类型的页面。")
+            return
+
+        # 加载 liteparse 缓存
+        self._load_liteparse_cache()
+        if not self._liteparse_cache:
+            QMessageBox.warning(
+                self.main_window, "无 liteparse 数据",
+                "未找到 liteparse 解析缓存。\n\n"
+                "请确保 PDF 提取时已运行 liteparse 旁路解析。"
+            )
+            return
+
+        reply = QMessageBox.question(
+            self.main_window, "确认 LLM 边界优化",
+            f"将对 {len(table_tables)} 张表格进行 LLM 边界优化：\n\n"
+            f"1️⃣ LLM 识别表格边界 → 合并 pdf2docx 碎片\n"
+            f"2️⃣ liteparse 精确文本 → 填充每个单元格\n\n"
+            f"⚠ 此操作会调用 DeepSeek API（约按页计费）。\n"
+            f"⚠ 合并后表格数量和内容可能与原始有差异。\n\n"
+            f"是否继续？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 禁用按钮，显示处理中
+        self.llm_boundary_btn.setEnabled(False)
+        self.llm_boundary_btn.setText("🔮 处理中...")
+
+        try:
+            from codes.pdf_extractor.table_boundary_llm import run_llm_table_enhancement
+            from codes.pdf_extractor.processor import _auto_merge_split_tables
+
+            # 先对原始表做启发式合并（兜底）
+            all_tables_copy = [t.copy() for t in all_tables]
+            _auto_merge_split_tables(all_tables_copy, liteparse_data=self._liteparse_cache)
+
+            # 定义进度回调
+            def progress_cb(pct, msg):
+                self.llm_boundary_btn.setText(f"🔮 {msg[:12]}...")
+
+            result = run_llm_table_enhancement(
+                all_tables_copy,
+                liteparse_data=self._liteparse_cache,
+                progress_callback=progress_cb,
+                pdf_path=getattr(self.main_window, 'current_file', None),
+            )
+
+            if result.get("error"):
+                QMessageBox.warning(self.main_window, "部分失败",
+                                   f"LLM 边界优化部分步骤失败：\n{result['error']}\n\n"
+                                   f"已完成的步骤已应用。")
+
+            # 更新 processed_results
+            stats = result["stats"]
+            self.main_window.processed_results["tables"] = result["tables"]
+            self.main_window.processed_results["total_tables"] = len(result["tables"])
+
+            # 刷新 UI
+            self.apply_table_filter()
+            self.update_preview_display()
+
+            msg = (f"LLM 边界优化完成 ✅\n\n"
+                   f"合并前: {stats['tables_before']} 张表\n"
+                   f"合并后: {stats['tables_after']} 张表\n"
+                   f"单元格修正: {stats['cells_changed']} 个\n"
+                   f"补充行: {stats['rows_added']} 行\n"
+                   f"LLM token 消耗: {stats['tokens_used']}")
+            QMessageBox.information(self.main_window, "完成", msg)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self.main_window, "错误",
+                               f"LLM 边界优化失败：\n{str(e)}")
+        finally:
+            self.llm_boundary_btn.setEnabled(True)
+            self.llm_boundary_btn.setText("🔮 LLM 边界优化")
+
     def _run_ai_correction(self, tables, force=False):
         """通用 AI 纠错启动方法
         Args:
@@ -2485,6 +3135,165 @@ class TableCompareManager(QObject):
         QMessageBox.critical(self.main_window, "AI纠错失败", f"纠错过程中发生错误：\n\n{error_msg}")
         self._ai_correction_worker = None
 
+    # ==================== 交叉验证 (liteparse × pdf2docx) ====================
+
+    def on_cross_validate_clicked(self):
+        """交叉验证按钮点击 — 启动 liteparse × pdf2docx 交叉验证"""
+        all_tables = self.main_window.processed_results.get('tables', [])
+        if not all_tables:
+            QMessageBox.warning(self.main_window, "无数据",
+                                "请先处理PDF文件，提取表格后再使用交叉验证功能。")
+            return
+
+        pdf_path = getattr(self.main_window, 'current_file', None)
+        if not pdf_path:
+            QMessageBox.warning(self.main_window, "无文件", "请先选择一个 PDF 文件。")
+            return
+
+        # 检查 liteparse 缓存
+        from codes.liteparse_extractor.cache_manager import is_cache_valid as liteparse_cache_valid
+        if not liteparse_cache_valid(pdf_path):
+            QMessageBox.warning(
+                self.main_window, "liteparse 数据不可用",
+                "liteparse 缓存数据不存在或已过期。\n\n"
+                "请确保 PDF 已完成解析（处理过程中的 liteparse 侧通道会自动生成），"
+                "然后重新尝试。"
+            )
+            return
+
+        # 检查 DeepSeek API
+        from codes.pdf_extractor.utils import load_config
+        config = load_config()
+        api_key = config.get("deepseek_api_key", "")
+        if not api_key:
+            reply = QMessageBox.question(
+                self.main_window, "未配置 API Key",
+                "交叉验证需要 DeepSeek API Key（在「配置」Tab 中设置）。\n\n"
+                "是否先仅运行规则分类（不调用 LLM）？\n"
+                "规则分类可判断真/假表格，但不做深度检查。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            # 仅规则分类
+            self._run_quick_classify()
+            return
+
+        # 正常流程：规则 + LLM
+        reply = QMessageBox.question(
+            self.main_window,
+            "交叉验证",
+            "将对所有表格页进行 liteparse × pdf2docx 交叉验证：\n\n"
+            "① 规则分类：判断每页是否真表格（零成本）\n"
+            "② LLM 深度验证：对真表格页做 5 维度检查（表头/重复/错位/混入文本/拼接）\n\n"
+            "LLM 调用将消耗 DeepSeek API 额度。继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._run_cross_validation(pdf_path)
+
+    def _run_quick_classify(self):
+        """仅规则分类（无 API Key 时）"""
+        from codes.table_validator.validator import quick_classify
+        from codes.table_validator.models import CrossValidateReport
+
+        processed = self.main_window.processed_results
+        try:
+            results = quick_classify(processed)
+            real = sum(1 for r in results if r.is_real_table)
+            fake = sum(1 for r in results if not r.is_real_table)
+
+            report = CrossValidateReport(
+                pdf_path=getattr(self.main_window, 'current_file', ''),
+                classify_results=results,
+                total_pages=processed.get('total_pages', 0),
+            )
+
+            dlg = CrossValidationDialog(report, self.main_window)
+            dlg.exec_()
+
+            self.main_window.status_bar.showMessage(
+                f"🔬 规则分类完成: 真表格 {real} 页, 非表格 {fake} 页"
+            )
+        except Exception as e:
+            QMessageBox.critical(self.main_window, "分类失败", str(e))
+
+    def _run_cross_validation(self, pdf_path):
+        """启动完整交叉验证（规则 + LLM）"""
+        # 禁用按钮
+        if hasattr(self, 'cross_validate_btn') and self.cross_validate_btn:
+            self.cross_validate_btn.setEnabled(False)
+        if hasattr(self, 'ai_correct_current_btn') and self.ai_correct_current_btn:
+            self.ai_correct_current_btn.setEnabled(False)
+        if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
+            self.ai_correct_all_btn.setEnabled(False)
+
+        processed = self.main_window.processed_results
+        self._cv_worker = CrossValidationWorker(pdf_path, processed)
+        self._cv_worker.progress.connect(self._on_cv_progress)
+        self._cv_worker.finished.connect(self._on_cv_finished)
+        self._cv_worker.error.connect(self._on_cv_error)
+        self._cv_worker.start()
+
+        self.main_window.status_bar.showMessage("🔬 交叉验证: 规则分类中...")
+
+    def _on_cv_progress(self, step: str, current: int, total: int):
+        """交叉验证进度更新"""
+        step_names = {
+            "classify": "规则分类",
+            "classify_done": "规则分类完成",
+            "load_liteparse": "加载 liteparse 数据",
+            "verify": "LLM 验证",
+            "done": "完成",
+        }
+        name = step_names.get(step, step)
+        if step == "verify":
+            self.main_window.status_bar.showMessage(
+                f"🔬 交叉验证: {name} ({current}/{total})"
+            )
+        else:
+            self.main_window.status_bar.showMessage(f"🔬 交叉验证: {name}...")
+
+    def _on_cv_finished(self, report):
+        """交叉验证完成"""
+        # 恢复按钮
+        if hasattr(self, 'cross_validate_btn') and self.cross_validate_btn:
+            self.cross_validate_btn.setEnabled(True)
+        if hasattr(self, 'ai_correct_current_btn') and self.ai_correct_current_btn:
+            self.ai_correct_current_btn.setEnabled(True)
+        if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
+            self.ai_correct_all_btn.setEnabled(True)
+
+        self._cv_worker = None
+
+        self.main_window.status_bar.showMessage(
+            f"🔬 交叉验证完成: 真表格 {report.real_table_count}, "
+            f"假表格 {report.fake_table_count}, LLM验证 {report.verified_count} 页"
+        )
+
+        # 显示结果对话框
+        dlg = CrossValidationDialog(report, self.main_window)
+        dlg.exec_()
+
+    def _on_cv_error(self, error_msg):
+        """交叉验证错误处理"""
+        if hasattr(self, 'cross_validate_btn') and self.cross_validate_btn:
+            self.cross_validate_btn.setEnabled(True)
+        if hasattr(self, 'ai_correct_current_btn') and self.ai_correct_current_btn:
+            self.ai_correct_current_btn.setEnabled(True)
+        if hasattr(self, 'ai_correct_all_btn') and self.ai_correct_all_btn:
+            self.ai_correct_all_btn.setEnabled(True)
+        self._cv_worker = None
+        QMessageBox.critical(self.main_window, "交叉验证失败",
+                             f"验证过程中发生错误：\n\n{error_msg}")
+
+    # ==================== AI 纠错应用 ====================
+
     def _apply_corrections(self, accepted_results, confirm_status):
         """将确认的修正应用到 processed_results
 
@@ -2497,6 +3306,7 @@ class TableCompareManager(QObject):
             return
 
         updated_count = 0
+        merge_pairs = []  # [(target_idx, source_indices), ...]
 
         for r in accepted_results:
             idx = r.table_index
@@ -2504,6 +3314,35 @@ class TableCompareManager(QObject):
                 continue
 
             tbl = tables[idx]
+
+            # == 核心：应用 LLM 重构数据（reconstructed_data） ==
+            if r.reconstructed_data:
+                if "original_data" not in tbl:
+                    tbl["original_data"] = _deep_copy_list(tbl.get("data", []))
+                tbl["data"] = r.reconstructed_data
+                tbl["ai_reconstructed"] = True
+                tbl["ai_changes_log"] = r.changes_log
+                updated_count += 1
+
+            # == 应用 P4 确定性修正（corrected_data from auto_fixed_code） ==
+            elif r.corrected_data and r.diff_source == "deterministic":
+                if "original_data" not in tbl:
+                    tbl["original_data"] = _deep_copy_list(tbl.get("data", []))
+                tbl["data"] = r.corrected_data
+                tbl["ai_code_fixed"] = True
+                tbl["ai_changes_log"] = r.changes_log
+                updated_count += 1
+
+            # == 应用 LLM 合并建议 ==
+            if r.merge_source_indices:
+                merge_pairs.append((idx, r.merge_source_indices))
+
+            # == 应用修正数据（reconstructed_data 已作为 corrected_data 时跳过重复） ==
+            if r.corrected_data and not r.reconstructed_data and r.diff_source != "deterministic":
+                if "original_data" not in tbl:
+                    tbl["original_data"] = _deep_copy_list(tbl.get("data", []))
+                tbl["data"] = r.corrected_data
+                updated_count += 1
 
             # 应用命名
             if r.name_title:
@@ -2525,32 +3364,39 @@ class TableCompareManager(QObject):
                     "split_rows": r.region_split_rows
                 }
 
-            # 应用修正数据
-            if r.corrected_data:
-                # 保留原始数据用于撤销
-                if "original_data" not in tbl:
-                    tbl["original_data"] = _deep_copy_list(tbl.get("data", []))
-                tbl["data"] = r.corrected_data
-                updated_count += 1
+            # 应用修正数据（兼容旧字段）
+            if r.corrected_data and r.reconstructed_data:
+                # 已有 reconstructed_data，corrected_data 作为补充记录
+                pass
 
-            # 保存纠错元数据
+            # 保存纠错元数据（含新状态标记）
             tbl["ai_correction_status"] = r.status
             tbl["ai_correction_confidence"] = r.confidence
             tbl["ai_correction_applied_rules"] = r.applied_rules
             tbl["ai_correction_summary"] = r.changes_summary
+            tbl["ai_diff_source"] = getattr(r, "diff_source", "unknown")
 
-        if updated_count > 0:
-            # LLM 纠错完成后：自动尝试跨页合并
-            merge_count = 0
+        # == 执行实际合并操作 ==
+        merge_count = 0
+        if merge_pairs:
+            try:
+                merge_count = self._execute_llm_merges(tables, merge_pairs)
+            except Exception as e:
+                print(f"[AI CORRECTION] LLM合并执行失败: {e}")
+
+        if updated_count > 0 or merge_count > 0:
+            # LLM 纠错完成后：自动尝试跨页合并（补充未在 LLM 中直接合并的）
             try:
                 tables_before = len(tables)
                 _auto_merge_split_tables(tables, cross_page=True)
-                merge_count = tables_before - len(tables)
-                if merge_count > 0:
-                    self.main_window.processed_results['tables'] = tables
-                    self.main_window.processed_results['total_tables'] = len(tables)
+                auto_merge_count = tables_before - len(tables)
+                if auto_merge_count > 0:
+                    merge_count += auto_merge_count
             except Exception as e:
                 print(f"[AI CORRECTION] 跨页合并失败: {e}")
+
+            self.main_window.processed_results['tables'] = tables
+            self.main_window.processed_results['total_tables'] = len(tables)
 
             # 刷新列表和预览
             self.apply_table_filter()
@@ -2559,12 +3405,97 @@ class TableCompareManager(QObject):
 
             msg = f"✅ 已应用 AI 纠错：{updated_count} 张表格已更新"
             if merge_count > 0:
-                msg += f" | 🔗 自动合并 {merge_count} 对跨页表格"
+                msg += f" | 🔗 合并 {merge_count} 对表格"
             self.main_window.status_bar.showMessage(msg, 8000)
         else:
             self.main_window.status_bar.showMessage(
                 "⚠️ AI 纠错：没有应用任何修改", 3000
             )
+
+    def _execute_llm_merges(self, tables, merge_pairs):
+        """执行 LLM 建议的表格合并。
+
+        Args:
+            tables: 表格列表（原地修改）
+            merge_pairs: [(target_idx, [source_idx1, source_idx2, ...]), ...]
+                         target_idx 是主表索引，source_indices 是待合并的表索引
+
+        Returns:
+            int: 实际合并的对数
+        """
+        # 安全处理：排除循环引用和重复
+        merged_sources = set()  # 已经被合并走的 source 索引
+        valid_pairs = []
+
+        for target_idx, source_indices in merge_pairs:
+            if target_idx >= len(tables):
+                continue
+            valid_sources = []
+            for si in source_indices:
+                if si >= len(tables) or si == target_idx:
+                    continue
+                if si in merged_sources:
+                    continue
+                # 不能合并已经被合并的表
+                if si == target_idx:
+                    continue
+                valid_sources.append(si)
+            if valid_sources:
+                valid_pairs.append((target_idx, valid_sources))
+                merged_sources.update(valid_sources)
+
+        if not valid_pairs:
+            return 0
+
+        # 从大到小删除 source 表（避免索引错乱）
+        to_remove = set()
+        for _, sources in valid_pairs:
+            to_remove.update(sources)
+
+        # 执行合并：将 source 表的数据追加到 target 表
+        for target_idx, sources in valid_pairs:
+            target = tables[target_idx]
+            target_data = target.get("data", [])
+            # 确保是列表
+            if not isinstance(target_data, list):
+                target_data = list(target_data)
+            target_cols = max((len(r) for r in target_data), default=0)
+
+            for si in sorted(sources):  # 按索引顺序合并
+                if si >= len(tables):
+                    continue
+                source = tables[si]
+                source_data = source.get("data", [])
+                if not source_data:
+                    continue
+
+                # 对齐列数到目标表
+                for row in source_data:
+                    while len(row) < target_cols:
+                        row.append("")
+                    # 裁剪到目标列数
+                    if len(row) > target_cols:
+                        row = row[:target_cols]
+
+                # 追加到目标表（插入空行分隔）
+                if target_data:
+                    target_data.append([""] * target_cols)  # 分隔行
+                target_data.extend(source_data)
+
+                # 记录合并标记
+                target["ai_merged_from"] = target.get("ai_merged_from", []) + [si]
+                # 也合并 original_data 如果存在
+                if "original_data" in target and "original_data" in source:
+                    target["original_data"].extend(source.get("original_data", []))
+
+            target["data"] = target_data
+
+        # 删除被合并的源表
+        for idx in sorted(to_remove, reverse=True):
+            if idx < len(tables):
+                tables.pop(idx)
+
+        return len(valid_pairs)
 
     def _count_correction_stats(self, results):
         """统计纠错结果"""
