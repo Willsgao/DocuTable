@@ -45,6 +45,10 @@ class TableCompareManager(QObject):
         # 原始/清洗数据切换（三层：raw → original → data）
         self.showing_data_layer = 0  # 0=data(清洗后), 1=original_data(清洗前), 2=raw_data(提取原样)
         
+        # 分割后/原始表格视图切换（默认显示分割后）
+        self.segment_view_mode = True  # True=分割后, False=原始
+        self.segment_view_btn = None
+        
         # 差异标注模式
         self.diff_mode = False
         self.diff_highlight_btn = None
@@ -112,7 +116,17 @@ class TableCompareManager(QObject):
         # 页面类型筛选
         filter_layout.addWidget(QLabel("筛选类型:"))
         self.table_type_filter = QComboBox()
-        self.table_type_filter.addItems(["全部", "✅ 表格", "❌ 非表格", "✅ 表格-人工", "❌ 非表格-人工"])
+        self.table_type_filter.addItems([
+            "全部",
+            "💰 财务数据表",
+            "📊 数据表(缺表头)",
+            "📋 文本列表",
+            "⚠ 非标准",
+            "✅ 表格",
+            "❌ 非表格",
+            "✅ 表格-人工",
+            "❌ 非表格-人工",
+        ])
         self.table_type_filter.setToolTip("筛选显示的页面类型")
         self.table_type_filter.currentIndexChanged.connect(self.on_table_type_filter_changed)
         self.table_type_filter.setMinimumWidth(100)
@@ -280,12 +294,11 @@ class TableCompareManager(QObject):
 
         btn_layout.addSpacing(8)
 
-        # liteparse 表格分割按钮（纯规则，零 API 成本）
-        self.segmenter_btn = QPushButton("📊 表格分割验证")
+        # liteparse 表格分割按钮（纯规则，零 API 成本）—— 已改为自动运行，此按钮用于查看报告
+        self.segmenter_btn = QPushButton("📊 查看分割报告")
         self.segmenter_btn.setToolTip(
-            "仅用 liteparse 内置 table_regions 精确切分表格区域\n"
-            "生成完整覆盖度报告，验证分割是否准确完整\n"
-            "零 API 成本，纯规则驱动"
+            "表格分割已自动运行。点击查看分割验证覆盖度报告。\n"
+            "显示 liteparse 区域切分的完整性统计"
         )
         self.segmenter_btn.setFocusPolicy(Qt.NoFocus)
         self.segmenter_btn.clicked.connect(self.on_segmenter_clicked)
@@ -296,6 +309,25 @@ class TableCompareManager(QObject):
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
         btn_layout.addWidget(self.segmenter_btn)
+
+        btn_layout.addSpacing(8)
+
+        # 分割后/原始 数据源切换按钮
+        self.segment_view_btn = QPushButton("📊 分割后(默认)")
+        self.segment_view_btn.setToolTip(
+            "切换显示数据源：\n"
+            "【分割后】= liteparse 自动分割+质量优化的表格\n"
+            "【原始】= pdf2docx/V2 原始提取表格\n"
+            "分割后的表格已自动过滤非财务表、拆分混合表、合并相邻续表"
+        )
+        self.segment_view_btn.setFocusPolicy(Qt.NoFocus)
+        self.segment_view_btn.clicked.connect(self.on_segment_view_toggled)
+        self.segment_view_btn.setStyleSheet("""
+            QPushButton { background-color: #2980B9; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #2471A3; }
+        """)
+        btn_layout.addWidget(self.segment_view_btn)
 
         btn_layout.addSpacing(8)
 
@@ -504,13 +536,32 @@ class TableCompareManager(QObject):
     
     # ==================== 数据同步 ====================
     
+    def _get_active_tables(self):
+        """获取当前视图模式下的表格列表"""
+        if not self.main_window.processed_results:
+            return []
+        if self.segment_view_mode:
+            return self.main_window.processed_results.get('tables', [])
+        else:
+            return self.main_window.processed_results.get('tables_before_segmentation', [])
+    
+    def _set_active_tables(self, tables):
+        """写回当前视图模式下的表格列表"""
+        if not self.main_window.processed_results:
+            return
+        if self.segment_view_mode:
+            self.main_window.processed_results['tables'] = tables
+            self.main_window.processed_results['total_tables'] = len(tables)
+        else:
+            self.main_window.processed_results['tables_before_segmentation'] = tables
+    
     def _get_current_table_index(self):
         """获取当前显示的表格在 processed_results 中的原始索引"""
         row = self.table_list_widget.currentRow()
         if row < 0 or row >= len(self.filtered_indices):
             return None
         table_idx = self.filtered_indices[row]
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if table_idx >= len(tables):
             return None
         return table_idx
@@ -528,7 +579,7 @@ class TableCompareManager(QObject):
         if table_idx is None:
             return
         
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         data = []
         for i in range(self.table_widget.rowCount()):
             row_data = []
@@ -567,12 +618,14 @@ class TableCompareManager(QObject):
             print(f"[WARN] 自动保存失败: {e}")
 
     def _save_previous_page_data(self):
-        """保存上次显示的页面数据到 processed_results（用 _last_displayed_table_idx 避免行号变更问题）"""
+        """仅在用户编辑过单元格时才将 UI 数据回写到 processed_results"""
+        if not self.has_unsaved_changes:
+            return
         if not self.main_window.processed_results or self._last_displayed_table_idx is None:
             return
         if self.table_widget.rowCount() == 0:
             return
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if self._last_displayed_table_idx >= len(tables):
             return
         data = []
@@ -585,6 +638,7 @@ class TableCompareManager(QObject):
         # 根据当前视图状态写入对应的数据键，避免原始数据覆盖清洗数据
         data_key = self._get_current_data_key()
         tables[self._last_displayed_table_idx][data_key] = data
+        self.has_unsaved_changes = False
     
     # ==================== 事件处理 ====================
     
@@ -617,7 +671,7 @@ class TableCompareManager(QObject):
             row = self.table_list_widget.currentRow()
             if row >= 0 and row < len(self.filtered_indices):
                 table_idx = self.filtered_indices[row]
-                tables = self.main_window.processed_results.get('tables', [])
+                tables = self._get_active_tables()
                 if table_idx < len(tables):
                     self.locked_table_data = tables[table_idx]
         else:
@@ -650,7 +704,7 @@ class TableCompareManager(QObject):
 
     def _insert_blank_table(self, list_row, before=True):
         """在指定列表行位置插入空白表格"""
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if list_row < 0 or list_row >= len(self.filtered_indices):
             return
         origin_idx = self.filtered_indices[list_row]
@@ -676,8 +730,7 @@ class TableCompareManager(QObject):
             "is_manual": True
         }
         tables.insert(insert_idx, new_table)
-        self.main_window.processed_results['tables'] = tables
-        self.main_window.processed_results['total_tables'] = len(tables)
+        self._set_active_tables(tables)
         self.has_unsaved_changes = True
 
         # 重建筛选
@@ -686,15 +739,14 @@ class TableCompareManager(QObject):
 
     def _delete_table(self, list_row):
         """删除指定列表行的表格"""
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if list_row < 0 or list_row >= len(self.filtered_indices):
             return
         origin_idx = self.filtered_indices[list_row]
         if origin_idx >= len(tables):
             return
         deleted = tables.pop(origin_idx)
-        self.main_window.processed_results['tables'] = tables
-        self.main_window.processed_results['total_tables'] = len(tables)
+        self._set_active_tables(tables)
         self.has_unsaved_changes = True
 
         # 重建筛选，选中相邻项
@@ -738,8 +790,13 @@ class TableCompareManager(QObject):
         self._last_displayed_table_idx = None
 
         filter_text = self.table_type_filter.currentText()
-        tables = self.main_window.processed_results.get('tables', [])
-        print(f"[DEBUG] 筛选类型: {filter_text}, tables数量: {len(tables)}")
+        # 根据 segment_view_mode 选择数据源
+        if self.segment_view_mode:
+            tables = self.main_window.processed_results.get('tables', [])
+        else:
+            tables = self.main_window.processed_results.get('tables_before_segmentation',
+                                                            self.main_window.processed_results.get('tables', []))
+        print(f"[DEBUG] 筛选类型: {filter_text}, 数据源: {'分割后' if self.segment_view_mode else '原始'}, tables数量: {len(tables)}")
         
         # 收集所有原始索引（用于映射）
         all_indices = [i for i in range(len(tables))]
@@ -747,9 +804,23 @@ class TableCompareManager(QObject):
         self.filtered_indices = []
         for i, table in enumerate(tables):
             is_success = table.get('parse_status') == 'success'
-            
+            category = table.get("table_category", "")
+            confidence = table.get("financial_confidence", 0.0)
+
             if filter_text == "全部":
                 self.filtered_indices.append(i)
+            elif filter_text == "💰 财务数据表":
+                if category == "财务数据表":
+                    self.filtered_indices.append(i)
+            elif filter_text == "📊 数据表(缺表头)":
+                if category == "数据表(缺表头)":
+                    self.filtered_indices.append(i)
+            elif filter_text == "📋 文本列表":
+                if category == "文本列表":
+                    self.filtered_indices.append(i)
+            elif filter_text == "⚠ 非标准":
+                if category in ("目录", "非标准表格", "空表", "图表标签"):
+                    self.filtered_indices.append(i)
             elif filter_text == "✅ 表格" and is_success:
                 self.filtered_indices.append(i)
             elif filter_text == "❌ 非表格" and not is_success:
@@ -818,11 +889,73 @@ class TableCompareManager(QObject):
                 if merge_to is not None:
                     merge_tooltip += f" → 表格#{merge_to}"
 
-            item_text = f"{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{merge_mark}{title_str}"
+            # 质量标记（分割后的表格才有）
+            quality_icon = ""
+            confidence_badge = ""
+            if self.segment_view_mode:
+                is_real = table.get("is_real_table", None)
+                is_complete = table.get("is_complete", None)
+                category = table.get("table_category", "")
+                conf = table.get("financial_confidence", -1)
+                seg_src = table.get("segment_source", "")
+                if seg_src == "liteparse_segment":
+                    if is_real and is_complete:
+                        quality_icon = "💰 "
+                    elif is_real:
+                        quality_icon = "📊 "
+                    elif category == "文本列表":
+                        quality_icon = "📋 "
+                    elif category in ("目录", "图表标签", "非标准表格", "空表"):
+                        quality_icon = "⚠ "
+                    else:
+                        quality_icon = "📊 "
+                    # 置信度百分比徽章
+                    if conf > 0:
+                        pct = int(conf * 100)
+                        if conf >= 0.8:
+                            confidence_badge = f"⭐{pct}% "
+                        elif conf >= 0.5:
+                            confidence_badge = f"🔍{pct}% "
+                        else:
+                            confidence_badge = f"❓{pct}% "
+                merge_info = ""
+                if table.get("is_merged_adjacent"):
+                    merge_info = "[合并]"
+                elif table.get("is_split_from_mixed"):
+                    merge_info = "[拆分]"
+                if table.get("is_cross_page"):
+                    merge_info += "[跨页]"
+                if merge_info:
+                    quality_icon = merge_info + quality_icon
+
+            item_text = f"{quality_icon}{confidence_badge}{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{merge_mark}{title_str}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
+
+            # 构建详细 tooltip：分类 + 置信度 + 质量明细（便于人工核对）
+            tooltip_parts = []
+            cat = table.get("table_category", "")
+            if cat:
+                tooltip_parts.append(f"分类: {cat}")
+            conf_val = table.get("financial_confidence", -1)
+            if conf_val >= 0:
+                tooltip_parts.append(f"置信度: {conf_val:.0%}")
+            is_real = table.get("is_real_table", None)
+            if is_real is not None:
+                tooltip_parts.append(f"真表格: {'是' if is_real else '否'}")
+            has_header = table.get("has_header", None)
+            if has_header is not None:
+                tooltip_parts.append(f"有表头: {'是' if has_header else '否'}")
+            nc = table.get("numeric_col_count", None)
+            if nc is not None:
+                tooltip_parts.append(f"数值列数: {nc}")
+            reason = table.get("quality_reason", "")
+            if reason:
+                tooltip_parts.append(f"理由: {reason}")
             if merge_tooltip:
-                item.setToolTip(merge_tooltip)
+                tooltip_parts.append(merge_tooltip)
+            if tooltip_parts:
+                item.setToolTip("\n".join(tooltip_parts))
             self.table_list_widget.addItem(item)
         
         self.table_list_widget.blockSignals(False)
@@ -865,7 +998,7 @@ class TableCompareManager(QObject):
     
     def update_filter_nav_buttons(self):
         """更新导航按钮（按 PDF 页号跳转）"""
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         all_pages = sorted(set(tables[i].get('page', 0) for i in self.filtered_indices))
 
         current_page = self._current_filter_page()
@@ -881,7 +1014,7 @@ class TableCompareManager(QObject):
 
     def _current_filter_page(self):
         """当前中文 PDF 页号"""
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if 0 <= self.filtered_index < len(self.filtered_indices):
             idx = self.filtered_indices[self.filtered_index]
             if idx < len(tables):
@@ -890,7 +1023,7 @@ class TableCompareManager(QObject):
 
     def _jump_to_first_of_page(self, target_page):
         """跳到目标页的第一个表格"""
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         for i, fi in enumerate(self.filtered_indices):
             if fi < len(tables) and tables[fi].get('page', 0) == target_page:
                 return i
@@ -899,7 +1032,7 @@ class TableCompareManager(QObject):
     def prev_filtered_page(self):
         """上一PDF页（跳到前一页的第一个表格，用于对照PDF）"""
         self._save_previous_page_data()
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         cur_page = self._current_filter_page()
         # 找小于当前页的最大页码
         prev_pages = sorted(set(
@@ -916,7 +1049,7 @@ class TableCompareManager(QObject):
     def next_filtered_page(self):
         """下一PDF页（跳到下一页的第一个表格，用于对照PDF）"""
         self._save_previous_page_data()
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         cur_page = self._current_filter_page()
         # 找大于当前页的最小页码
         next_pages = sorted(set(
@@ -954,7 +1087,7 @@ class TableCompareManager(QObject):
             print(f"[DEBUG] row < 0，提前返回")
             return
         
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         print(f"[DEBUG] tables 数量: {len(tables)}")
         
         # 使用filtered_indices映射到原始表格索引
@@ -1161,7 +1294,7 @@ class TableCompareManager(QObject):
         
         for i, row in enumerate(data):
             for j, cell in enumerate(row):
-                item = QTableWidgetItem(str(cell) if cell else "")
+                item = QTableWidgetItem(str(cell) if cell is not None else "")
                 self.table_widget.setItem(i, j, item)
         
         self.table_widget.resizeColumnsToContents()
@@ -1171,8 +1304,23 @@ class TableCompareManager(QObject):
         if self.diff_mode:
             self._apply_diff_highlight(table, data)
         
-        # 更新统计标签（注明锁定状态或差异标注状态）
+        # 更新统计标签（显示分类 + 置信度 + 锁定状态）
         tip = "选中单元格查看统计信息"
+        # 分割视图下显示分类和置信度
+        if self.segment_view_mode:
+            cat = table.get("table_category", "")
+            conf = table.get("financial_confidence", -1)
+            is_real = table.get("is_real_table", None)
+            parts = []
+            if cat:
+                parts.append(f"分类: {cat}")
+            if conf >= 0:
+                parts.append(f"置信度: {conf:.0%}")
+            elif is_real is not None:
+                # 旧数据无置信度，显示 is_real_table 标记
+                parts.append(f"真表格: {'是' if is_real else '否'}")
+            if parts:
+                tip = " | ".join(parts) + " | " + tip
         if self.table_locked:
             tip = "🔒 已锁定 | " + tip
         self.stats_label.setText(tip)
@@ -1638,7 +1786,7 @@ class TableCompareManager(QObject):
             return
         
         table_idx = self.filtered_indices[filtered_row]
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if table_idx >= len(tables):
             return
         
@@ -1666,7 +1814,7 @@ class TableCompareManager(QObject):
         tables[table_idx]['page'] = new_page
         # 按页码重排
         tables.sort(key=lambda x: x.get('page', 0))
-        self.main_window.processed_results['tables'] = tables
+        self._set_active_tables(tables)
         
         # 同步到文件
         from codes.pdf_extractor import save_mid_data
@@ -1676,8 +1824,7 @@ class TableCompareManager(QObject):
         # 刷新列表，找到修改后的表格并选中
         self.apply_table_filter(preserve_selection=table_idx if table_idx < len(tables) else None)
     def prev_preview_page(self):
-        """上一页预览（切页前先保存当前编辑）"""
-        self._sync_ui_to_processed_results()
+        """上一页预览（on_table_selected 中 _save_previous_page_data 负责保存编辑）"""
         current = self.table_list_widget.currentRow()
         if current > 0:
             self.filtered_index = current - 1
@@ -1686,8 +1833,7 @@ class TableCompareManager(QObject):
             self.update_preview_display()
 
     def next_preview_page(self):
-        """下一页预览（切页前先保存当前编辑）"""
-        self._sync_ui_to_processed_results()
+        """下一页预览（on_table_selected 中 _save_previous_page_data 负责保存编辑）"""
         current = self.table_list_widget.currentRow()
         if current < self.table_list_widget.count() - 1:
             self.filtered_index = current + 1
@@ -1696,8 +1842,7 @@ class TableCompareManager(QObject):
             self.update_preview_display()
 
     def first_preview_page(self):
-        """第一页预览（切页前先保存当前编辑）"""
-        self._sync_ui_to_processed_results()
+        """第一页预览（on_table_selected 中 _save_previous_page_data 负责保存编辑）"""
         if self.table_list_widget.count() > 0:
             self.filtered_index = 0
             self.table_list_widget.setCurrentRow(0)
@@ -1705,8 +1850,7 @@ class TableCompareManager(QObject):
             self.update_preview_display()
 
     def last_preview_page(self):
-        """最后一页预览（切页前先保存当前编辑）"""
-        self._sync_ui_to_processed_results()
+        """最后一页预览（on_table_selected 中 _save_previous_page_data 负责保存编辑）"""
         if self.table_list_widget.count() > 0:
             self.filtered_index = self.table_list_widget.count() - 1
             self.table_list_widget.setCurrentRow(self.filtered_index)
@@ -1714,8 +1858,7 @@ class TableCompareManager(QObject):
             self.update_preview_display()
 
     def goto_preview_page(self, page_num):
-        """跳转到指定页（切页前先保存当前编辑）"""
-        self._sync_ui_to_processed_results()
+        """跳转到指定页（on_table_selected 中 _save_previous_page_data 负责保存编辑）"""
         if self.table_list_widget.count() > 0 and page_num >= 1:
             self.filtered_index = min(page_num - 1, self.table_list_widget.count() - 1)
             self.table_list_widget.setCurrentRow(self.filtered_index)
@@ -1845,7 +1988,7 @@ class TableCompareManager(QObject):
                 self.table_widget.removeColumn(col)
 
     def save_current_table_state(self):
-        """保存当前表格状态到撤销栈和数据源"""
+        """保存当前表格状态到撤销栈（仅快照，不写回数据源）"""
         row = self.table_list_widget.currentRow()
         if row < 0:
             return
@@ -1862,9 +2005,6 @@ class TableCompareManager(QObject):
             self.undo_stack.pop(0)
         self.undo_stack.append((row, data))
         self.redo_stack.clear()
-
-        # 同步到 processed_results，确保编辑不丢失
-        self._sync_ui_to_processed_results()
     
     def undo_change(self):
         """撤销"""
@@ -1919,7 +2059,7 @@ class TableCompareManager(QObject):
 
         for i, row_data in enumerate(table_data):
             for j, cell in enumerate(row_data):
-                item = QTableWidgetItem(str(cell) if cell else "")
+                item = QTableWidgetItem(str(cell) if cell is not None else "")
                 self.table_widget.setItem(i, j, item)
 
         self.table_widget.resizeColumnsToContents()
@@ -2125,7 +2265,7 @@ class TableCompareManager(QObject):
 
         # 获取当前表格的原始索引和类别
         current_table_idx = self.filtered_indices[current_row]
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if current_table_idx >= len(tables):
             return
 
@@ -2203,8 +2343,7 @@ class TableCompareManager(QObject):
         # 删除当前表格（使用原始索引）
         # 因为 prev_table_idx < current_table_idx，删除 current_table_idx 不影响 prev_table_idx
         tables.pop(current_table_idx)
-        self.main_window.processed_results['tables'] = tables
-        self.main_window.processed_results['total_tables'] = len(tables)
+        self._set_active_tables(tables)
 
         # 同步到文件
         if self.main_window.current_file:
@@ -2461,7 +2600,7 @@ class TableCompareManager(QObject):
             return
         origin_idx = current_item.data(Qt.UserRole)
         
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if origin_idx is None or origin_idx >= len(tables):
             return
         
@@ -2570,7 +2709,7 @@ class TableCompareManager(QObject):
 
     def _on_ai_name_finished(self, results):
         """AI 命名完成 - 更新数据并刷新"""
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
 
         updated_count = 0
         for result in results:
@@ -2609,7 +2748,7 @@ class TableCompareManager(QObject):
 
     def _get_table_only_tables(self):
         """获取所有表格类型的表格（排除非表格页），预置原始索引"""
-        all_tables = self.main_window.processed_results.get('tables', [])
+        all_tables = self._get_active_tables()
         result = []
         for orig_idx, t in enumerate(all_tables):
             if t.get('parse_status') == 'success':
@@ -2713,53 +2852,111 @@ class TableCompareManager(QObject):
         self._run_ai_correction(table_tables, force=force)
 
     def on_segmenter_clicked(self):
-        """liteparse 表格分割验证 — 纯规则驱动，零 API 成本"""
-        # 加载 liteparse 缓存
-        self._load_liteparse_cache()
-        if not self._liteparse_cache:
-            QMessageBox.warning(
-                self.main_window, "无 liteparse 数据",
-                "未找到 liteparse 解析缓存。\n\n"
-                "请确保 PDF 提取时已运行 liteparse 旁路解析。"
+        """查看 liteparse 表格分割报告（分割已在处理时自动运行）"""
+        if not self.main_window.processed_results:
+            QMessageBox.information(self.main_window, "无数据", "请先处理 PDF 文件。")
+            return
+
+        seg_report = self.main_window.processed_results.get("segmentation_report", {})
+        tables = self.main_window.processed_results.get("tables", [])
+
+        # 判断当前表格是否已经过分割
+        has_segmented = any(
+            t.get("segment_source") == "liteparse_segment" for t in tables
+        )
+
+        # liteparse 格式的原始分割表（供对话框导出用）
+        # 优先从 processed_results 加载（自动分割时已保存）
+        seg_tables = self.main_window.processed_results.get("liteparse_seg_tables")
+        if seg_tables and not seg_report.get("total_tables"):
+            # 有表格但报告为空 →也补上
+            seg_report = self.main_window.processed_results.get("segmentation_report", {})
+
+        # 如果没有已保存的，重新加载 liteparse 缓存运行分割
+        if not seg_tables:
+            self._load_liteparse_cache()
+        if not seg_tables and self._liteparse_cache:
+            try:
+                from codes.table_validator.liteparse_table_segmenter import (
+                    segment_tables_from_liteparse,
+                )
+                seg_tables, seg_report = segment_tables_from_liteparse(
+                    self._liteparse_cache,
+                    enable_cross_page=True,
+                )
+                print(f"  [分割报告] 生成完成, {seg_report.get('total_tables', 0)} 张表")
+            except ImportError:
+                pass
+            except Exception as e:
+                import traceback
+                print(f"  [分割报告] 生成异常: {e}")
+                traceback.print_exc()
+
+        if not seg_tables and not seg_report.get("total_tables") and not has_segmented:
+            QMessageBox.information(
+                self.main_window, "无分割数据",
+                "该 PDF 尚未运行 liteparse 表格分割。\n\n"
+                "请重新处理 PDF 文件，分割将自动运行。\n"
+                "（确保 liteparse 已安装: pip install liteparse）"
             )
             return
 
-        self.segmenter_btn.setEnabled(False)
-        self.segmenter_btn.setText("📊 分割中...")
-
+        # 生成可读报告文本
         try:
-            from codes.table_validator.liteparse_table_segmenter import (
-                segment_tables_from_liteparse,
-                print_verification_report,
+            from codes.table_validator.liteparse_table_segmenter import print_verification_report
+            report_text = print_verification_report(
+                seg_tables if seg_tables else tables, seg_report
+            )
+        except Exception:
+            # 从表格元数据生成简化报告
+            real_count = sum(1 for t in tables if t.get("is_real_table"))
+            cross_count = sum(1 for t in tables if t.get("is_cross_page"))
+            report_text = (
+                f"═" * 60 + "\n"
+                f"  liteparse 表格分割报告\n"
+                f"═" * 60 + "\n"
+                f"  分割表格数: {len(tables)}\n"
+                f"  💰 真财务表: {real_count}, 📋 非财务: {len(tables) - real_count}\n"
+                f"  跨页拼接: {cross_count} 处\n"
             )
 
-            tables, report = segment_tables_from_liteparse(
-                self._liteparse_cache,
-                enable_cross_page=True,
-            )
+        # 用 LiteparseTableDialog 展示（传 liteparse-format 表保证导出不空）
+        dialog_tables = seg_tables if seg_tables else tables
+        dialog = LiteparseTableDialog(
+            dialog_tables, seg_report, report_text, parent=self.main_window
+        )
+        dialog.exec_()
 
-            if not tables and report.get("error"):
-                QMessageBox.warning(self.main_window, "分割失败",
-                                   f"表格分割未产生结果：\n{report['error']}")
+    def on_segment_view_toggled(self):
+        """切换分割后/原始表格数据源"""
+        if self.segment_view_mode:
+            # 当前是分割后 → 切换到原始
+            if not self.main_window.processed_results or \
+               not self.main_window.processed_results.get("tables_before_segmentation"):
+                QMessageBox.information(
+                    self.main_window, "无原始数据",
+                    "该 PDF 没有保存分割前的原始表格数据。"
+                )
                 return
+            self.segment_view_mode = False
+            self.segment_view_btn.setText("📋 原始数据")
+            self.segment_view_btn.setStyleSheet("""
+                QPushButton { background-color: #E67E22; color: white; padding: 2px 10px; border-radius: 4px;
+                              font-weight: bold; font-size: 11px; }
+                QPushButton:hover { background-color: #D35400; }
+            """)
+        else:
+            # 当前是原始 → 切换到分割后
+            self.segment_view_mode = True
+            self.segment_view_btn.setText("📊 分割后(默认)")
+            self.segment_view_btn.setStyleSheet("""
+                QPushButton { background-color: #2980B9; color: white; padding: 2px 10px; border-radius: 4px;
+                              font-weight: bold; font-size: 11px; }
+                QPushButton:hover { background-color: #2471A3; }
+            """)
 
-            # 生成可读报告
-            report_text = print_verification_report(tables, report)
-
-            # 用新的 LiteparseTableDialog 展示（含逐表浏览 + 导出）
-            dialog = LiteparseTableDialog(
-                tables, report, report_text, parent=self.main_window
-            )
-            dialog.exec_()
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self.main_window, "错误",
-                               f"表格分割失败：\n{str(e)}")
-        finally:
-            self.segmenter_btn.setEnabled(True)
-            self.segmenter_btn.setText("📊 表格分割验证")
+        # 刷新表格列表
+        self.apply_table_filter()
 
     def on_llm_boundary_clicked(self):
         """LLM 边界优化 — 边界检测 + 碎片合并 + liteparse 文本填充"""
@@ -3301,7 +3498,7 @@ class TableCompareManager(QObject):
             accepted_results: [CorrectionResult] 被接受的修正
             confirm_status: {table_index: "accepted"/"rejected"/"pending"}
         """
-        tables = self.main_window.processed_results.get('tables', [])
+        tables = self._get_active_tables()
         if not tables:
             return
 

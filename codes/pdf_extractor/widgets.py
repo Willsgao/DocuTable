@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QRect, QPoint
 from PyQt5.QtGui import QPainter, QPen, QColor, QPixmap
 
+from .utils import TEMP_DIR
+
 
 class PDFPreviewWidget(QWidget):
     """
@@ -442,8 +444,7 @@ class PDFPreviewWidget(QWidget):
             debug_annot.set_opacity(0.3)
             debug_annot.update()
             debug_pix2 = debug_page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-            import tempfile
-            debug_path = os.path.join(tempfile.gettempdir(), f"pdf_copy_debug_page{self.current_page_num}.png")
+            debug_path = os.path.join(TEMP_DIR, f"pdf_copy_debug_page{self.current_page_num}.png")
             debug_pix2.save(debug_path)
             debug_page.delete_annot(debug_annot)
             print(f"[DEBUG COPY] debug_image_saved={debug_path}")

@@ -174,6 +174,7 @@ class ProcessingManager(QObject):
 
         filename = os.path.basename(self.mw.current_file) if self.mw.current_file else "未知文件"
         success_count = result.get('success_count', 0)
+        review_count = result.get('review_count', 0)
         total_pages = result.get('total_pages', result.get('total_tables', 0))
         failed_count = result.get('failed_count', 0)
 
@@ -204,13 +205,15 @@ class ProcessingManager(QObject):
         )
         self.mw.preview_text.append("页面统计:\n")
         self.mw.preview_text.append(f"  总页面数: {total_pages}\n")
-        self.mw.preview_text.append(f"  ✅ 成功解析: {success_count} 个\n")
+        self.mw.preview_text.append(f"  ✅ 可信表格: {success_count} 个\n")
+        if review_count > 0:
+            self.mw.preview_text.append(f"  🔍 待复核: {review_count} 个\n")
         
         empty_count = result.get('empty_count', 0)
         if empty_count > 0:
             self.mw.preview_text.append(f"  ⚠️ 空数据（需配置API Key）: {empty_count} 个\n")
         
-        self.mw.preview_text.append(f"  ❌ 失败/需人工: {failed_count} 个\n\n")
+        self.mw.preview_text.append(f"  ❌ 已拒绝/失败: {failed_count} 个\n\n")
 
         if failed_count > 0:
             self.mw.preview_text.append(f"💡 提示: 有 {failed_count} 个页面未成功解析。\n")
@@ -218,11 +221,32 @@ class ProcessingManager(QObject):
         else:
             self.mw.preview_text.append("🎉 所有页面均成功解析！\n\n")
 
+        # 显示自动分割统计
+        seg_report = result.get('segmentation_report', {})
+        before_count = len(result.get('tables_before_segmentation', []))
+        after_count = len(result.get('tables', []))
+        if before_count > 0 and after_count != before_count:
+            real_count = sum(1 for t in result.get('tables', []) if t.get('quality_decision') == 'accepted')
+            review_tab_count = sum(1 for t in result.get('tables', []) if t.get('quality_decision') == 'review')
+            rej_count = sum(1 for t in result.get('tables', []) if t.get('quality_decision') == 'rejected')
+            self.mw.preview_text.append("=" * 50 + "\n")
+            self.mw.preview_text.append("📊 自动表格分割优化:\n")
+            self.mw.preview_text.append(f"  原始表格数: {before_count}\n")
+            self.mw.preview_text.append(f"  分割后表格数: {after_count}\n")
+            self.mw.preview_text.append(f"  💰 可信财务表: {real_count}\n")
+            if review_tab_count > 0:
+                self.mw.preview_text.append(f"  🔍 待复核: {review_tab_count}\n")
+            if rej_count > 0:
+                self.mw.preview_text.append(f"  ❌ 已拒绝: {rej_count}\n")
+            if seg_report.get("cross_page_merges", 0) > 0:
+                self.mw.preview_text.append(f"  🔗 跨页拼接: {seg_report['cross_page_merges']} 处\n")
+            self.mw.preview_text.append("\n")
+
         if result.get('tables'):
             self.mw.preview_text.append("=" * 50 + "\n")
             self.mw.preview_text.append("成功解析的表格预览:\n\n")
 
-            success_tables = [t for t in result['tables'] if t.get('parse_status') == 'success']
+            success_tables = [t for t in result['tables'] if t.get('quality_decision') == 'accepted']
             for i, table in enumerate(success_tables[:5]):
                 self.mw.preview_text.append(f"【第 {table['page']} 页】")
                 data = table.get('data', [])
@@ -243,12 +267,17 @@ class ProcessingManager(QObject):
         if hasattr(self.mw, 'goto_export_btn'):
             self.mw.goto_export_btn.setEnabled(True)
 
-        if failed_count > 0:
+        if failed_count > 0 or review_count > 0:
+            parts = [f"可信: {success_count}"]
+            if review_count > 0:
+                parts.append(f"待复核: {review_count}")
+            if failed_count > 0:
+                parts.append(f"已拒绝: {failed_count}")
             self.mw.status_bar.showMessage(
-                f"处理完成！成功: {success_count}, 失败: {failed_count}，请查看对比预览"
+                f"处理完成！{', '.join(parts)}，请查看对比预览"
             )
         else:
-            self.mw.status_bar.showMessage("处理完成！所有页面均成功解析")
+            self.mw.status_bar.showMessage("处理完成！所有表格均可信")
 
         self.processing_finished.emit(result)
 

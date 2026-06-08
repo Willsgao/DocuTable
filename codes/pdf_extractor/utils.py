@@ -17,7 +17,7 @@ from datetime import datetime
 # 临时文件管理 - 避免占用C盘
 # ============================================================
 def get_temp_dir():
-    """获取临时目录，优先使用D盘或E盘"""
+    """获取临时目录，优先使用D盘或E盘，兜底使用项目本地目录（绝不落C盘）。"""
     for drive in ['D:', 'E:', 'F:']:
         temp_base = os.path.join(drive, 'temp', 'pdf_extractor')
         try:
@@ -27,9 +27,12 @@ def get_temp_dir():
                 f.write('test')
             os.remove(test_file)
             return temp_base
-        except:
+        except Exception:
             continue
-    return tempfile.gettempdir()
+    # 兜底：使用项目本地 data/temp 目录，绝不落 C 盘系统 Temp
+    local_temp = str(Path(__file__).parent.parent.parent / "data" / "temp" / "pdf_extractor")
+    os.makedirs(local_temp, exist_ok=True)
+    return local_temp
 
 
 TEMP_DIR = get_temp_dir()
@@ -37,7 +40,7 @@ print(f"临时文件目录: {TEMP_DIR}")
 
 
 def cleanup_temp_files():
-    """清理临时文件"""
+    """清理临时文件（退出时调用）。"""
     if os.path.exists(TEMP_DIR):
         try:
             for item in os.listdir(TEMP_DIR):
@@ -47,10 +50,71 @@ def cleanup_temp_files():
                         os.remove(item_path)
                     elif os.path.isdir(item_path):
                         shutil.rmtree(item_path)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
+
+
+def cleanup_orphan_temp_dirs():
+    """启动时清理上次崩溃残留的 pdf_images_* 孤儿目录。
+
+    扫描 TEMP_DIR 下的所有 pdf_images_* 目录，全部删除。
+    正常退出时 cleanup_temp_files() 已经清空了，残留的都是崩溃遗留的。
+    """
+    if not os.path.isdir(TEMP_DIR):
+        return
+    removed = 0
+    for item in os.listdir(TEMP_DIR):
+        if item.startswith("pdf_images_"):
+            item_path = os.path.join(TEMP_DIR, item)
+            try:
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                    removed += 1
+            except Exception:
+                pass
+    if removed:
+        print(f"[CLEANUP] 清理了 {removed} 个崩溃残留的 pdf_images_* 目录")
+
+
+def cleanup_old_preview_caches(max_keep: int = 10):
+    """清理旧的预览图缓存，只保留最近使用过的 N 个 PDF 的缓存目录。
+
+    按目录修改时间排序，删除最早的超出 max_keep 的目录。
+    """
+    mid_data = get_mid_data_dir()
+    if not mid_data.is_dir():
+        return
+
+    dirs = []
+    for d in mid_data.iterdir():
+        if d.is_dir():
+            try:
+                mtime = d.stat().st_mtime
+                dirs.append((mtime, d))
+            except Exception:
+                pass
+
+    if len(dirs) <= max_keep:
+        return
+
+    dirs.sort(key=lambda x: x[0], reverse=True)  # 最新的在前
+    to_remove = dirs[max_keep:]
+
+    for _, d in to_remove:
+        try:
+            shutil.rmtree(str(d))
+        except Exception:
+            pass
+
+    print(f"[CLEANUP] 清理了 {len(to_remove)} 个旧预览缓存目录（保留最近 {max_keep} 个）")
+
+
+def startup_cleanup():
+    """应用启动时执行的全量清理。"""
+    cleanup_orphan_temp_dirs()
+    cleanup_old_preview_caches(max_keep=10)
 
 
 # ============================================================
@@ -64,6 +128,11 @@ def get_project_root():
     else:
         # 开发模式：向上两级到达项目根目录
         return Path(__file__).parent.parent.parent
+
+
+def get_project_data_temp_dir():
+    """获取项目本地临时目录（绝不使用系统Temp/C盘）。"""
+    return str(get_project_root() / "data" / "temp")
 
 
 def get_config_dir():

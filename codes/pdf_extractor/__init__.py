@@ -4,7 +4,7 @@ PDF Table Extractor - 银行年报PDF表格提取工具
 """
 
 from .utils import (
-    cleanup_temp_files, TEMP_DIR,
+    cleanup_temp_files, startup_cleanup, TEMP_DIR,
     load_config, save_config,
     load_pdf_history, save_pdf_history,
     get_all_cached_files, delete_cache_file,
@@ -44,7 +44,7 @@ from .pdf_context import PDFContext
 
 __all__ = [
     # utils
-    'cleanup_temp_files', 'TEMP_DIR',
+    'cleanup_temp_files', 'startup_cleanup', 'TEMP_DIR',
     'load_config', 'save_config',
     'load_pdf_history', 'save_pdf_history',
     'get_all_cached_files', 'delete_cache_file',

@@ -32,6 +32,13 @@ class ClassifyResult:
     #   "has_enough_cols": bool,
     # }
 
+    # 增强字段：表格质量分类（Phase 4 优化新增）
+    is_complete: bool = True                     # 表格是否完整（有表头+数据+可能汇总行）
+    table_category: str = ""                     # 分类标签："财务数据表"/"文本列表"/"目录"/"图表标签"/"混合表"
+    has_header: bool = False                     # 是否有表头行
+    has_numeric_data: bool = False               # 是否有数值数据列
+    segment_source: str = ""                     # 分割来源："liteparse_segment"/"original"
+
     def to_dict(self) -> dict:
         return {
             "page": self.page,
@@ -39,6 +46,11 @@ class ClassifyResult:
             "confidence": self.confidence,
             "reason": self.reason,
             "checks": self.checks,
+            "is_complete": self.is_complete,
+            "table_category": self.table_category,
+            "has_header": self.has_header,
+            "has_numeric_data": self.has_numeric_data,
+            "segment_source": self.segment_source,
         }
 
 

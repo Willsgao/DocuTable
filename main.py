@@ -6,12 +6,15 @@
 import sys
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont
-from codes.pdf_extractor import cleanup_temp_files
+from codes.pdf_extractor import cleanup_temp_files, startup_cleanup
 import atexit
 
 from codes.ui.main_window import MainWindow
 
 print("[INFO] 使用 QTableWidget 本地表格编辑器（无需 Office）")
+
+# 启动时清理上次崩溃残留
+startup_cleanup()
 
 # 注册退出时清理
 atexit.register(cleanup_temp_files)

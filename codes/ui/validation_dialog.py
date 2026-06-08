@@ -441,8 +441,14 @@ class LiteparseTableDialog(QDialog):
 
         # ---- 标题栏 ----
         title_layout = QHBoxLayout()
+
+        # 质量决策统计
+        accepted = sum(1 for t in self.tables if t.get("quality_decision") == "accepted")
+        review_n = sum(1 for t in self.tables if t.get("quality_decision") == "review")
+        rejected = sum(1 for t in self.tables if t.get("quality_decision") == "rejected")
         title = QLabel(
-            f"📊 分割完成：{self.report.get('total_tables', 0)} 张表，"
+            f"📊 分割完成：{self.report.get('total_tables', 0)} 张表 "
+            f"（✅{accepted} 可信 · 🔍{review_n} 待复核 · ❌{rejected} 已拒绝），"
             f"覆盖 {self.report.get('table_pages', 0)} 页表格页"
         )
         title.setStyleSheet(
@@ -563,7 +569,9 @@ class LiteparseTableDialog(QDialog):
         else:
             p_str = f"P{pages[0]}-{pages[-1]}"
         cross = "↔" if table.get("is_cross_page") else ""
-        return f"表#{tid} {p_str}{cross}"
+        decision = table.get("quality_decision", "")
+        dec_icon = {"accepted": "✅", "review": "🔍", "rejected": "❌"}.get(decision, "")
+        return f"{dec_icon} 表#{tid} {p_str}{cross}"
 
     def _table_info_html(self, table: dict) -> str:
         """表头上方的元信息行。"""
@@ -576,14 +584,24 @@ class LiteparseTableDialog(QDialog):
         cross = "是" if table.get("is_cross_page") else "否"
         region_idx = table.get("region_index", -1)
         col_n = len(table.get("column_x_ranges", []))
+        decision = table.get("quality_decision", "")
+        dec_reason = table.get("quality_decision_reason", "")
+        fin_conf = table.get("financial_confidence", 0.0)
+        category = table.get("table_category", "")
 
         conf_color = "#27AE60" if conf >= 0.7 else ("#E67E22" if conf >= 0.4 else "#E74C3C")
+        dec_color = {"accepted": "#27AE60", "review": "#E67E22", "rejected": "#E74C3C"}.get(decision, "#95A5A6")
+        dec_label = {"accepted": "可信", "review": "待复核", "rejected": "已拒绝"}.get(decision, decision)
+
         return (
             f"<b>表#{tid}</b>  &nbsp; 页码: {pages}  &nbsp; "
             f"标题: <i>{cap}</i>  &nbsp; 行数: {rows_n}  &nbsp; "
             f"列数: {col_n}  &nbsp; Items: {items_n}  &nbsp; "
             f"跨页: {cross}  &nbsp; "
-            f"置信: <span style='color:{conf_color};font-weight:bold;'>{conf:.2f}</span>"
+            f"分类: {category}  &nbsp; "
+            f"财务置信: <span style='color:{conf_color};font-weight:bold;'>{fin_conf:.0%}</span>  &nbsp; "
+            f"判定: <span style='color:{dec_color};font-weight:bold;'>{dec_label}</span>"
+            f"{' (' + dec_reason + ')' if dec_reason else ''}"
         )
 
     def _render_table_html(self, table: dict) -> str:
@@ -664,7 +682,7 @@ class LiteparseTableDialog(QDialog):
         """导出全部表格到统一文件夹（不弹窗选路径，直接落盘）。"""
         from datetime import datetime
 
-        base_dir = Path(__file__).parent.parent.parent / "files" / "liteparse_tables"
+        base_dir = Path(__file__).parent.parent.parent / "data" / "mid_cache" / "liteparse_tables"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dir_path = str(base_dir / timestamp)
         os.makedirs(dir_path, exist_ok=True)
@@ -722,8 +740,10 @@ class LiteparseTableDialog(QDialog):
         with open(all_path, "w", encoding="utf-8") as f:
             f.write("\n".join(all_lines))
 
-        # 逐表单独文件
+        # 逐表单独文件（仅 accepted）
         for t in self.tables:
+            if t.get("quality_decision") != "accepted":
+                continue
             lines = self._table_to_txt_lines(t)
             fname = self._table_filename(t, "txt")
             with open(os.path.join(dir_path, fname), "w", encoding="utf-8") as f:
@@ -754,6 +774,18 @@ class LiteparseTableDialog(QDialog):
         lines.append("─" * 60)
         lines.append(f"  表#{tid}  {pages_str}{cross_str}  「{cap}」")
         lines.append(f"  行数: {rows_n}  置信度: {conf:.2f}")
+
+        # 质量决策标注
+        decision = table.get("quality_decision", "")
+        dec_reason = table.get("quality_decision_reason", "")
+        category = table.get("table_category", "")
+        fin_conf = table.get("financial_confidence", 0.0)
+        if decision:
+            dec_icon = {"accepted": "✅", "review": "🔍", "rejected": "❌"}.get(decision, "")
+            lines.append(f"  判定: {dec_icon} {decision} [{category}] 财务置信: {fin_conf:.0%}")
+            if dec_reason:
+                lines.append(f"  理由: {dec_reason}")
+
         if col_ranges:
             cr_str = ",  ".join(f"[{x0:.0f}, {x1:.0f}]" for x0, x1 in col_ranges)
             lines.append(f"  列 X 范围: {cr_str}")
@@ -787,40 +819,121 @@ class LiteparseTableDialog(QDialog):
         return lines
 
     def _export_csv(self, dir_path: str):
-        """导出 CSV 文件。"""
+        """导出 CSV 文件。
+
+        默认逐表导出：仅 accepted 表。
+        汇总文件 _all_tables.csv：全部表格，标注质量决策。
+        调试导出：_review_tables.csv、_rejected_tables.csv。
+        """
         import csv
 
-        for t in self.tables:
-            rows = t.get("rows", [])
+        # 分类表格
+        accepted = [t for t in self.tables if t.get("quality_decision") == "accepted"]
+        review = [t for t in self.tables if t.get("quality_decision") == "review"]
+        rejected = [t for t in self.tables if t.get("quality_decision") == "rejected"]
+
+        # 逐表单独 CSV：仅 accepted（可信表）
+        for t in accepted:
+            rows = self._get_table_csv_rows(t)
             if not rows:
                 continue
-            max_cols = max((len(r.get("texts", [])) for r in rows), default=1)
+            max_cols = max(len(r) for r in rows)
             fname = self._table_filename(t, "csv")
             fpath = os.path.join(dir_path, fname)
             with open(fpath, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f)
                 for row in rows:
-                    texts = row.get("texts", [])
-                    writer.writerow(texts + [""] * (max_cols - len(texts)))
+                    writer.writerow(row + [""] * (max_cols - len(row)))
 
-        # 全部汇总 CSV（用空行分隔）
+        # 全部汇总 CSV（用空行分隔，标注质量决策）
         all_csv_path = os.path.join(dir_path, "_all_tables.csv")
         with open(all_csv_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             for ti, t in enumerate(self.tables):
                 if ti > 0:
                     writer.writerow([])  # 空行分隔
-                # 表标识行
+                # 表标识行（含质量决策标注）
                 tid = t.get("table_id", "?")
                 pages = t.get("pages", [t.get("page", "?")])
                 cap = t.get("caption", "") or "（无标题）"
-                writer.writerow([f"# 表#{tid}  P{pages}  {cap}"])
-                rows = t.get("rows", [])
+                category = t.get("table_category", "")
+                conf = t.get("financial_confidence", 0.0)
+                decision = t.get("quality_decision", "?")
+                reason = t.get("quality_decision_reason", "")
+                conf_str = f" | 置信度:{conf:.0%}" if conf > 0 else ""
+                cat_str = f" [{category}]" if category else ""
+                dec_str = f" [{decision.upper()}: {reason}]" if decision else ""
+                writer.writerow([f"# 表#{tid}  P{pages}{cat_str}{conf_str}{dec_str}  {cap}"])
+                rows = self._get_table_csv_rows(t)
                 if rows:
-                    max_cols = max((len(r.get("texts", [])) for r in rows), default=1)
+                    max_cols = max(len(r) for r in rows)
                     for row in rows:
-                        texts = row.get("texts", [])
-                        writer.writerow(texts + [""] * (max_cols - len(texts)))
+                        writer.writerow(row + [""] * (max_cols - len(row)))
+
+        # 调试导出：仅 review 表
+        if review:
+            self._write_tables_csv(review, os.path.join(dir_path, "_review_tables.csv"))
+        # 调试导出：仅 rejected 表
+        if rejected:
+            self._write_tables_csv(rejected, os.path.join(dir_path, "_rejected_tables.csv"))
+
+        # 质量报告 JSON
+        quality_path = os.path.join(dir_path, "_quality_report.json")
+        quality_data = {
+            "accepted": len(accepted),
+            "review": len(review),
+            "rejected": len(rejected),
+            "total": len(self.tables),
+            "by_category": {},
+            "details": [],
+        }
+        for t in self.tables:
+            cat = t.get("table_category", "未知")
+            quality_data["by_category"][cat] = quality_data["by_category"].get(cat, 0) + 1
+            quality_data["details"].append({
+                "table_id": t.get("table_id", -1),
+                "page": t.get("page", 0),
+                "caption": t.get("caption", ""),
+                "decision": t.get("quality_decision", "?"),
+                "reason": t.get("quality_decision_reason", ""),
+                "category": t.get("table_category", ""),
+                "confidence": t.get("financial_confidence", 0.0),
+            })
+        with open(quality_path, "w", encoding="utf-8") as f:
+            json.dump(quality_data, f, ensure_ascii=False, indent=2, default=str)
+
+    @staticmethod
+    def _get_table_csv_rows(table: dict) -> list:
+        """获取表格的 CSV 数据（二维列表），优先清洗后 data，降级到原始 rows.texts。"""
+        data = table.get("data", [])
+        if data:
+            return [list(row) for row in data]
+        rows = table.get("rows", [])
+        if rows:
+            return [list(row.get("texts", [])) for row in rows]
+        return []
+
+    @staticmethod
+    def _write_tables_csv(tables: list, fpath: str):
+        """将表格列表写入单个 CSV 汇总文件（空行分隔）。"""
+        import csv
+        with open(fpath, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            for ti, t in enumerate(tables):
+                if ti > 0:
+                    writer.writerow([])
+                tid = t.get("table_id", "?")
+                pages = t.get("pages", [t.get("page", "?")])
+                cap = t.get("caption", "") or "（无标题）"
+                category = t.get("table_category", "")
+                decision = t.get("quality_decision", "?")
+                reason = t.get("quality_decision_reason", "")
+                writer.writerow([f"# 表#{tid}  P{pages} [{category}] [{decision.upper()}: {reason}]  {cap}"])
+                rows = ValidationDialog._get_table_csv_rows(t)
+                if rows:
+                    max_cols = max(len(r) for r in rows)
+                    for row in rows:
+                        writer.writerow(row + [""] * (max_cols - len(row)))
 
     def _table_filename(self, table: dict, ext: str) -> str:
         """生成表格文件名。"""

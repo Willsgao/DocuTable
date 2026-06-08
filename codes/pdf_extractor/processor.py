@@ -373,41 +373,8 @@ class PDFProcessor:
         return merged_results
 
     def _normalize_table_columns(self, table_data):
-        """规范化表格"""
-        if not table_data or not isinstance(table_data, list):
-            return table_data
-
-        if len(table_data) == 0:
-            return table_data
-
-        max_cols = max((len(row) for row in table_data if row), default=0)
-
-        if max_cols == 0:
-            return table_data
-
-        def is_empty_row(row):
-            if not row:
-                return True
-            return all(cell is None or str(cell).strip() == "" for cell in row)
-
-        normalized = []
-        for row in table_data:
-            if not row:
-                row = []
-            while len(row) < max_cols:
-                row.append(None)
-            row = row[:max_cols]
-            normalized.append(row)
-
-        start_idx = 0
-        while start_idx < len(normalized) and is_empty_row(normalized[start_idx]):
-            start_idx += 1
-
-        end_idx = len(normalized)
-        while end_idx > start_idx and is_empty_row(normalized[end_idx - 1]):
-            end_idx -= 1
-
-        return normalized[start_idx:end_idx]
+        """规范化表格 — 委托给独立函数。"""
+        return _normalize_table_columns(table_data)
 
     def _reconstruct_table_from_blocks(self, text_blocks, page_width):
         """根据文本块位置信息重建表格结构"""
@@ -1346,7 +1313,8 @@ class PDFProcessor:
             for page_num in page_nums:
                 tmp_path = None
                 try:
-                    fd, tmp_path = tempfile.mkstemp(suffix='.docx')
+                    fd, tmp_path = tempfile.mkstemp(
+                        suffix='.docx', dir=TEMP_DIR)
                     os.close(fd)
 
                     cv.convert(
@@ -2861,39 +2829,37 @@ class ExcelExporter:
 # ============================================================
 
 def _remove_spaces_data(data):
-    """智能删除空单元格：仅删除每行左右两端的空单元格，保留内部空单元格。
+    """智能删除空单元格：全局对齐裁剪左右两端空列。
 
     策略：
-    - 找到该行第一个非空单元格的索引（左边界）
-    - 找到该行最后一个非空单元格的索引（右边界）
-    - 删除左边界之前和右边界之后的所有单元格
-    - 保持内部单元格结构不变（中间的空白列会被保留）
+    - 扫描所有行，找到全局最左非空列索引和最右非空列索引
+    - 所有行统一裁剪到 [left, right+1] 范围
+    - 保留内部空列结构不变（中间的空白列会被保留）
 
     Returns:
         新数组（list of lists）
     """
-    import copy
     if not data:
         return []
 
-    result = []
+    # 找到全局左右边界
+    left = len(data[0]) if data else 0
+    right = 0
     for row in data:
-        # 找第一个和最后一个非空单元格索引
-        first = -1
-        last = -1
         for i, cell in enumerate(row):
             if cell is not None and str(cell).strip():
-                if first < 0:
-                    first = i
-                last = i
+                left = min(left, i)
+                right = max(right, i)
 
-        if first < 0:
-            # 全空行，保留原样
-            result.append(list(row))
-        else:
-            # 只保留 [first .. last] 范围内的单元格
-            trimmed = row[first:last + 1]
-            result.append(list(trimmed))
+    # 如果全是空行，保留原样
+    if left > right:
+        return [list(row) for row in data]
+
+    # 所有行统一裁剪到全局边界
+    result = []
+    for row in data:
+        trimmed = row[left:right + 1]
+        result.append(list(trimmed))
 
     return result
 
@@ -2952,22 +2918,32 @@ def _remove_empty_rows(data):
 
 
 def _compact_empty_cells(data):
-    """删除每行内部的空单元格，压缩为紧凑列。打标记 cells_compacted。
+    """删除整列为空的列（所有行同步），压缩为紧凑列。打标记 cells_compacted。
 
-    与 _remove_spaces_data 不同：后者只删两端空单元格，此函数删除行内所有空单元格。
+    与 _remove_spaces_data 不同：后者只删两端空列，此函数删除所有整列为空的列。
+    关键改进：检测整列为空的列，所有行同步删除，保证列方向对齐。
 
-    特殊处理：如果一行只有首列有内容、后续全空，判定为跨列标题行，
-    保留原始列数不压缩，避免表格结构断裂。
+    Returns:
+        (cleaned_data, compacted): 去空列后的数据 + 是否压缩了
     """
     if not data:
         return data, False
 
-    # 计算全局最大列数，用于识别跨列标题行
     max_cols = max((len(row) for row in data), default=0)
+    if max_cols == 0:
+        return data, False
 
-    # 辅助：判断是否为跨列标题行（仅首列有内容）
+    # 1. 先规范化：所有行补齐到最大列数
+    normalized = []
+    for row in data:
+        nr = list(row)
+        while len(nr) < max_cols:
+            nr.append("")
+        normalized.append(nr)
+
+    # 2. 辅助：判断是否为跨列标题行（仅首列有内容）
     def _is_header_only(row):
-        if not row or len(row) < 2 or max_cols < 2:
+        if not row or len(row) < 2:
             return False
         first = row[0]
         if first is None or not str(first).strip():
@@ -2977,26 +2953,190 @@ def _compact_empty_cells(data):
             for cell in row[1:]
         )
 
-    compacted = False
-    for r in range(len(data)):
-        row = data[r]
+    # 3. 区分标题行和数据行，仅基于数据行检测空列
+    header_rows = {r for r in range(len(normalized)) if _is_header_only(normalized[r])}
+    data_rows = [r for r in range(len(normalized)) if r not in header_rows]
 
-        if _is_header_only(row):
-            # 跨列标题行：保持原始列数不变，仅裁剪到 max_cols
-            while len(row) > max_cols and not str(row[-1]).strip():
-                row.pop()
+    if not data_rows:
+        return data, False
+
+    # 4. 检测整列为空的列索引（仅基于数据行）
+    cols_to_remove = set()
+    for c in range(max_cols):
+        is_empty_col = True
+        for r in data_rows:
+            cell = normalized[r][c]
+            if cell is not None and str(cell).strip():
+                is_empty_col = False
+                break
+        if is_empty_col:
+            cols_to_remove.add(c)
+
+    if not cols_to_remove:
+        return data, False
+
+    # 5. 所有行同步删除空列
+    cols_to_keep = [c for c in range(max_cols) if c not in cols_to_remove]
+
+    if not cols_to_keep:
+        # 极端情况：所有列都空 → 保留原数据
+        return data, False
+
+    result = []
+    for row in normalized:
+        result.append([row[c] for c in cols_to_keep])
+
+    return result, True
+
+
+def _remove_sparse_columns(data, fill_threshold=0.15, min_nonempty=2):
+    """删除数据行填充率极低的稀疏列（比 _compact_empty_cells 更宽松）。
+
+    与 _compact_empty_cells 的区别：
+    - _compact_empty_cells：只删 100% 为空的列
+    - _remove_sparse_columns：删除填充率 < 有效阈值的列（含少量表头溢出）
+
+    保护规则：
+    - 自动识别表头行（仅首列有内容 OR 前3行默认视为表头区）
+    - 不删除数据行中唯一非空列，避免丢失行标签
+    - 删除前列内容自动合并到左侧相邻保留列，避免内容丢失
+
+    自适应阈值：
+    - 当列的非空数据行数 ≤ min_nonempty 时，使用 50% 作为有效阈值
+      （防止少量异常行如脚注编号导致整列被误保留）
+    - 否则使用 fill_threshold（默认 15%）
+
+    Args:
+        data: list[list[str]]
+        fill_threshold: 数据行填充率阈值（默认 0.15 = 15%），仅非空数 > min_nonempty 时生效
+        min_nonempty: 最少非空数据行数（默认 2），低于或等于此数时触发自适应阈值
+
+    Returns:
+        (cleaned_data, removed_count): 去稀疏列后的数据 + 删除的列数
+    """
+    if not data or len(data) < 2:
+        return data, 0
+
+    max_cols = max((len(row) for row in data), default=0)
+    if max_cols == 0:
+        return data, 0
+
+    # 1. 规范化所有行到相同列数
+    normalized = []
+    for row in data:
+        nr = list(row)
+        while len(nr) < max_cols:
+            nr.append("")
+        normalized.append(nr)
+
+    total_rows = len(normalized)
+
+    # 2. 辅助：判断是否为跨列标题行（仅首列有内容）
+    def _is_header_only(row):
+        if not row or len(row) < 2:
+            return False
+        first = row[0]
+        if first is None or not str(first).strip():
+            return False
+        return all(
+            cell is None or not str(cell).strip()
+            for cell in row[1:]
+        )
+
+    # 3. 识别表头行集（前3行默认视为表头区 + 仅首列有内容的行）
+    header_row_set = set()
+    header_row_set.update(range(min(3, total_rows)))
+    for r in range(total_rows):
+        if _is_header_only(normalized[r]):
+            header_row_set.add(r)
+
+    data_rows = [r for r in range(total_rows) if r not in header_row_set]
+    if not data_rows:
+        return data, 0
+
+    # 4. 计算每列的数据行填充率
+    cols_to_remove = set()
+    for c in range(max_cols):
+        nonempty_count = 0
+        for r in data_rows:
+            cell = normalized[r][c]
+            if cell is not None and str(cell).strip():
+                nonempty_count += 1
+
+        fill_rate = nonempty_count / len(data_rows) if data_rows else 0
+
+        # 当绝对非空数极少时（≤ min_nonempty），使用更慷慨的阈值（50%），
+        # 防止少量异常行（如脚注编号、分隔文字）导致整列被误保留。
+        # 例：5行数据中仅2行有内容 → 40% < 50% → 删除 ✓
+        #     3行数据中2行有内容 → 67% > 50% → 保留 ✓（小表不误删）
+        effective_threshold = 0.5 if nonempty_count <= min_nonempty else fill_threshold
+        if fill_rate < effective_threshold:
+            cols_to_remove.add(c)
+
+    if not cols_to_remove:
+        return data, 0
+
+    # 5. 安全检查：不删除"行唯一非空列"（防止丢失标签）
+    protected_cols = set()
+    for r in data_rows:
+        # 统计该行在待保留列中的非空单元格数
+        nonempty_in_keeping = sum(
+            1 for c in range(max_cols)
+            if c not in cols_to_remove
+            and normalized[r][c] is not None
+            and str(normalized[r][c]).strip()
+        )
+
+        if nonempty_in_keeping > 0:
             continue
 
-        # 常规压缩：保留非空单元格（含省略标记 —）
-        compact = [
-            cell for cell in row
-            if cell is not None and str(cell).strip()
-        ]
-        if len(compact) < len(row):
-            compacted = True
-            data[r] = compact
+        # 如果该行在保留列中全空，则在待删列中保留第一个有内容的列
+        for c in range(max_cols):
+            if (normalized[r][c] is not None
+                    and str(normalized[r][c]).strip()
+                    and c in cols_to_remove):
+                protected_cols.add(c)
+                break
 
-    return data, compacted
+    cols_to_remove -= protected_cols
+
+    if not cols_to_remove:
+        return data, 0
+
+    # 5.5 删除前合并：将待删列中的内容合并到左侧最近的非删除列，
+    # 防止脚注编号、分隔文字等内容在列删除时丢失。
+    # 例：Col 1 中 "(2)" 和 "7" → 合并到 Col 0
+    kept_set = set(range(max_cols)) - cols_to_remove
+    for c in sorted(cols_to_remove):
+        for r in range(total_rows):
+            cell_val = normalized[r][c]
+            if cell_val is None or not str(cell_val).strip():
+                continue
+            # 找到左侧最近的保留列
+            left_kept = None
+            for lc in range(c - 1, -1, -1):
+                if lc in kept_set:
+                    left_kept = lc
+                    break
+            if left_kept is not None:
+                existing = normalized[r][left_kept]
+                existing_str = str(existing).strip() if existing is not None else ""
+                merge_str = str(cell_val).strip()
+                if existing_str:
+                    normalized[r][left_kept] = existing_str + " " + merge_str
+                else:
+                    normalized[r][left_kept] = merge_str
+
+    # 6. 所有行同步删除稀疏列
+    cols_to_keep = [c for c in range(max_cols) if c not in cols_to_remove]
+    if not cols_to_keep:
+        return data, 0
+
+    result = []
+    for row in normalized:
+        result.append([row[c] for c in cols_to_keep])
+
+    return result, len(cols_to_remove)
 
 
 def _deduplicate_columns(data):
@@ -3039,6 +3179,125 @@ def _deduplicate_columns(data):
             removed_count += 1
 
     return data, removed_count
+
+
+def _remove_phantom_header_columns(data):
+    """删除 pdf2docx 合并单元格展开导致的幽灵列（phantom columns）。
+
+    pdf2docx 在展开跨列表头合并格时，会产生大量"表头文本相同但数据密度极低"
+    的幽灵列。这些列夹在真实列之间，破坏列对齐，仅凭完全匹配的去重检测不到。
+
+    算法：
+    1. 规范化所有行到相同列数
+    2. 按首行值将列分组（相同 row-0 值的列归为一组）
+    3. 对每组（>1列），统计每列在数据行中的非空密度
+    4. 密度低于组内最高密度的 25% → 视为幽灵列 → 删除
+    5. 若组内所有列密度一致（差异<5%），视为真实子列，保留全部
+    6. 所有行同步删除幽灵列
+
+    安全边界：
+    - 单列表 → 不处理（无法判定）
+    - 不足 3 行 → 不处理（无足够数据行可统计）
+    - 密度均匀组 → 保留全部（如多年度金额+占比子列均为真实列）
+    - 密度阈值保守（最高密度的 25%），避免误删稀疏但合法的列
+
+    Args:
+        data: list[list[str]]，表格数据
+
+    Returns:
+        (cleaned_data, removed_count): 清洗后数据 + 删除的幽灵列数
+    """
+    if not data or len(data) < 3:
+        return data, 0
+
+    max_cols = max((len(row) for row in data), default=0)
+    if max_cols < 2:
+        return data, 0
+
+    # ---- 1. 规范化所有行到相同列数 ----
+    normalized = []
+    for row in data:
+        nr = list(row)
+        while len(nr) < max_cols:
+            nr.append("")
+        normalized.append(nr[:max_cols])
+
+    # ---- 2. 收集每列的 row-0 签名并分组 ----
+    # 使用前 3 行的值组成复合签名（提升 multi-level header 的区分度）
+    header_rows_count = min(3, len(normalized))
+    col_signatures = []
+    for c in range(max_cols):
+        sig_parts = []
+        for r in range(header_rows_count):
+            v = str(normalized[r][c]).strip() if normalized[r][c] else ""
+            sig_parts.append(v)
+        col_signatures.append(tuple(sig_parts))
+
+    # ---- 3. 按签名分组 ----
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for c, sig in enumerate(col_signatures):
+        if any(s for s in sig):  # 跳过全空签名列（已由 _compact_empty_cells 处理）
+            groups[sig].append(c)
+
+    # ---- 4. 对每组（>1列）检测幽灵列 ----
+    total_rows = len(normalized)
+    data_start_row = min(3, total_rows - 1)  # 跳过表头区 0~2 行
+    data_row_count = total_rows - data_start_row
+    if data_row_count < 1:
+        return data, 0
+
+    phantom_cols = set()
+
+    for sig, cols in groups.items():
+        if len(cols) <= 1:
+            continue
+
+        # 计算该组每列的数据密度（表头行以下）
+        densities = []
+        for c in cols:
+            non_empty = 0
+            for r in range(data_start_row, total_rows):
+                cell = normalized[r][c]
+                if cell is not None and str(cell).strip():
+                    non_empty += 1
+            density = non_empty / data_row_count if data_row_count > 0 else 0
+            densities.append(density)
+
+        max_density = max(densities) if densities else 0
+
+        # 若组内最高密度也很低（<10%），跳过——可能整个组都是表头装饰
+        if max_density < 0.10:
+            continue
+
+        # 计算组内密度标准差，判断是否均匀散布
+        if len(densities) >= 2:
+            avg = sum(densities) / len(densities)
+            variance = sum((d - avg) ** 2 for d in densities) / len(densities)
+            std_dev = variance ** 0.5
+            # 密度均匀、无显著离群值 → 保留全部（都是真实子列）
+            if std_dev < 0.05 and max_density > 0.5:
+                continue
+
+        # 密度低于组内最高密度的 25% → 标记为幽灵列
+        threshold = max_density * 0.25
+        for c, density in zip(cols, densities):
+            if density < threshold:
+                phantom_cols.add(c)
+
+    if not phantom_cols:
+        return data, 0
+
+    # ---- 5. 所有行同步删除幽灵列 ----
+    cols_to_keep = [c for c in range(max_cols) if c not in phantom_cols]
+    if not cols_to_keep:
+        return data, 0
+
+    result = []
+    for row in normalized:
+        result.append([row[c] for c in cols_to_keep])
+
+    return result, len(phantom_cols)
 
 
 def _deduplicate_subset_rows(data):
@@ -3698,6 +3957,47 @@ def _precompute_scoped_items(results, liteparse_data):
         print(f"  [预检] scoped items 计算失败（降级为全页模式）: {e}")
 
 
+def _normalize_table_columns(table_data):
+    """规范化表格：所有行补齐到相同列数，剔除首尾全空行。
+
+    独立函数版，供 _auto_clean_tables 等数据处理层调用（无类依赖）。
+    """
+    if not table_data or not isinstance(table_data, list):
+        return table_data
+
+    if len(table_data) == 0:
+        return table_data
+
+    max_cols = max((len(row) for row in table_data if row), default=0)
+
+    if max_cols == 0:
+        return table_data
+
+    def _is_empty_row(row):
+        if not row:
+            return True
+        return all(cell is None or str(cell).strip() == "" for cell in row)
+
+    normalized = []
+    for row in table_data:
+        if not row:
+            row = []
+        while len(row) < max_cols:
+            row.append(None)
+        row = row[:max_cols]
+        normalized.append(row)
+
+    start_idx = 0
+    while start_idx < len(normalized) and _is_empty_row(normalized[start_idx]):
+        start_idx += 1
+
+    end_idx = len(normalized)
+    while end_idx > start_idx and _is_empty_row(normalized[end_idx - 1]):
+        end_idx -= 1
+
+    return normalized[start_idx:end_idx]
+
+
 def _auto_clean_tables(results, progress_callback=None, liteparse_data=None):
     """对解析结果自动清洗：保存原始 → 清洗数值 → 删空格 → 删空行 → 合并断裂。
     
@@ -3757,6 +4057,11 @@ def _auto_clean_tables(results, progress_callback=None, liteparse_data=None):
         if dup_cols > 0:
             print(f"  [清洗] 表格{i+1} 列去重: 删除 {dup_cols} 个重复列")
 
+        # 4.6 删除因合并单元格展开导致的幽灵列（表头重复 + 数据密度极低）
+        table["data"], phantom_cols = _remove_phantom_header_columns(table["data"])
+        if phantom_cols > 0:
+            print(f"  [清洗] 表格{i+1} 幽灵列删除: {phantom_cols}个列")
+
         # 5. 删除行内空单元格（紧凑化，打标记 cells_compacted）
         data_before = sum(len(row) for row in table["data"])
         table["data"], compacted = _compact_empty_cells(table["data"])
@@ -3764,6 +4069,11 @@ def _auto_clean_tables(results, progress_callback=None, liteparse_data=None):
             data_after = sum(len(row) for row in table["data"])
             table["cells_compacted"] = True
             print(f"  [清洗] 表格{i+1} 紧凑化: {data_before}→{data_after}个单元格")
+
+        # 5.1 删除稀疏列（数据行填充率 < 15% 的列，用于清理 pdf2docx 检测到的冗余间隔列）
+        table["data"], sparse_count = _remove_sparse_columns(table["data"])
+        if sparse_count > 0:
+            print(f"  [清洗] 表格{i+1} 稀疏列删除: {sparse_count}个列")
 
         # 5.3 消除幽灵行（子集重复行，合并格展开残留）
         row_before_dedup = len(table["data"])
@@ -3801,8 +4111,16 @@ def _auto_clean_tables(results, progress_callback=None, liteparse_data=None):
         if split_count > 0:
             print(f"  [清洗] 表格{i+1} 拆分拼接列: {split_count}列")
 
+        # 5.8 列规范化：确保清洗后所有行列数一致（修复紧凑化导致的锯齿数组）
+        table["data"] = _normalize_table_columns(table["data"])
+
     # 6. 自动合并断裂表格
     results = _auto_merge_split_tables(results, liteparse_data=liteparse_data)
+
+    # 6.5 合并后再次规范化（合并操作可能产生不同列数的行）
+    for table in results:
+        if table.get("data"):
+            table["data"] = _normalize_table_columns(table["data"])
 
     if progress_callback:
         progress_callback(94, f"清洗完成({len(results)}个表格, {total_cleaned_cells}个单元格已清洗)")
@@ -4059,6 +4377,66 @@ class ProcessingWorker(QThread):
             # 最终确保按页码排序
             results.sort(key=lambda x: x["page"])
 
+            # ---- 自动表格分割验证（liteparse 驱动） ----
+            # 保存分割前的原始数据，供人工对比
+            tables_before_segmentation = copy.deepcopy(results)
+            seg_report = None
+            liteparse_seg_tables = None  # liteparse 原始格式，供对话框导出
+            try:
+                if liteparse_data:
+                    from codes.table_validator.liteparse_table_segmenter import (
+                        segment_tables_from_liteparse,
+                        liteparse_tables_to_standard,
+                    )
+                    self.progress.emit(96, "正在自动分割表格...")
+                    seg_tables, seg_report = segment_tables_from_liteparse(
+                        liteparse_data,
+                        enable_cross_page=True,
+                    )
+                    if seg_tables:
+                        # 保存 liteparse 原始格式（含 rows[dict]，供导出 CSV）
+                        liteparse_seg_tables = seg_tables
+                        # 转为标准格式并保留分割前后两份数据
+                        segmented_results = liteparse_tables_to_standard(
+                            seg_tables, results
+                        )
+                        # 为原始表也打上质量标记（基于分类器）
+                        from codes.table_validator.table_classifier import classify_page
+                        for t in tables_before_segmentation:
+                            t_data = t.get("data", [])
+                            if t_data:
+                                cr = classify_page(t_data, t.get("page", 0))
+                                t["is_real_table"] = cr.is_real_table
+                                t["is_complete"] = cr.is_real_table  # 简化判定
+                                t["table_category"] = "财务数据表" if cr.is_real_table else "非表格"
+                                t["has_header"] = cr.checks.get("has_numeric_col", False)
+                                t["has_numeric_data"] = cr.checks.get("has_numeric_col", False)
+                            t["segment_source"] = "original"
+
+                        # 分割后数据作为主结果
+                        results = segmented_results
+
+                        # Phase 1 质量过滤：统计各决策层级
+                        accepted_tables = [t for t in results if t.get("quality_decision") == "accepted"]
+                        review_tables = [t for t in results if t.get("quality_decision") == "review"]
+                        rejected_tables = [t for t in results if t.get("quality_decision") == "rejected"]
+
+                        # 保存原始和分割后的统计
+                        seg_stats = seg_report.get("table_summaries", [])
+                        real_count = len(accepted_tables)
+                        print(f"  [自动分割] 原始 {len(tables_before_segmentation)} 张表 → "
+                              f"分割后 {len(results)} 张表, "
+                              f"可信 {real_count} 张, 待复核 {len(review_tables)} 张, "
+                              f"已拒绝 {len(rejected_tables)} 张")
+                    else:
+                        print("  [自动分割] 分割未产生结果，保留原始表格")
+            except ImportError:
+                print("  [自动分割] liteparse segmenter 模块不可用，跳过")
+            except Exception as e:
+                import traceback
+                print(f"  [自动分割] 分割异常（不影响主流程）: {e}")
+                traceback.print_exc()
+
             self.progress.emit(98, "处理完成")
 
             self.finished.emit({
@@ -4066,8 +4444,13 @@ class ProcessingWorker(QThread):
                 "is_image_pdf": is_image,
                 "image_cache_dir": image_cache_dir,
                 "tables": results,
+                "tables_before_segmentation": tables_before_segmentation,
+                "liteparse_seg_tables": liteparse_seg_tables,  # liteparse 原始格式（rows[dict]，供导出 CSV）
+                "segmentation_report": seg_report if seg_report else {},
                 "total_tables": len(results),
-                "success_count": len([r for r in results if r.get("parse_status") == "success"]),
+                "success_count": len([r for r in results if r.get("quality_decision") == "accepted"]),
+                "review_count": len([r for r in results if r.get("quality_decision") == "review"]),
+                "rejected_count": len([r for r in results if r.get("quality_decision") == "rejected"]),
                 "failed_count": len([r for r in results if r.get("parse_status") == "failed"]),
                 "total_pages": total_pages
             })

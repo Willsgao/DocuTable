@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from typing import Dict, List, Tuple, Optional, Set
@@ -36,12 +37,12 @@ def _normalize_for_search(val: str) -> str:
 def _merge_split_decimals(items: List[dict]) -> List[dict]:
     """合并被 PDF 引擎拆开的小数点后缀。
 
-    PDF 引擎（liteparse）有时会将 "239.85" 拆成 "239" 和 ".85" 两个独立的
-    text_item，原因是整数和小数部分使用了不同的字体/字间距。
+    PDF 引擎（liteparse）有时会将 "239.85"、"1.44%" 等数值拆成整数和
+    小数后缀两个独立的 text_item，原因是整数和小数部分使用了不同的字体/字间距。
 
     本函数在 Y 聚类之前修复此问题：
-    - 找到以 "." 开头后跟纯数字的 item（如 ".85"）
-    - 在同行同高度内找左侧最近的纯整数 item（如 "239"）
+    - 找到以 "." 开头后跟数字的 item（如 ".85"、".44%"）
+    - 在同行同高度内找左侧最近的纯整数 item（如 "239"、"1"）
     - 如果 X 间距在合理范围内（≤ 该 item 宽度的 1.5 倍），合并
 
     Args:
@@ -53,7 +54,7 @@ def _merge_split_decimals(items: List[dict]) -> List[dict]:
     if len(items) < 2:
         return items
 
-    decimal_suffix_pattern = re.compile(r'^\.\d+$')
+    decimal_suffix_pattern = re.compile(r'^\.\d+\D?$')
 
     # 识别小数后缀和候选左侧整数
     decimal_suffixes = []  # [(idx, item), ...]
@@ -267,6 +268,7 @@ def _estimate_column_x_ranges_from_items(
     """从一批 items 的 X 坐标估计列范围。
 
     对所有 item 的 x0 做自适应聚类，每个聚类 = 一个列。
+    聚类后合并稀疏列（item 数过少的列），防止缩进标签等偏移产生幽灵列。
     """
     if not items:
         return []
@@ -296,7 +298,59 @@ def _estimate_column_x_ranges_from_items(
     if current:
         clusters.append(current)
 
-    return [(min(p[0] for p in c), max(p[1] for p in c)) for c in clusters]
+    col_ranges = [(min(p[0] for p in c), max(p[1] for p in c)) for c in clusters]
+
+    LOG = logging.getLogger("table_reconstructor")
+    LOG.debug(
+        "  [cell_differ 列估计] x0聚类得出 %d 列: %s",
+        len(col_ranges),
+        ", ".join(f"[{x0:.0f},{x1:.0f}]" for x0, x1 in col_ranges),
+    )
+
+    # 合并稀疏列：统计每列的 item 数，过少的列合并到最近非稀疏列
+    if len(col_ranges) > 1:
+        col_item_counts = [0] * len(col_ranges)
+        for x0, _x1 in all_x_pairs:
+            for ci, (cx0, cx1) in enumerate(col_ranges):
+                if cx0 <= x0 <= cx1:
+                    col_item_counts[ci] += 1
+                    break
+
+        merge_threshold = max(int(max(col_item_counts) * 0.15), 3)
+        sparse_mask = [c < merge_threshold for c in col_item_counts]
+        if any(sparse_mask):
+            for ci in range(len(col_ranges)):
+                if sparse_mask[ci]:
+                    LOG.debug(
+                        "  [cell_differ 稀疏列] 列#%d [%.0f,%.0f] items=%d/%d — 合并",
+                        ci, col_ranges[ci][0], col_ranges[ci][1],
+                        col_item_counts[ci], max(col_item_counts),
+                    )
+            centers = [(x0 + x1) / 2 for x0, x1 in col_ranges]
+            expanded = list(col_ranges)
+            sparse_set = {i for i, s in enumerate(sparse_mask) if s}
+            for si in sorted(sparse_set, reverse=True):
+                best_j = -1
+                best_dist = float("inf")
+                for j in range(len(expanded)):
+                    if j in sparse_set:
+                        continue
+                    dist = abs(centers[si] - centers[j])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_j = j
+                if best_j >= 0:
+                    x0_j, x1_j = expanded[best_j]
+                    x0_i, x1_i = expanded[si]
+                    expanded[best_j] = (min(x0_j, x0_i), max(x1_j, x1_i))
+            col_ranges = [expanded[i] for i in range(len(expanded)) if i not in sparse_set]
+            LOG.debug(
+                "  [cell_differ 稀疏列] 合并完成 → %d 列: %s",
+                len(col_ranges),
+                ", ".join(f"[{x0:.0f},{x1:.0f}]" for x0, x1 in col_ranges),
+            )
+
+    return col_ranges
 
 
 def _x_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -569,6 +623,7 @@ def _cluster_items_by_y(
     use_dynamic_threshold: bool = True,
     detect_first_col_baseline: bool = True,
     split_by_column_conflict: bool = True,
+    merge_adjacent_rows: bool = True,
 ) -> List[dict]:
     """将 liteparse text_items 按 Y 坐标聚类为逻辑行。
 
@@ -667,6 +722,10 @@ def _cluster_items_by_y(
             column_schema = infer_column_schema(rows)
         rows = _split_rows_by_column_conflict(rows, column_schema)
 
+    # --- 第四遍：相邻行合并（修复 Y 聚类阈值过紧导致的同行拆分） ---
+    if merge_adjacent_rows and len(rows) >= 2:
+        rows = _merge_adjacent_rows_with_same_label(rows)
+
     return rows
 
 
@@ -686,6 +745,83 @@ def _build_row_dict(row_items: List[dict]) -> dict:
             (it.get("x0", 0), it.get("x1", 0)) for it in sorted_items
         ],
     }
+
+
+def _merge_adjacent_rows_with_same_label(rows: List[dict]) -> List[dict]:
+    """合并相邻的、首列标签相同且列不冲突的行。
+
+    场景：Y 聚类阈值过紧时，同一逻辑行被拆成 2 行（如合并单元格的标签
+    居中偏移导致 Y 断开）。合并条件：
+    1. 相邻两行的第一列标签相同（或其中一行为空）
+    2. 两行在同一 X 位置没有冲突值（不同文本的 items 不重叠）
+       — 相同文本的 items 在同一 X 位置不算冲突（标签被复制到两行）
+    """
+    if len(rows) < 2:
+        return rows
+
+    i = 0
+    while i < len(rows) - 1:
+        row_a = rows[i]
+        row_b = rows[i + 1]
+
+        items_a = row_a.get("items", [])
+        items_b = row_b.get("items", [])
+        if not items_a or not items_b:
+            i += 1
+            continue
+
+        # 检测首列标签是否相同
+        texts_a = row_a.get("texts", [])
+        texts_b = row_b.get("texts", [])
+        label_a = texts_a[0].strip() if texts_a else ""
+        label_b = texts_b[0].strip() if texts_b else ""
+
+        same_label = (
+            (label_a and label_b and label_a == label_b)
+            or (label_a and not label_b)
+            or (not label_a and label_b)
+        )
+        if not same_label:
+            i += 1
+            continue
+
+        # 检测列冲突：同一 X 位置有不同文本的 items → 是不同行，不合并
+        has_conflict = False
+        for it_a in items_a:
+            xc_a = (it_a.get("x0", 0) + it_a.get("x1", 0)) / 2
+            text_a = it_a.get("text", "").strip()
+            for it_b in items_b:
+                xc_b = (it_b.get("x0", 0) + it_b.get("x1", 0)) / 2
+                text_b = it_b.get("text", "").strip()
+                if abs(xc_a - xc_b) <= 8.0:
+                    # 同一 X 位置的不同文本 → 冲突
+                    if text_a != text_b:
+                        has_conflict = True
+                        break
+            if has_conflict:
+                break
+
+        if has_conflict:
+            i += 1
+            continue
+
+        # 合并两行（去重：相同文本只保留一个）
+        seen_texts_xc = set()
+        merged_items = []
+        for it in items_a + items_b:
+            xc = round((it.get("x0", 0) + it.get("x1", 0)) / 2, 1)
+            t = it.get("text", "").strip()
+            key = (xc, t)
+            if key not in seen_texts_xc:
+                seen_texts_xc.add(key)
+                merged_items.append(it)
+
+        merged = _build_row_dict(merged_items)
+        rows[i] = merged
+        del rows[i + 1]
+        # 不递增 i，继续在同一位置检查
+
+    return rows
 
 
 def _find_row_label(row: List[str]) -> Optional[str]:
