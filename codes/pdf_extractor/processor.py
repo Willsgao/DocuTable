@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import time
 import traceback
 from datetime import datetime
@@ -972,6 +973,13 @@ class PDFProcessor:
         import multiprocessing
         cpu_count = min(multiprocessing.cpu_count(), 6)  # 最多6核，避免资源争抢
 
+        # PyInstaller 冻结环境下，pdf2docx 内部多进程会导致子进程闪退
+        _frozen = getattr(sys, 'frozen', False)
+        _use_mp = False if _frozen else True
+        _mp_cpu = 1 if _frozen else cpu_count
+        if _frozen:
+            print("  [docx] 冻结环境，禁用 pdf2docx 内部多进程")
+
         # pdf2docx 多进程模式需要落盘（子进程间通过 JSON 文件交换数据）
         with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp:
             tmp_path = tmp.name
@@ -983,8 +991,8 @@ class PDFProcessor:
             end=None,
             layout=False,           # 流式模式：表格识别更准
             table_deduction=False,  # 保守策略
-            multi_processing=True,
-            cpu_count=cpu_count,
+            multi_processing=_use_mp,
+            cpu_count=_mp_cpu,
         )
         cv.close()
 
@@ -1223,132 +1231,7 @@ class PDFProcessor:
         return results
 
     # ---- 逐页 pdf2docx 转换（页码 100% 准确） ----
-
-    @staticmethod
-    def _parse_docx_tables_static(docx_buf, page_num):
-        """从 DOCX 缓冲区解析表格并标记页码（静态，子进程可 pickle）。"""
-        from docx import Document
-        W = ('{http://schemas.openxmlformats.org/'
-             'wordprocessingml/2006/main}')
-        doc = Document(docx_buf)
-        tables = []
-
-        for table in doc.tables:
-            try:
-                rows_data = []
-                merge_tracker = {}
-
-                for r, tr in enumerate(table.rows):
-                    row_cells = []
-                    col_idx = 0
-
-                    for cell in tr.cells:
-                        while merge_tracker.get((r, col_idx)):
-                            row_cells.append("")
-                            col_idx += 1
-
-                        tc = cell._tc
-                        tcPr = tc.find(f'{W}tcPr')
-                        col_span = 1
-                        row_start = True
-
-                        if tcPr is not None:
-                            gridSpan = tcPr.find(f'{W}gridSpan')
-                            if gridSpan is not None:
-                                col_span = int(gridSpan.get(f'{W}val', 1))
-                            vMerge = tcPr.find(f'{W}vMerge')
-                            if vMerge is not None:
-                                if vMerge.get(f'{W}val') != 'restart':
-                                    row_start = False
-
-                        if row_start:
-                            text = cell.text.strip()
-                            for span in range(col_span):
-                                row_cells.append(text if span == 0 else "")
-                        else:
-                            for span in range(col_span):
-                                row_cells.append("")
-
-                        col_idx += col_span
-
-                    if row_cells:
-                        rows_data.append(row_cells)
-
-                if rows_data:
-                    tables.append({
-                        "page": page_num,
-                        "type": "table",
-                        "data": rows_data,
-                        "text": "",
-                        "extractor": "docx_per_page",
-                        "confidence": 0.95,
-                        "rows": len(rows_data),
-                        "cols": (max(len(r) for r in rows_data)
-                                 if rows_data else 0),
-                        "has_border": True,
-                        "context_text": "",
-                    })
-            except Exception:
-                pass
-        return tables
-
-    @staticmethod
-    def _convert_batch_static(pdf_path, page_nums):
-        """每个进程处理一批页（静态方法，可被 pickle 序列化）。
-
-        在独立子进程中运行，PyMuPDF C 扩展状态完全隔离，
-        彻底避免多线程共享导致的 refcount 崩溃。
-        """
-        import tempfile
-        import os
-        from io import BytesIO
-        from pdf2docx import Converter
-
-        batch_tables = []
-        cv = None
-
-        try:
-            cv = Converter(pdf_path)
-
-            for page_num in page_nums:
-                tmp_path = None
-                try:
-                    fd, tmp_path = tempfile.mkstemp(
-                        suffix='.docx', dir=TEMP_DIR)
-                    os.close(fd)
-
-                    cv.convert(
-                        tmp_path,
-                        start=page_num - 1,
-                        end=page_num,
-                        layout=False,
-                        table_deduction=False,
-                        multi_processing=False,
-                        cpu_count=1,
-                    )
-
-                    with open(tmp_path, 'rb') as f:
-                        buf = BytesIO(f.read())
-                    batch_tables.extend(
-                        PDFProcessor._parse_docx_tables_static(buf, page_num))
-                    buf.close()
-
-                except Exception:
-                    pass
-                finally:
-                    if tmp_path and os.path.exists(tmp_path):
-                        try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
-        finally:
-            if cv is not None:
-                try:
-                    cv.close()
-                except Exception:
-                    pass
-
-        return batch_tables
+    # 工作函数已移至 _worker.py（独立模块，无 Qt 依赖，PyInstaller 子进程安全）
 
     def _extract_tables_via_docx_per_page(self, pdf_path=None, context=None,
                                            progress_callback=None):
@@ -1370,12 +1253,25 @@ class PDFProcessor:
             [{page, type, data, extractor, confidence, context_text, ...}]
         """
         import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from codes.pdf_extractor._log import write_log, log_exception
+
+        # PyInstaller 兼容：使用 spawn 上下文的 multiprocessing.Pool，
+        # ProcessPoolExecutor 在冻结环境中经常失败
+        _frozen = getattr(sys, 'frozen', False)
+        _pool_cls = multiprocessing.Pool
+        if _frozen:
+            _ctx = multiprocessing.get_context('spawn')
+            _pool_cls = _ctx.Pool
+            write_log(f"[docx-per-page] 冻结环境，使用 spawn Pool")
+        else:
+            write_log(f"[docx-per-page] 普通环境，使用默认 Pool")
 
         if context:
             _pdf_path = context.pdf_path
         else:
             _pdf_path = pdf_path
+
+        write_log(f"[docx-per-page] 开始: pdf={_pdf_path}")
 
         total_pages = context.page_count if context else 0
         if total_pages == 0:
@@ -1395,6 +1291,9 @@ class PDFProcessor:
             if start <= end:
                 page_batches.append(list(range(start, end + 1)))
 
+        write_log(f"[docx-per-page] {total_pages} 页, {cpu_count} 进程, "
+                  f"{len(page_batches)} 批次")
+
         print(f"  [docx-per-page] 逐页转换: {total_pages} 页, "
               f"{cpu_count} 进程并行 × ~{pages_per_batch} 页/进程")
         if progress_callback:
@@ -1403,24 +1302,33 @@ class PDFProcessor:
 
         t0 = time.time()
 
-        # 多进程并行：每个子进程独立 Python 解释器，PyMuPDF C 扩展完全隔离
+        # 延迟导入工作函数（确保 __module__ 为 _worker，子进程安全）
+        from codes.pdf_extractor._worker import convert_batch
+
         all_tables = []
         total_batches = len(page_batches)
         completed_batches = 0
 
-        with ProcessPoolExecutor(max_workers=cpu_count) as executor:
-            futures = {
-                executor.submit(
-                    PDFProcessor._convert_batch_static, _pdf_path, batch
-                ): idx
-                for idx, batch in enumerate(page_batches)
-            }
+        write_log(f"[docx-per-page] 创建 multiprocessing.Pool (processes={cpu_count})")
+        pool = None
+        try:
+            pool = _pool_cls(processes=cpu_count)
+            async_results = []
+            for idx, batch in enumerate(page_batches):
+                r = pool.apply_async(convert_batch, (_pdf_path, batch))
+                async_results.append((idx, r))
 
-            for future in as_completed(futures):
+            write_log(f"[docx-per-page] {len(async_results)} 个任务已提交")
+
+            for idx, r in async_results:
                 try:
-                    batch_tables = future.result()
+                    batch_tables = r.get(timeout=600)  # 10分钟超时
                     all_tables.extend(batch_tables)
+                    write_log(f"[docx-per-page] 批次 "
+                              f"{completed_batches+1}/{total_batches} 完成: "
+                              f"{len(batch_tables)} 个表格")
                 except Exception as e:
+                    log_exception(f"[docx-per-page] 批次{idx}异常: {e}")
                     print(f"  [docx-per-page] 进程批处理异常: {e}")
 
                 completed_batches += 1
@@ -1428,6 +1336,21 @@ class PDFProcessor:
                     pct = 22 + int(completed_batches / total_batches * 8)
                     progress_callback(pct,
                         f"docx: 批次 {completed_batches}/{total_batches}")
+        except Exception as e:
+            log_exception(f"[docx-per-page] Pool 致命异常: {e}")
+            write_log(f"[docx-per-page] 回退到单进程模式")
+            print(f"  [docx-per-page] 多进程异常，回退单进程: {e}")
+            # 回退：单进程顺序处理
+            for batch in page_batches:
+                try:
+                    batch_tables = convert_batch(_pdf_path, batch)
+                    all_tables.extend(batch_tables)
+                except Exception as e2:
+                    log_exception(f"[docx-per-page] 单进程批次异常: {e2}")
+        finally:
+            if pool is not None:
+                pool.close()
+                pool.join()
 
         # 按页码排序
         all_tables.sort(key=lambda t: t.get("page", 0))
@@ -2739,8 +2662,9 @@ class ExcelExporter:
                 # Sheet 名最长 31 字符
                 if len(sheet_name) > 31:
                     sheet_name = sheet_name[:28] + "..."
-                # 替换非法字符
-                sheet_name = sheet_name.replace(":", "-").replace("[", "(").replace("]", ")")
+                # 替换 Excel Sheet 名非法字符: \ / * ? : [ ]
+                for ch in r'\/:*?[]':
+                    sheet_name = sheet_name.replace(ch, "-")
 
                 if global_idx == 0:
                     ws = wb.active
@@ -2888,8 +2812,10 @@ def _clean_data_cells(data):
             if re.search(r'[\u4e00-\u9fff]|[a-zA-Z]', text):
                 row[c] = text
                 continue
-            # 清洗：保留数字、逗号、小数点、负号、括号、百分号（仅删下划线等杂质）
-            cleaned = re.sub(r'[^0-9,\.\-\(\)\%]', '', text).strip()
+            # 清洗：保留数字、逗号、小数点、负号、括号、百分号、空格
+            # （空格必须保留：列边界缺失时可能合并为 "V1 V2"，后续由
+            #  _split_merged_numeric_cells 根据空格拆分；仅删下划线等杂质）
+            cleaned = re.sub(r'[^0-9,\.\-\(\)\% ]', '', text).strip()
             row[c] = cleaned
     return data
 
@@ -3760,6 +3686,163 @@ def _split_concatenated_column(data):
     return data, split_count
 
 
+def _looks_like_independent_number(s):
+    """检查一个字符串是否像一个完整的独立数值。
+
+    合法数值特征：去除千分位逗号、百分号、货币符号后，可通过 float() 解析，
+    且小数点不超过 1 个。不含字母、中文等非数值内容。
+
+    用于检测"空格分隔的多数字合并单元格"——合法数据中不会在同一个单元格
+    内用空格分隔两个独立数值。
+    """
+    s = s.strip().strip('%').strip('￥$€').strip()
+    if not s:
+        return False
+    if s.startswith('-'):
+        s = s[1:]
+    elif s.startswith('+'):
+        s = s[1:]
+    cleaned = s.replace(',', '')
+    if not any(c.isdigit() for c in cleaned):
+        return False
+    if cleaned.count('.') > 1:
+        return False
+    try:
+        float(cleaned)
+        return True
+    except ValueError:
+        return False
+
+
+def _split_merged_numeric_cells(data):
+    """检测并拆分因列边界缺失导致的数值合并单元格。
+
+    场景：PDF 表格列间距不明显，列边界检测漏掉中间列分隔线，
+    导致相邻两列数值被分配到同一个网格单元格中，如 "453,098,733 407,794,724"。
+
+    检测逻辑：
+      - 对每个单元格按空格 split
+      - 如果所有子串都像独立数值（≥2个），确认是合并错误
+      - 仅当 ALL parts 都是数值时才拆分（保守策略，避免误伤正常文本）
+
+    行列对齐策略（从右向左逐行处理，保证列对齐）：
+      1. 找到某行中所有合并单元格的位置
+      2. 从最右侧的合并格开始处理（保持索引稳定）
+      3. 拆分时优先吸收左侧连续空列（最常见的场景：合并格左侧
+         有未检测到列边界的空列，如 ['资产总额', '', 'V1 V2', ...]）
+      4. 左侧空列不足以容纳所有子串时，右侧部分原地 shift 展开
+      5. 处理完所有行后统一补齐到最大列数
+
+    Returns:
+        (cleaned_data, split_count, has_unresolved):
+          - cleaned_data: 拆分并重新对齐后的数据
+          - split_count: 成功拆分的额外数值个数
+          - has_unresolved: True 表示存在无法完美对齐的行（保留原值未拆）
+    """
+    import copy
+
+    if not data or len(data) < 2:
+        return data, 0, False
+
+    result = copy.deepcopy(data)
+    split_count = 0
+    has_unresolved = False
+
+    # 先确定"基准列数"：取不含合并格的行中最大的非空列数作为对齐目标
+    baseline_cols = 0
+    for row in result:
+        has_any_merge = False
+        non_empty = 0
+        for c in range(len(row)):
+            cell = str(row[c]).strip() if row[c] else ""
+            if not cell:
+                continue
+            non_empty += 1
+            if ' ' in cell:
+                parts = cell.split()
+                if len(parts) >= 2 and all(_looks_like_independent_number(p) for p in parts):
+                    has_any_merge = True
+        if not has_any_merge and non_empty > baseline_cols:
+            baseline_cols = non_empty
+
+    for r in range(len(result)):
+        row = result[r]
+
+        # ---- 第1步：找出该行所有合并位置 ----
+        merge_list = []  # [(col_index, split_parts)]
+        for c in range(len(row)):
+            cell_str = str(row[c]).strip() if row[c] else ""
+            if not cell_str or ' ' not in cell_str:
+                continue
+            parts = cell_str.split()
+            if len(parts) >= 2 and all(_looks_like_independent_number(p) for p in parts):
+                merge_list.append((c, parts))
+
+        if not merge_list:
+            continue
+
+        # ---- 第2步：从右向左处理合并格（保持左侧索引稳定） ----
+        # 先转为可变列表
+        row_work = list(row)
+
+        for c, parts in reversed(merge_list):
+            n = len(parts)
+
+            # 统计左侧连续空列数
+            left_empty = 0
+            for j in range(c - 1, -1, -1):
+                if not row_work[j] or str(row_work[j]).strip() == '':
+                    left_empty += 1
+                else:
+                    break
+
+            # 吸收左侧空列：拆分出的前 left_empty 个值向左填入空列
+            use_left = min(left_empty, n - 1)
+
+            if use_left > 0:
+                # 从 (c - use_left) 开始到 c，依次填入 use_left + 1 个值
+                start_pos = c - use_left
+                for k in range(use_left + 1):
+                    row_work[start_pos + k] = parts[k]
+
+                # 剩余值（如果有）需要向右插入
+                remaining = parts[use_left + 1:]
+                if remaining:
+                    before = row_work[:c + 1]
+                    after = row_work[c + 1:]
+                    row_work = before + remaining + after
+                    # 更新 merge_list 中后续项的列索引（它们还没处理，但在 reversed 中已经处理过了）
+                    # 由于是 reversed 迭代，当前 c 右侧的项已经处理过了，无需修正
+            else:
+                # 没有左侧空列可吸收，直接从当前位置向右展开
+                before = row_work[:c]
+                after = row_work[c + 1:]
+                row_work = before + parts + after
+
+            split_count += n - 1
+
+        # ---- 第3步：对齐检查 ----
+        # 如果该行拆分后列数与基准列数差距大，标记为未解决
+        if baseline_cols > 0:
+            expanded_cols = len(row_work)
+            if expanded_cols > baseline_cols + 2:  # 允许 2 列浮动
+                has_unresolved = True
+
+        result[r] = row_work
+
+    if split_count == 0:
+        return result, 0, False
+
+    # ---- 最终对齐：补齐到最大列数 ----
+    max_cols = max((len(row) for row in result), default=0)
+    if max_cols > 0:
+        for r in range(len(result)):
+            while len(result[r]) < max_cols:
+                result[r].append("")
+
+    return result, split_count, has_unresolved
+
+
 def _auto_merge_split_tables(results, liteparse_data=None):
     """检测并合并被 pdf2docx 拆分断裂的相邻表格。
     无论同页还是跨页，只要相邻都参与合并判断。
@@ -4111,6 +4194,14 @@ def _auto_clean_tables(results, progress_callback=None, liteparse_data=None):
         if split_count > 0:
             print(f"  [清洗] 表格{i+1} 拆分拼接列: {split_count}列")
 
+        # 5.75 拆分因列边界缺失导致的数值合并单元格（如 "453,098,733 407,794,724"）
+        table["data"], numeric_merge_count, has_unresolved = _split_merged_numeric_cells(table["data"])
+        if numeric_merge_count > 0:
+            table["_has_merged_numeric_cells"] = True
+            if has_unresolved:
+                table["_has_unresolved_merged_cells"] = True
+            print(f"  [清洗] 表格{i+1} 拆分数值合并单元格: {numeric_merge_count}个数值")
+
         # 5.8 列规范化：确保清洗后所有行列数一致（修复紧凑化导致的锯齿数组）
         table["data"] = _normalize_table_columns(table["data"])
 
@@ -4148,6 +4239,8 @@ class ProcessingWorker(QThread):
     def run(self):
         context = None
         try:
+            from codes.pdf_extractor._log import write_log
+            write_log(f"[Worker] 开始解析: {self.pdf_path}, mode={self.mode}")
             self.progress.emit(5, "正在检测PDF类型...")
 
             # ---- 创建 PDF 共享上下文（一次打开，全流程复用） ----
@@ -4437,6 +4530,37 @@ class ProcessingWorker(QThread):
                 print(f"  [自动分割] 分割异常（不影响主流程）: {e}")
                 traceback.print_exc()
 
+            # ---- 兜底表格分类（liteparse 不可用或分割失败时，确保每个表都有 category 标记）----
+            if not seg_report:
+                from codes.table_validator.table_classifier import classify_page
+                print("  [兜底分类] liteparse 未产出分割结果，使用基础分类器标记表格类别...")
+
+                def _apply_classify(tables_list: list):
+                    for t in tables_list:
+                        t_data = t.get("data", [])
+                        if t_data:
+                            cr = classify_page(t_data, t.get("page", 0))
+                            t["is_real_table"] = cr.is_real_table
+                            t["is_complete"] = cr.is_real_table
+                            t["table_category"] = "财务数据表" if cr.is_real_table else "非表格"
+                            t["has_header"] = cr.checks.get("has_numeric_col", False)
+                            t["has_numeric_data"] = cr.checks.get("has_numeric_col", False)
+                            t["quality_decision"] = "accepted" if cr.is_real_table else "rejected"
+                            t["quality_decision_reason"] = cr.reason
+                            t["quality_decision_score"] = cr.confidence
+                            t["quality_flags"] = cr.checks
+                        else:
+                            t["table_category"] = "非表格"
+                            t["quality_decision"] = "rejected"
+                        t["segment_source"] = "original"
+
+                _apply_classify(results)
+                _apply_classify(tables_before_segmentation)
+                classified_real = sum(1 for t in results if t.get("is_real_table"))
+                print(f"  [兜底分类] 完成: {len(results)} 张表, "
+                      f"财务数据表 {classified_real} 张, "
+                      f"非表格 {len(results) - classified_real} 张")
+
             self.progress.emit(98, "处理完成")
 
             self.finished.emit({
@@ -4454,8 +4578,16 @@ class ProcessingWorker(QThread):
                 "failed_count": len([r for r in results if r.get("parse_status") == "failed"]),
                 "total_pages": total_pages
             })
+            from codes.pdf_extractor._log import write_log
+            write_log(f"[Worker] 解析完成: {len(results)} 表, {total_pages} 页", "OK")
 
-        except Exception as e:
+        except BaseException as e:
+            # 用 BaseException 而非 Exception：liteparse 底层 Rust/PyO3
+            # 的 PanicException 继承自 BaseException，否则抓不住会闪退
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            from codes.pdf_extractor._log import log_exception
+            log_exception(f"[Worker] run() 异常: {e}")
             traceback.print_exc()
             self.error.emit(str(e))
         finally:
@@ -4506,5 +4638,9 @@ class ProcessingWorker(QThread):
         except ImportError:
             print("  [liteparse] liteparse 未安装，跳过旁路解析")
             print("  [liteparse] 安装方法: pip install liteparse")
-        except Exception as e:
+        except BaseException as e:
+            # 用 BaseException 而非 Exception，因为 liteparse 底层是 Rust/PyO3，
+            # PanicException 继承自 BaseException，不用 Exception 抓不住会闪退
             print(f"  [liteparse] 旁路解析异常（不影响主流程）: {e}")
+            from codes.pdf_extractor._log import log_exception
+            log_exception(f"[liteparse] 旁路异常: {e}")

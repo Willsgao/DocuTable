@@ -3,6 +3,7 @@
 处理Excel导出等功能
 """
 import gc
+import os
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
@@ -22,11 +23,17 @@ class ExportManager:
             return
 
         tables = self.mw.processed_results.get('tables', [])
-        success_tables = [t for t in tables if t.get('parse_status') == 'success']
+        # 只导出：人工标记为表格的 + 分类为财务数据表的（且解析成功的）
+        success_tables = [t for t in tables
+                          if t.get('parse_status') == 'success'
+                          and (t.get('manual_mark') == 'table'
+                               or t.get('table_category') == '财务数据表')]
         empty_tables = [t for t in tables if t.get('parse_status') == 'empty']
 
         if not success_tables and not empty_tables:
-            QMessageBox.warning(self.mw, "警告", "没有可导出的表格数据")
+            QMessageBox.warning(self.mw, "警告",
+                                "没有可导出的表格数据\n"
+                                "（导出规则：人工标记为「人工表格」+ 自动识别为「财务数据表」的页面）")
             return
 
         # 如果有空数据但没有成功数据，提示用户
@@ -42,7 +49,7 @@ class ExportManager:
         else:
             export_tables = success_tables
 
-        filename = self.mw.current_file.split('/')[-1].replace('.pdf', '')
+        filename = os.path.splitext(os.path.basename(self.mw.current_file))[0]
         file_path, _ = QFileDialog.getSaveFileName(
             self.mw, "导出Excel",
             f"{filename}_tables.xlsx",
@@ -65,7 +72,12 @@ class ExportManager:
             success = exporter.export_tables(table_pages, output_path)
 
             if success:
-                QMessageBox.information(self.mw, "导出成功", f"文件已导出到:\n{output_path}")
+                finance_count = sum(1 for t in table_pages if t.get('table_category') == '财务数据表')
+                manual_count = sum(1 for t in table_pages if t.get('table_category') != '财务数据表')
+                QMessageBox.information(self.mw, "导出成功",
+                    f"文件已导出到:\n{output_path}\n\n"
+                    f"共 {len(table_pages)} 页表格"
+                    f"（财务数据表: {finance_count}，人工标记: {manual_count}）")
             else:
                 QMessageBox.warning(self.mw, "导出失败", "导出过程中出现问题")
         except Exception as e:

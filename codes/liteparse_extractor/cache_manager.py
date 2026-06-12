@@ -59,13 +59,38 @@ def _compute_pdf_hash(pdf_path: str) -> str:
 # 缓存目录
 # ============================================================
 
+def _sanitize_pdf_name(pdf_name: str, pdf_path: str = "") -> str:
+    """清理 PDF 文件名以用作目录名，与 pdf_extractor/utils.py 的 get_pdf_cache_dir 保持一致。
+
+    处理全角/半角冒号、Windows 非法字符、乱码等问题。
+    """
+    pdf_name = pdf_name[:100]
+    # 移除 Windows 文件名非法字符：\\ / : * ? \" < > |
+    for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
+        pdf_name = pdf_name.replace(ch, '_')
+    # strip 首尾空格和点号
+    pdf_name = pdf_name.strip().rstrip('.')
+    # 仅保留中文、英文、数字、下划线、连字符
+    sanitized = ''.join(
+        c if c == '_' or c == '-' or c.isalnum() or '\u4e00' <= c <= '\u9fff' else '_'
+        for c in pdf_name
+    )
+    # 如果 sanitize 后为空，用文件 hash 兜底
+    if not sanitized.strip('_') and pdf_path:
+        file_hash = _compute_pdf_hash(pdf_path)
+        sanitized = file_hash[:16]
+    return sanitized
+
+
 def _get_cache_dir(pdf_path: str) -> Path:
     """获取 liteparse 专属缓存目录。
 
-    data/mid_cache/<pdf_stem>/liteparse/
+    data/mid_cache/<sanitized_pdf_name>/liteparse/
+    文件名清理与主缓存路径完全一致，兼容含特殊字符（如全角冒号）的PDF文件名。
     """
     pdf_name = Path(pdf_path).stem
-    return MID_CACHE_ROOT / pdf_name / CACHE_SUBDIR
+    sanitized = _sanitize_pdf_name(pdf_name, pdf_path)
+    return MID_CACHE_ROOT / sanitized / CACHE_SUBDIR
 
 
 def _ensure_cache_dir(pdf_path: str) -> Path:

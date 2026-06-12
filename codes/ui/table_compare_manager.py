@@ -4,6 +4,7 @@
 负责表格对比预览、筛选、导航、编辑等功能
 """
 import os
+import re
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QApplication,
@@ -122,10 +123,8 @@ class TableCompareManager(QObject):
             "📊 数据表(缺表头)",
             "📋 文本列表",
             "⚠ 非标准",
-            "✅ 表格",
-            "❌ 非表格",
-            "✅ 表格-人工",
-            "❌ 非表格-人工",
+            "🔧 人工表格",
+            "🚫 人工非表格",
         ])
         self.table_type_filter.setToolTip("筛选显示的页面类型")
         self.table_type_filter.currentIndexChanged.connect(self.on_table_type_filter_changed)
@@ -294,6 +293,26 @@ class TableCompareManager(QObject):
 
         btn_layout.addSpacing(8)
 
+        # 表格结构扫描按钮（纯规则，零 API 成本）
+        self.scan_structure_btn = QPushButton("🔍 扫描表格结构")
+        self.scan_structure_btn.setToolTip(
+            "自动扫描「数据表(缺表头)」「文本列表」「非标准」三类表格，\n"
+            "识别其中可能遗漏的财务表格结构。\n"
+            "发现的表格将自动提取为新表格，原表对应区域删除。\n"
+            "⚠ 纯规则驱动，零 API 成本"
+        )
+        self.scan_structure_btn.setFocusPolicy(Qt.NoFocus)
+        self.scan_structure_btn.clicked.connect(self.on_table_structure_scan)
+        self.scan_structure_btn.setStyleSheet("""
+            QPushButton { background-color: #27AE60; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #1E8449; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.scan_structure_btn)
+
+        btn_layout.addSpacing(8)
+
         # liteparse 表格分割按钮（纯规则，零 API 成本）—— 已改为自动运行，此按钮用于查看报告
         self.segmenter_btn = QPushButton("📊 查看分割报告")
         self.segmenter_btn.setToolTip(
@@ -364,6 +383,17 @@ class TableCompareManager(QObject):
         """)
         btn_layout.addWidget(self.remove_spaces_btn)
 
+        # 删除空列按钮
+        self.remove_empty_cols_btn = QPushButton("🗑️ 删除空列")
+        self.remove_empty_cols_btn.setToolTip("删除整个表格中没有任何内容的空白列")
+        self.remove_empty_cols_btn.setFocusPolicy(Qt.NoFocus)
+        self.remove_empty_cols_btn.clicked.connect(self.remove_empty_columns)
+        self.remove_empty_cols_btn.setStyleSheet("""
+            QPushButton { background-color: #E67E22; color: white; border: none; border-radius: 4px; padding: 6px 12px; font-size: 12px; }
+            QPushButton:hover { background-color: #D35400; }
+        """)
+        btn_layout.addWidget(self.remove_empty_cols_btn)
+
         # 清洗数据按钮
         self.clean_data_btn = QPushButton("🧼 清洗数据")
         self.clean_data_btn.setToolTip("选中区域只保留数值、千分位、小数点、负号、括号、百分号")
@@ -374,6 +404,17 @@ class TableCompareManager(QObject):
             QPushButton:hover { background-color: #1E8449; }
         """)
         btn_layout.addWidget(self.clean_data_btn)
+        
+        # 选区生成表格按钮
+        self.extract_selection_btn = QPushButton("📋 选区生成表格")
+        self.extract_selection_btn.setToolTip("选中表格中的数据区域，一键复制为新表格（自动归入「人工表格」分类）")
+        self.extract_selection_btn.setFocusPolicy(Qt.NoFocus)
+        self.extract_selection_btn.clicked.connect(self.on_extract_selection_table)
+        self.extract_selection_btn.setStyleSheet("""
+            QPushButton { background-color: #8E44AD; color: white; border: none; border-radius: 4px; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #7D3C98; }
+        """)
+        btn_layout.addWidget(self.extract_selection_btn)
         
         btn_layout.addSpacing(10)
         
@@ -529,6 +570,19 @@ class TableCompareManager(QObject):
         self.goto_export_btn.clicked.connect(self.batch_export_tables)
         self.goto_export_btn.setEnabled(False)
         table_layout.addWidget(self.goto_export_btn)
+        
+        # ★ 精简按钮：只保留扫描和选区生成，其余隐藏
+        self.merge_prev_btn.hide()
+        self.toggle_original_btn.hide()
+        self.llm_boundary_btn.hide()
+        self.segmenter_btn.hide()
+        self.segment_view_btn.hide()
+        self.diff_highlight_btn.hide()
+        self.remove_spaces_btn.hide()
+        self.clean_data_btn.hide()
+        self.remove_empty_cols_btn.hide()
+        self.undo_btn.hide()
+        self.redo_btn.hide()
         
         # 内部变量
         self.current_preview_index = 0
@@ -688,6 +742,10 @@ class TableCompareManager(QObject):
         menu = QMenu()
         change_page_action = menu.addAction("✏️ 修改页号")
         menu.addSeparator()
+        mark_table_action = menu.addAction("🔧 标记为人工表格")
+        mark_non_table_action = menu.addAction("🚫 标记为人工非表格")
+        clear_mark_action = menu.addAction("🔄 清除人工标记")
+        menu.addSeparator()
         insert_before = menu.addAction("在上方插入新表")
         insert_after = menu.addAction("在下方插入新表")
         menu.addSeparator()
@@ -695,6 +753,12 @@ class TableCompareManager(QObject):
         action = menu.exec_(self.table_list_widget.mapToGlobal(pos))
         if action == change_page_action:
             self._change_table_page(row)
+        elif action == mark_table_action:
+            self._set_manual_mark(row, "table")
+        elif action == mark_non_table_action:
+            self._set_manual_mark(row, "non_table")
+        elif action == clear_mark_action:
+            self._set_manual_mark(row, "")
         elif action == insert_before:
             self._insert_blank_table(row, before=True)
         elif action == insert_after:
@@ -737,6 +801,109 @@ class TableCompareManager(QObject):
         self.apply_table_filter(preserve_selection=insert_idx)
         print(f"  [手动] 在P{page}页插入空白表格(位置{insert_idx})")
 
+    def on_extract_selection_table(self):
+        """从当前 table_widget 的选中区域提取数据，生成新的表格条目"""
+        tw = self.table_widget
+        if not tw:
+            self._show_status("没有可用的表格")
+            return
+
+        selection = tw.selectedRanges()
+        if not selection:
+            self._show_status("请先在表格中选中要提取的数据区域")
+            return
+
+        r = selection[0]
+        if r.rowCount() < 1:
+            self._show_status("请至少选中一行数据")
+            return
+
+        # 读取选中区域的数据
+        data = []
+        for row in range(r.topRow(), r.bottomRow() + 1):
+            row_data = []
+            for col in range(r.leftColumn(), r.rightColumn() + 1):
+                item = tw.item(row, col)
+                row_data.append(item.text() if item else "")
+            data.append(row_data)
+
+        # 获取当前所在页码
+        idx = self._get_current_table_index()
+        if idx is not None:
+            tables = self._get_active_tables()
+            page_num = tables[idx].get('page', 0)
+        else:
+            self._show_status("无法确定当前页码")
+            return
+
+        self.add_table_from_selection(page_num, data, source_idx=idx)
+
+    def add_table_from_selection(self, page_num, data, source_idx=None):
+        """将表格选中区域的数据作为新表格条目插入
+        Args:
+            page_num: 页码（从1开始）
+            data: 2D list[list[str]] 表格数据
+            source_idx: 源表格在 tables 中的索引（用于标记已提取）
+        """
+        tables = self._get_active_tables()
+
+        # 生成表格名称：P{页码}_手动提取，同页多表加序号
+        same_page_count = sum(
+            1 for t in tables if t.get('page') == page_num and t.get('extractor') == 'manual_selection'
+        )
+        seq_suffix = f"_{same_page_count + 1}" if same_page_count > 0 else ""
+        title = f"P{page_num}_手动提取{seq_suffix}"
+
+        # ★ 标记源表：已被提取数据（在 insert 前保存引用，避免索引偏移）
+        if source_idx is not None and source_idx < len(tables):
+            source_table = tables[source_idx]
+            if '_extracted_to' not in source_table:
+                source_table['_extracted_to'] = []
+            source_table['_extracted_to'].append(title)
+            source_table['_data_extracted'] = True
+
+        new_table = {
+            "page": page_num,
+            "type": "text",
+            "data": data,
+            "extractor": "manual_selection",
+            "title": title,
+            "parse_status": "success",
+            "parse_message": "从表格选区提取",
+            "manual_mark": "table",
+            "table_category": "",
+            "is_manual": True,
+        }
+
+        # 按页码找到正确的插入位置（同页表格追加到最后）
+        insert_idx = len(tables)
+        for i, t in enumerate(tables):
+            if t.get('page', 0) > page_num:
+                insert_idx = i
+                break
+            elif t.get('page', 0) == page_num:
+                insert_idx = i + 1
+
+        tables.insert(insert_idx, new_table)
+        self._set_active_tables(tables)
+        self.has_unsaved_changes = True
+
+        # 自动切换到人工表格筛选视图，定位到新条目
+        self.table_type_filter.setCurrentText("🔧 人工表格")
+        self.apply_table_filter(preserve_selection=insert_idx)
+
+        # 更新保存按钮状态
+        if self.save_status_btn:
+            self.save_status_btn.setText("💾 保存更改")
+            self.save_status_btn.setEnabled(True)
+
+        print(f"  [选区提取] P{page_num}页 → 表格'{title}'({len(data)}行×{max(len(r) for r in data)}列), 位置{insert_idx}")
+
+    def _show_status(self, message):
+        """在状态栏显示消息"""
+        if hasattr(self.main_window, 'status_bar'):
+            self.main_window.status_bar.showMessage(message, 5000)
+
     def _delete_table(self, list_row):
         """删除指定列表行的表格"""
         tables = self._get_active_tables()
@@ -753,6 +920,32 @@ class TableCompareManager(QObject):
         new_idx = min(origin_idx, len(tables) - 1) if tables else 0
         self.apply_table_filter(preserve_selection=new_idx)
         print(f"  [手动] 已删除 P{deleted.get('page',0)} 页的表格")
+
+    def _set_manual_mark(self, list_row, mark):
+        """设置表格的人工标记（table / non_table / 清除）
+        Args:
+            list_row: 列表中的当前行号
+            mark: 'table'=人工表格, 'non_table'=人工非表格, ''=清除
+        """
+        tables = self._get_active_tables()
+        if list_row < 0 or list_row >= len(self.filtered_indices):
+            return
+        origin_idx = self.filtered_indices[list_row]
+        if origin_idx >= len(tables):
+            return
+        table = tables[origin_idx]
+        old_mark = table.get('manual_mark', '')
+        if old_mark == mark:
+            return  # 已经是相同标记，无需重复操作
+        table['manual_mark'] = mark
+        self.has_unsaved_changes = True
+        page = table.get('page', 0)
+        mark_labels = {"table": "人工表格", "non_table": "人工非表格", "": "已清除"}
+        print(f"  [手动标记] P{page}页 → {mark_labels.get(mark, mark)}")
+        self.save_status_btn.setText("💾 保存更改")
+        self.save_status_btn.setEnabled(True)
+        self.main_window.status_bar.showMessage(f"已标记 P{page}页为 {mark_labels.get(mark, mark)}，请点击「保存」持久化", 3000)
+        self.apply_table_filter(preserve_selection=origin_idx)
     
     def on_cell_changed(self, item):
         """单元格改变 - 自动保存编辑到数据源"""
@@ -807,6 +1000,7 @@ class TableCompareManager(QObject):
             category = table.get("table_category", "")
             confidence = table.get("financial_confidence", 0.0)
 
+            manual_mark = table.get('manual_mark', '')
             if filter_text == "全部":
                 self.filtered_indices.append(i)
             elif filter_text == "💰 财务数据表":
@@ -821,14 +1015,12 @@ class TableCompareManager(QObject):
             elif filter_text == "⚠ 非标准":
                 if category in ("目录", "非标准表格", "空表", "图表标签"):
                     self.filtered_indices.append(i)
-            elif filter_text == "✅ 表格" and is_success:
-                self.filtered_indices.append(i)
-            elif filter_text == "❌ 非表格" and not is_success:
-                self.filtered_indices.append(i)
-            elif filter_text == "✅ 表格-人工" and is_success and table.get('is_manual', False):
-                self.filtered_indices.append(i)
-            elif filter_text == "❌ 非表格-人工" and not is_success and table.get('is_manual', False):
-                self.filtered_indices.append(i)
+            elif filter_text == "🔧 人工表格":
+                if manual_mark == "table":
+                    self.filtered_indices.append(i)
+            elif filter_text == "🚫 人工非表格":
+                if manual_mark == "non_table":
+                    self.filtered_indices.append(i)
         
         self.filtered_index = 0
         self.update_filter_nav_buttons()
@@ -846,7 +1038,9 @@ class TableCompareManager(QObject):
             is_text = table.get('type') == 'text'
             status_icon = "📝" if is_text else ("✔" if table.get('parse_status') == 'success' else "✘")
             ext = table.get('extractor', '')
-            if ext == "manual":
+            if ext == "auto_scan":
+                ext_tag = "🤖"
+            elif ext == "manual":
                 ext_tag = "M"
             elif ext == "docx_text":
                 ext_tag = "T"
@@ -928,7 +1122,21 @@ class TableCompareManager(QObject):
                 if merge_info:
                     quality_icon = merge_info + quality_icon
 
-            item_text = f"{quality_icon}{confidence_badge}{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{merge_mark}{title_str}"
+            # 人工标记图标
+            manual_mark = table.get('manual_mark', '')
+            manual_mark_icon = ""
+            if manual_mark == "table":
+                manual_mark_icon = " 🔧"
+            elif manual_mark == "non_table":
+                manual_mark_icon = " 🚫"
+
+            # 数据已提取标记
+            extracted_mark = " 📤" if table.get('_data_extracted') else ""
+
+            # 自动扫描标记
+            auto_scan_mark = " 🤖" if table.get('_auto_scan_hit') else ""
+
+            item_text = f"{quality_icon}{confidence_badge}{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{merge_mark}{manual_mark_icon}{extracted_mark}{auto_scan_mark}{title_str}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
 
@@ -954,6 +1162,15 @@ class TableCompareManager(QObject):
                 tooltip_parts.append(f"理由: {reason}")
             if merge_tooltip:
                 tooltip_parts.append(merge_tooltip)
+            if manual_mark:
+                mark_labels = {"table": "人工表格（将纳入导出）", "non_table": "人工非表格（不导出）"}
+                tooltip_parts.append(f"人工标记: {mark_labels.get(manual_mark, manual_mark)}")
+            if table.get('_auto_scan_hit'):
+                qr = table.get('quality_reason', '')
+                tooltip_parts.append(f"🤖 自动扫描发现 | {qr}" if qr else "🤖 自动扫描发现")
+            extracted_to_list = table.get('_extracted_to')
+            if extracted_to_list:
+                tooltip_parts.append(f"数据已被提取 → {', '.join(extracted_to_list)}")
             if tooltip_parts:
                 item.setToolTip("\n".join(tooltip_parts))
             self.table_list_widget.addItem(item)
@@ -1114,11 +1331,21 @@ class TableCompareManager(QObject):
         
         # 更新表格类型标签
         parse_status = table.get('parse_status', '')
+        category = table.get('table_category', '')
+        manual_mark = table.get('manual_mark', '')
         if table.get('type') == 'text' or parse_status == 'text':
             status_text = "📝 文本"
         else:
             status_text = "✅ 表格" if parse_status == 'success' else "❌ 非表格"
-        self.table_type_label.setText(f"状态: {status_text}")
+        # 附加分类信息和人工标记
+        extra_info = ""
+        if category:
+            extra_info = f" | {category}"
+        if manual_mark == "table":
+            extra_info += " | 🔧人工表格"
+        elif manual_mark == "non_table":
+            extra_info += " | 🚫人工非表格"
+        self.table_type_label.setText(f"状态: {status_text}{extra_info}")
         
         # 更新上下文文本展示区
         context_text = table.get('context_text', '')
@@ -1139,7 +1366,20 @@ class TableCompareManager(QObject):
                 self.context_text_browser.setPlainText("（无上下文描述文字）")
         
         # 根据状态设置标签颜色
-        if table.get('type') == 'text' or parse_status == 'text':
+        manual_mark_for_color = table.get('manual_mark', '')
+        if manual_mark_for_color == "table":
+            # 人工标记为表格：蓝色强调
+            self.table_type_label.setStyleSheet("""
+                QLabel { color: #2471A3; font-weight: bold; padding: 2px 8px;
+                         background-color: #EAF2F8; border-radius: 4px; border: 1px solid #2980B9; }
+            """)
+        elif manual_mark_for_color == "non_table":
+            # 人工标记为非表格：橙色警告
+            self.table_type_label.setStyleSheet("""
+                QLabel { color: #B7950B; font-weight: bold; padding: 2px 8px;
+                         background-color: #FEF9E7; border-radius: 4px; border: 1px solid #F39C12; }
+            """)
+        elif table.get('type') == 'text' or parse_status == 'text':
             self.table_type_label.setStyleSheet("""
                 QLabel { color: #8E44AD; font-weight: bold; padding: 2px 8px;
                          background-color: #F4ECF7; border-radius: 4px; border: 1px solid #8E44AD; }
@@ -1321,6 +1561,10 @@ class TableCompareManager(QObject):
                 parts.append(f"真表格: {'是' if is_real else '否'}")
             if parts:
                 tip = " | ".join(parts) + " | " + tip
+        if table.get("_has_unresolved_merged_cells"):
+            tip = "⚠️ 数值列合并未完全解决，请人工核对 | " + tip
+        elif table.get("_has_merged_numeric_cells"):
+            tip = "⚠️ 检测到数值列合并，已自动拆分 | " + tip
         if self.table_locked:
             tip = "🔒 已锁定 | " + tip
         self.stats_label.setText(tip)
@@ -2211,6 +2455,45 @@ class TableCompareManager(QObject):
             "注意：仅删除了每行左右两端的空单元格，内部的不会删除。"
         )
 
+    def remove_empty_columns(self):
+        """删除当前表格中所有完全空白的列"""
+        self.save_current_table_state()
+        table = self.table_widget
+        rows = table.rowCount()
+        cols = table.columnCount()
+        if rows == 0 or cols == 0:
+            return
+
+        # 找出空列索引
+        empty_cols = []
+        for c in range(cols):
+            if all(not (table.item(r, c) and table.item(r, c).text().strip())
+                   for r in range(rows)):
+                empty_cols.append(c)
+
+        if not empty_cols:
+            QMessageBox.information(self.main_window, "无空列", "当前表格没有完全空白的列。")
+            return
+
+        # 用工具函数同步清理数据源
+        idx = self._get_current_table_index()
+        if idx is not None:
+            tables = self._get_active_tables()
+            data = tables[idx].get("data", [])
+            if data:
+                self._clean_empty_columns(data)
+                tables[idx]["data"] = data
+
+        # 从UI删除列（从大到小）
+        for c in sorted(empty_cols, reverse=True):
+            table.removeColumn(c)
+
+        print(f"  [删除空列] 共删除 {len(empty_cols)} 个空列")
+        QMessageBox.information(
+            self.main_window, "完成",
+            f"已删除 {len(empty_cols)} 个空白列。"
+        )
+
     def clean_data(self):
         """清洗选中区域数据：只保留数值、千分位、小数点、负号、括号、百分号"""
         table = self.table_widget
@@ -2582,7 +2865,7 @@ class TableCompareManager(QObject):
         self.main_window.status_bar.showMessage("页面状态已保存，下方表格可手动编辑", 3000)
     
     def toggle_current_page_type(self):
-        """切换页面类型"""
+        """切换页面类型（人工表格 ↔ 人工非表格）"""
         if not self.edit_mode:
             QMessageBox.information(self.main_window, "提示", "请先点击「开始编辑」进入编辑模式")
             return
@@ -2605,30 +2888,26 @@ class TableCompareManager(QObject):
             return
         
         table = tables[origin_idx]
-        current_status = table.get('parse_status', 'failed')
-        new_status = 'success' if current_status == 'failed' else 'failed'
-        table['parse_status'] = new_status
+        # 反转 manual_mark：table ↔ non_table（这才是筛选器实际使用的字段）
+        current_mark = table.get('manual_mark', '')
+        if current_mark == 'table':
+            new_mark = 'non_table'
+        elif current_mark == 'non_table':
+            new_mark = 'table'
+        else:
+            new_mark = 'non_table'  # 无标记时默认转为非表格
+        
+        table['manual_mark'] = new_mark
         table['is_manual'] = True
         self.has_unsaved_changes = True
         
-        # 更新列表文本（保留页号_序号格式）
         page = table.get('page', 0)
-        # 计算本表在当前页的序号
-        seq = sum(1 for t in tables[:origin_idx] if t.get('page') == page) + 1
-        ext = table.get('extractor', '')
-        if ext == "manual": ext_tag = "M"
-        elif ext.startswith("docx"): ext_tag = "D"
-        else: ext_tag = "V2"
-        title = table.get('title', '') or ''
-        title_str = f" {title[:8]}" if title else ""
-        status_icon = "✅" if new_status == 'success' else "❌"
-        self.table_list_widget.item(row).setText(f"{status_icon} P{page}_{seq} [{ext_tag}]{title_str}")
-        
-        # 标记保存按钮为可保存状态
+        mark_labels = {"table": "人工表格", "non_table": "人工非表格"}
         self.save_status_btn.setText("💾 保存更改")
-        self.main_window.status_bar.showMessage(f"已反转第{table['page']}页类型，点击「保存」可持久化", 3000)
+        self.main_window.status_bar.showMessage(
+            f"已反转 P{page}页 → {mark_labels.get(new_mark, new_mark)}，点击「保存」可持久化", 3000)
         
-        # 重新应用筛选，保持当前位置或跳到下一个
+        # 重新应用筛选
         self.apply_table_filter(preserve_selection=origin_idx)
     
     def batch_export_tables(self):
@@ -3693,6 +3972,637 @@ class TableCompareManager(QObject):
                 tables.pop(idx)
 
         return len(valid_pairs)
+
+    # ==================== 表格结构自动扫描 ====================
+
+    def on_table_structure_scan(self):
+        """双向扫描：财务表误判→移入非表格，非财务表命中→提取为人工表格"""
+        tables = self._get_active_tables()
+        if not tables:
+            self._show_status("没有可用的表格数据")
+            return
+
+        # 收集两类目标表格
+        non_fin_items = []   # 非财务类：命中后提取
+        fin_items = []       # 财务类：不命中则降级
+        for idx, table in enumerate(tables):
+            cat = table.get("table_category", "")
+            data = table.get("data", [])
+            if not data or not isinstance(data, list) or len(data) == 0:
+                continue
+            if table.get("manual_mark") or table.get("_data_extracted"):
+                continue
+            if cat == "财务数据表":
+                fin_items.append((idx, table))
+            elif cat in ("数据表(缺表头)", "文本列表",
+                         "目录", "非标准表格", "空表", "图表标签"):
+                non_fin_items.append((idx, table))
+
+        if not non_fin_items and not fin_items:
+            QMessageBox.information(self.main_window, "无目标",
+                "当前没有可扫描的表格（已人工标记或已提取的已跳过）。")
+            return
+
+        # 确认对话框
+        parts = []
+        if non_fin_items:
+            parts.append(f"• 非财务类 {len(non_fin_items)} 张 → 命中则标记为「人工表格」")
+        if fin_items:
+            parts.append(f"• 财务表 {len(fin_items)} 张 → 不命中则降级为「人工非表格」")
+        reply = QMessageBox.question(
+            self.main_window, "双向扫描",
+            f"将对 {len(non_fin_items) + len(fin_items)} 张表格进行双向检查：\n\n"
+            + "\n".join(parts) + "\n\n是否继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        scan_log = []
+        promoted_count = 0  # 非财务→标记为人工表格
+        demoted_count = 0    # 财务→降级为非表格
+
+        # ===== 1. 处理非财务类：命中则提取 =====
+        non_fin_items.sort(key=lambda x: x[0], reverse=True)
+        for idx, table in non_fin_items:
+            tables = self._get_active_tables()
+            if idx >= len(tables):
+                continue
+            table = tables[idx]
+            data = table.get("data", [])
+            if not data:
+                continue
+
+            cat = table.get("table_category", "")
+            page = table.get("page", 0)
+            title = table.get("title", "") or ""
+
+            result = self._scan_table_structure(data, table_category=cat)
+            scores = result.get("scores", {})
+            score_line = (f"  P{page} [{cat}] {title[:20]} "
+                          f"→ 总分{result['confidence']} "
+                          f"(列{scores.get('col',0):.0f}+"
+                          f"数{scores.get('num',0):.0f}+"
+                          f"头{scores.get('header',0):.0f}+"
+                          f"密{scores.get('density',0):.0f}) "
+                          f"{'✅ 标记' if result.get('is_financial_table') else '❌ ' + result.get('reason','')}")
+            scan_log.append(score_line)
+            print(f"[自动扫描·非财务]{score_line}")
+
+            if result.get("is_financial_table"):
+                table["manual_mark"] = "table"
+                table["is_manual"] = True
+                table["table_category"] = ""  # 从原分类中移除
+                table["parse_message"] = f"自动扫描标记: {result.get('reason', '疑似财务表格')}"
+                promoted_count += 1
+
+        # ===== 2. 处理财务类：不命中则降级为非表格 =====
+        fin_items.sort(key=lambda x: x[0], reverse=True)
+        for idx, table in fin_items:
+            tables = self._get_active_tables()
+            if idx >= len(tables):
+                continue
+            table = tables[idx]
+            data = table.get("data", [])
+            if not data:
+                continue
+
+            cat = table.get("table_category", "")
+            page = table.get("page", 0)
+            title = table.get("title", "") or ""
+
+            result = self._scan_table_structure(data, table_category=cat)
+            scores = result.get("scores", {})
+            score_line = (f"  P{page} [财务数据表] {title[:20]} "
+                          f"→ 总分{result['confidence']} "
+                          f"(列{scores.get('col',0):.0f}+"
+                          f"数{scores.get('num',0):.0f}+"
+                          f"头{scores.get('header',0):.0f}+"
+                          f"密{scores.get('density',0):.0f}) "
+                          f"{'⚠ 降级' if not result.get('is_financial_table') else '✅ 保留'}")
+            scan_log.append(score_line)
+            print(f"[自动扫描·财务]{score_line}")
+
+            if not result.get("is_financial_table"):
+                table["manual_mark"] = "non_table"
+                table["is_manual"] = True
+                table["table_category"] = ""  # 从财务分类中移除
+                table["parse_message"] = f"自动扫描降级: {result.get('reason', '非财务表格')}"
+                demoted_count += 1
+
+        # ===== 自动清理所有表格的空列 =====
+        tables = self._get_active_tables()
+        total_cleaned = 0
+        for t in tables:
+            data = t.get("data", [])
+            if data:
+                _, removed = self._clean_empty_columns(data)
+                if removed > 0:
+                    total_cleaned += removed
+        if total_cleaned > 0:
+            scan_log.append(f"\n🧹 自动清理空列：共删除 {total_cleaned} 个空白列")
+
+        # 刷新和保存
+        if promoted_count > 0 or demoted_count > 0 or total_cleaned > 0:
+            self.has_unsaved_changes = True
+            self.save_status_btn.setText("💾 保存更改")
+            self.save_status_btn.setEnabled(True)
+            self.apply_table_filter()
+            self._schedule_auto_save()
+
+        # 构造详细报告
+        report_lines = []
+        report_lines.append(f"{'═' * 40}")
+        parts = []
+        if promoted_count > 0:
+            parts.append(f"标记 {promoted_count}")
+        if demoted_count > 0:
+            parts.append(f"降级 {demoted_count}")
+        status = '+'.join(parts) if parts else '无变更'
+        report_lines.append(f"  扫描报告：{len(scan_log)} 张 → {status}")
+        report_lines.append(f"{'═' * 40}")
+
+        # 分组显示
+        promote_lines = [l for l in scan_log if "✅ 标记" in l]
+        keep_lines = [l for l in scan_log if "✅ 保留" in l]
+        demote_lines = [l for l in scan_log if "⚠ 降级" in l]
+        miss_lines = [l for l in scan_log if "❌" in l]
+
+        if promote_lines:
+            report_lines.append("【非财务→人工表格】")
+            report_lines.extend(promote_lines)
+        if demote_lines:
+            report_lines.append(f"\n【财务→人工非表格】")
+            report_lines.extend(demote_lines)
+        if keep_lines:
+            report_lines.append(f"\n【财务→保留】")
+            report_lines.extend(keep_lines)
+        if miss_lines:
+            report_lines.append(f"\n【未命中 {len(miss_lines)} 张】")
+            show_miss = miss_lines[:12]
+            report_lines.extend(show_miss)
+            if len(miss_lines) > 12:
+                report_lines.append(f"  ... 还有 {len(miss_lines) - 12} 张未命中")
+        if promoted_count > 0 or demoted_count > 0:
+            tips = []
+            if promoted_count > 0:
+                tips.append("标记表格已移至「🔧 人工表格」")
+            if demoted_count > 0:
+                tips.append("降级表格已移至「🚫 人工非表格」")
+            report_lines.append(f"\n📌 {'；'.join(tips)}")
+        report_text = "\n".join(report_lines)
+
+        QMessageBox.information(self.main_window, "扫描完成", report_text)
+
+    def _scan_table_structure(self, data, table_category=""):
+        """核心扫描逻辑：四维信号 + 五层表头检测
+
+        Args:
+            data: 2D list 表格数据
+            table_category: 原始分类标签，用于自适应阈值
+
+        Returns dict: {
+            is_financial_table, confidence(0-100),
+            header_start, header_end, body_start, body_end,
+            has_header, numeric_col_count, reason, scores
+        }
+        """
+        if not data or len(data) < 2:
+            return {"is_financial_table": False, "confidence": 0, "reason": "行数不足",
+                    "scores": {"col": 0, "num": 0, "header": 0, "density": 0}}
+
+        rows = data
+        n_rows = len(rows)
+        max_cols = max(len(row) for row in rows)
+
+        if max_cols < 2:
+            return {"is_financial_table": False, "confidence": 0, "reason": "列数不足",
+                    "scores": {"col": 0, "num": 0, "header": 0, "density": 0}}
+
+        # ===== 1. 列一致性 (30分) =====
+        from collections import Counter
+        # 只统计有内容的行，空行不虚增一致性
+        col_counts = [len(row) for row in rows
+                      if any(cell and str(cell).strip() for cell in row)]
+        if not col_counts:
+            col_score = 0
+        else:
+            mode_col, mode_count = Counter(col_counts).most_common(1)[0]
+            if mode_col >= 2:
+                consistency = mode_count / len(col_counts)
+                col_score = consistency * 30
+            else:
+                col_score = 0
+
+        # ===== 2. 宽松数值内容检测 (30分，跳过第一列) =====
+        numeric_cols = 0
+        for c in range(1, max_cols):  # 跳过索引0，第一列通常是标签/序号
+            values = []
+            for row in rows:
+                if c < len(row) and row[c] and str(row[c]).strip():
+                    values.append(str(row[c]).strip())
+            if not values:
+                continue
+            numeric_count = sum(1 for v in values if self._is_numeric_cell_loose(v))
+            # 降低门槛：≥2条值 + ≥30% 数值
+            if len(values) >= 2 and numeric_count / len(values) >= 0.3:
+                numeric_cols += 1
+
+        num_score = min(numeric_cols * 10, 30)
+
+        # ===== 3. 表头模式检测 (25分) =====
+        header_result = self._detect_table_header(rows, max_cols)
+        header_score = header_result["score"]
+        header_start = header_result["header_start"]
+        header_end = header_result["header_end"]
+
+        # ===== 4. 数据密度 (15分) =====
+        total_cells = sum(len(row) for row in rows)
+        non_empty = sum(1 for row in rows for cell in row if cell and str(cell).strip())
+        density = non_empty / total_cells if total_cells > 0 else 0
+        if density >= 0.5:
+            density_score = 15
+        elif density >= 0.4:
+            density_score = 8
+        else:
+            density_score = 0
+
+        total_score = col_score + num_score + header_score + density_score
+
+        # ===== 找数据体边界 =====
+        body_start = min(header_end + 1 if header_end >= 0 else 0, n_rows - 1)
+        body_end = n_rows - 1
+        # 从末尾跳过纯空行
+        for r in range(n_rows - 1, max(body_start - 1, 0), -1):
+            row = rows[r]
+            if any(cell and str(cell).strip() for cell in row):
+                body_end = r
+                break
+
+        if body_end < body_start:
+            body_end = body_start
+
+        # ===== 5. 硬门槛：至少存在数据行 或 数据列 =====
+        # 数据行：整行中 >= 40% 非空单元格是数值（第一列/表头行不算）
+        # 数据列：整列中 >= 30%(宽松) 非空单元格是数值（已在上方 numeric_cols 统计）
+        has_data_row = False
+        for r in range(max(body_start, 0), min(body_end + 1, n_rows)):
+            row = rows[r]
+            # 跳过第一列（标签列），只统计 index≥1 的列
+            non_empty_after_col1 = [str(row[c]).strip()
+                                    for c in range(1, len(row))
+                                    if row[c] and str(row[c]).strip()]
+            if len(non_empty_after_col1) < 1:
+                continue
+            numeric_in_row = sum(1 for c in non_empty_after_col1 if self._is_numeric_cell_loose(c))
+            if numeric_in_row >= 1 and numeric_in_row / len(non_empty_after_col1) >= 0.4:
+                has_data_row = True
+                break
+
+        # numeric_cols 已在步骤2中通过列级检查统计（阈值: ≥2条值, ≥30%数值）
+        has_numeric_col = numeric_cols >= 1
+
+        if not has_data_row and not has_numeric_col:
+            return {
+                "is_financial_table": False,
+                "confidence": 0,
+                "header_start": header_start,
+                "header_end": header_end,
+                "body_start": body_start,
+                "body_end": body_end,
+                "has_header": header_score >= 12,
+                "numeric_col_count": 0,
+                "reason": "无数据行且无数据列(非表格结构)",
+                "scores": {"col": col_score, "num": num_score, "header": header_score, "density": density_score},
+            }
+
+        # ===== 综合判定（自适应阈值）=====
+        # 数据表(缺表头)：已确认有数值数据，只需确认结构 → 阈值 35
+        # 文本列表/非标准：需要从头证明是表格 → 阈值 45
+        if table_category == "数据表(缺表头)":
+            threshold = 35
+        elif table_category == "文本列表":
+            threshold = 40
+        else:
+            threshold = 40  # 非标准类，略宽松
+
+        is_table = total_score >= threshold
+
+        reason_parts = []
+        if col_score >= 10:
+            reason_parts.append(f"列一致({col_score:.0f})")
+        if num_score >= 10:
+            reason_parts.append(f"数值{num_score // 10}列")
+        if header_score >= 8:
+            reason_parts.append(f"表头({header_score:.0f})")
+        if not reason_parts:
+            reason_parts.append(f"总分{total_score:.0f}<{threshold}")
+
+        return {
+            "is_financial_table": is_table,
+            "confidence": min(total_score, 100),
+            "header_start": header_start,
+            "header_end": header_end,
+            "body_start": body_start,
+            "body_end": body_end,
+            "has_header": header_score >= 12,
+            "numeric_col_count": numeric_cols,
+            "reason": ", ".join(reason_parts) if reason_parts else "信号不足",
+            "scores": {"col": col_score, "num": num_score, "header": header_score, "density": density_score},
+        }
+
+    @staticmethod
+    def _is_numeric_cell_loose(text):
+        """宽松数值检测：区分数据格 vs 含数字的文本片段
+
+        真正的数据格：    1,234.56 / 12.5% / (910.89) / 8,000亿元
+        文本碎片(拒绝)：  元，增幅20.99% / 较上年减少910.89 / 利息净收入19474.02
+        长段落(拒绝)：    2024年末，本集团...正缺口为19,474.02亿元
+        """
+        t = text.strip()
+        if not t:
+            return False
+        # 排除纯年号 "2024年"
+        if re.match(r'^(19|20)\d{2}年?$', t):
+            return False
+        # 排除年份+标题 如 "2024年度报告" "2023年年报"
+        if re.match(r'^(19|20)\d{2}年', t):
+            return False
+        # 排除纯页码 如 "326" "12"
+        if re.match(r'^\d{1,3}$', t):
+            return False
+        # 排除日期格式
+        if re.search(r'\d{1,2}[/\-.]\d{1,2}[/\-.]', t):
+            return False
+        if re.search(r'\d{1,2}月\d{1,2}日', t):
+            return False
+
+        if not re.search(r'\d', t):
+            return False
+
+        # 清除已知的中文单位和格式字符，剩下的就是"纯内容"
+        cleaned = re.sub(r'[,，%万元亿元千元百元人民币港币美元\(\)（）\s\-.·]', '', t)
+        if not re.search(r'\d', cleaned):
+            return False
+
+        # ★ 新规则：开头2+个中文字符然后跟着数字 → 文本碎片，不是数据格
+        # "元，增幅20.99%" → 元增幅2099 → 中文开头→拒绝
+        # "1,234.56" → 123456 → 数字开头→通过
+        if re.match(r'^[\u4e00-\u9fff]{2,}.*\d', cleaned):
+            return False
+
+        chinese = len(re.findall(r'[\u4e00-\u9fff]', cleaned))
+        digits_total = len(re.findall(r'\d', cleaned))
+
+        # 规则1：中文占比太高 → 这是文本段落，不是数据格
+        # 条件：中文 ≥ 4字 且 中文数量超过数字
+        if chinese >= 4 and chinese > digits_total:
+            return False
+
+        # 规则2：总长度 > 25 且 含中文 → 长文本段落
+        if len(t) > 25 and chinese > 0:
+            return False
+
+        return True
+
+    @staticmethod
+    def _detect_table_header(rows, max_cols):
+        """五层信号表头检测
+
+        扫描前 1/3 行（最多8行），检测：
+        L1: 年份对齐 (≥2列含年份) → +10
+        L2: 实体标签 (≥2列含实体关键词) → +10
+        L3: 财务关键词 (含HEADER_KW + ≥3列) → +5
+        L4: 单位/量纲 → +4
+        L5: 短标签列 (≥3列全≤8字 无长数字) → +4
+
+        Returns {score(0~25), header_start, header_end, l1_hit, l2_hit}
+        """
+        HEADER_KW = [
+            '项目', '指标', '科目',
+            '资产', '负债', '收入', '支出', '金额', '余额',
+            '占比', '比重', '数量', '比例',
+            '利率', '年利率', '利息',
+            '集团', '本行', '本公司', '母公司', '子公司', '合并',
+            '手续费', '佣金', '净值', '市值', '利润', '总额',
+            '阶段', '风险', '净收入', '损失',
+            '期末', '期初', '年末', '年初',
+        ]
+        ENTITY_KW = ['本集团', '本行', '本公司', '母公司', '子公司']
+        UNIT_KW = ['万元', '千元', '百万元', '亿元', '元', '美元', '港币', '人民币']
+        YEAR_PATTERN = re.compile(r'(19|20)\d{2}')
+
+        scan_depth = min(max(3, len(rows) // 3), 8, len(rows))
+
+        total_score = 0
+        header_start = -1
+        header_end = -1
+        l1_hit = False
+        l2_hit = False
+
+        for r in range(scan_depth):
+            row = rows[r]
+            non_empty = [str(c).strip() for c in row if c and str(c).strip()]
+            if not non_empty:
+                if header_start >= 0:
+                    continue  # 空行在header区域内，跳过
+                continue
+
+            n_texts = len(non_empty)
+
+            # 判断是否是数据行（≥2列含长数字）
+            long_num_count = 0
+            for t in non_empty:
+                if re.search(r'\d[\d,.]{3,}', t):
+                    long_num_count += 1
+            if long_num_count >= 2:
+                break  # 遇到数据行，停止表头扫描
+
+            row_score = 0
+
+            # L1: 年份对齐 (如 "2024年  2023年")
+            years_in_row = sum(1 for t in non_empty if YEAR_PATTERN.search(t))
+            if years_in_row >= 2:
+                row_score += 10
+                l1_hit = True
+
+            # L2: 实体标签 (如 "本集团  本行")
+            matched_entities = [kw for kw in ENTITY_KW if any(kw in t for t in non_empty)]
+            if len(matched_entities) >= 2:
+                row_score += 10
+                l2_hit = True
+            elif len(matched_entities) == 1 and n_texts >= 3:
+                row_score += 5
+
+            # L3: 财务关键词 (如 "项目  金额")
+            all_text = " ".join(non_empty)
+            kw_hits = [kw for kw in HEADER_KW if kw in all_text]
+            if len(kw_hits) >= 2 and n_texts >= 3:
+                row_score += 5
+            elif len(kw_hits) >= 1 and n_texts >= 3:
+                row_score += 3
+
+            # L4: 单位/量纲 (如 "（人民币百万元）")
+            # 仅当行很短(≤20字)且不是长元数据描述时才算
+            row_text = "".join(non_empty)
+            if any(kw in row_text for kw in UNIT_KW) and len(row_text) <= 20:
+                row_score += 4
+
+            # L5: 短标签列
+            all_short = all(len(t) <= 8 for t in non_empty)
+            if all_short and n_texts >= 3 and long_num_count == 0:
+                row_score += 4
+
+            if row_score > 0:
+                if header_start < 0:
+                    header_start = r
+                header_end = r
+                total_score += row_score
+
+        # 要求至少一个有效信号，仅 L4 4分不算
+        effective = l1_hit or l2_hit or total_score >= 8
+        return {
+            "score": min(total_score, 25) if effective else 0,
+            "header_start": header_start if effective else -1,
+            "header_end": header_end if effective else -1,
+            "l1_hit": l1_hit,
+            "l2_hit": l2_hit,
+        }
+
+    @staticmethod
+    def _clean_empty_columns(data):
+        """从二维列表中移除完全空白的列，返回 (清理后数据, 删除列数)"""
+        if not data:
+            return data, 0
+        rows = len(data)
+        cols = max(len(r) for r in data)
+        # 从右向左扫描，找出空列索引
+        empty_cols = []
+        for c in range(cols - 1, -1, -1):
+            if all(not (c < len(r) and r[c] and str(r[c]).strip()) for r in data):
+                empty_cols.append(c)
+        # 删除空列
+        for c in empty_cols:
+            for row in data:
+                if c < len(row):
+                    row.pop(c)
+        return data, len(empty_cols)
+
+    def _extract_table_structure(self, source_table, source_idx,
+                                  header_start, header_end, body_start, body_end,
+                                  scan_result):
+        """提取表格结构：创建新表格 + 裁剪原表
+
+        Returns: new_table title or None
+        """
+        tables = self._get_active_tables()
+        if source_idx >= len(tables):
+            return None
+
+        data = source_table.get("data", [])
+        page = source_table.get("page", 0)
+        original_category = source_table.get("table_category", "")
+
+        # 提取表头+数据体区域
+        if header_start >= 0:
+            extracted_data = data[header_start:body_end + 1]
+            # 裁剪原表：保留header前 + body后
+            remaining_before = data[:header_start] if header_start > 0 else []
+            remaining_after = data[body_end + 1:] if body_end + 1 < len(data) else []
+            remaining_data = remaining_before + remaining_after
+        else:
+            extracted_data = data[body_start:body_end + 1]
+            remaining_before = data[:body_start] if body_start > 0 else []
+            remaining_after = data[body_end + 1:] if body_end + 1 < len(data) else []
+            remaining_data = remaining_before + remaining_after
+
+        if not extracted_data:
+            return None
+
+        # 过滤提取数据的纯空行
+        extracted_data_clean = [row for row in extracted_data
+                                if any(cell and str(cell).strip() for cell in row)]
+        if not extracted_data_clean:
+            return None
+
+        # 生成新表格名称
+        same_page_count = sum(
+            1 for t in tables if t.get('page') == page and t.get('extractor') == 'auto_scan'
+        )
+        seq_suffix = f"_{same_page_count + 1}" if same_page_count > 0 else ""
+        title = f"🤖 P{page}_自动扫描{seq_suffix}"
+
+        # 确定分类
+        has_header = scan_result.get("has_header", False)
+        numeric_cols = scan_result.get("numeric_col_count", 0)
+        if has_header and numeric_cols >= 2:
+            new_category = "财务数据表"
+        elif has_header or numeric_cols >= 1:
+            new_category = "数据表(缺表头)"
+        else:
+            new_category = "数据表(缺表头)"
+
+        # 标记原表已被提取
+        if '_extracted_to' not in source_table:
+            source_table['_extracted_to'] = []
+        source_table['_extracted_to'].append(title)
+        source_table['_data_extracted'] = True
+
+        # 创建新表
+        scores = scan_result.get("scores", {})
+        new_table = {
+            "page": page,
+            "type": source_table.get("type", "table"),
+            "data": extracted_data_clean,
+            "extractor": "auto_scan",
+            "title": title,
+            "parse_status": "success",
+            "parse_message": f"🤖 自动扫描：从「{original_category}」识别→{new_category}",
+            "table_category": new_category,
+            "is_real_table": True,
+            "is_complete": has_header,
+            "has_header": has_header,
+            "numeric_col_count": numeric_cols,
+            "financial_confidence": scan_result.get("confidence", 50) / 100.0,
+            "quality_reason": (f"🤖 自动扫描: {scan_result.get('reason', '')} "
+                               f"(列{scores.get('col', 0):.0f}+"
+                               f"数{scores.get('num', 0):.0f}+"
+                               f"头{scores.get('header', 0):.0f}+"
+                               f"密{scores.get('density', 0):.0f})"),
+            "segment_source": "auto_scan",
+            "_auto_scan_hit": True,
+            "manual_mark": "table",  # 纳入导出
+        }
+
+        # 裁剪原表数据
+        source_table["data"] = remaining_data
+
+        # 如果原表剩余数据为空，降级分类
+        if not remaining_data or all(
+            not any(c and str(c).strip() for c in row) for row in remaining_data
+        ):
+            source_table["table_category"] = "空表"
+            source_table["is_real_table"] = False
+        else:
+            # 原表还剩数据但原来的分类已经不准确了
+            source_table["is_real_table"] = False
+
+        # 插入新表（紧跟原表之后）
+        insert_idx = source_idx + 1
+        tables.insert(insert_idx, new_table)
+        self._set_active_tables(tables)
+
+        print(f"  [自动扫描] P{page}页 {original_category}"
+              f" → '{title}' ({len(extracted_data_clean)}行"
+              f"×{max(len(r) for r in extracted_data_clean)}列), "
+              f"→ {new_category}, 原表剩余{len(remaining_data)}行, "
+              f"得分: {scan_result.get('scores', {}).get('col', 0):.0f}"
+              f"+{scan_result.get('scores', {}).get('num', 0):.0f}"
+              f"+{scan_result.get('scores', {}).get('header', 0):.0f}"
+              f"+{scan_result.get('scores', {}).get('density', 0):.0f}"
+              f"={scan_result.get('confidence', 0)}")
+
+        return title
 
     def _count_correction_stats(self, results):
         """统计纠错结果"""
