@@ -46,3 +46,8 @@ refactor_export.py
 
 # User data
 pdf_history.json
+
+# V2优化：排除项
+dist_bak/
+debug_logs/
+temp/
