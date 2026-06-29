@@ -1,0 +1,346 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 10,
+  "timestamp": "2026-06-25T11:31:19.814584",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 7,
+    "after_table_regions": 3,
+    "after_paragraph_regions": 4,
+    "region_count_delta": 6,
+    "paragraphs_newly_found": 4,
+    "changes": [
+      "单区域被拆分为 7 个子区域（表段分离）",
+      "新识别出 4 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          484.72
+        ],
+        "item_count": 125,
+        "text_preview": "2024年 1月1日 税后归属 于母公司 其他综合 收益结转 留存收益 2024年 12月31日 本年所得 税前发生额 减：前期 计入其他 综合收益 本年因出售 转入损益 减：所得税 影响 税后归属 于母公司"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 10,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 7,
+    "table_regions": 3,
+    "paragraph_regions": 4,
+    "segment_time_ms": 0.7,
+    "regions": [
+      {
+        "x0": 376.53,
+        "y0": 172.92,
+        "x1": 402.52,
+        "y1": 193.55,
+        "region_type": "paragraph",
+        "text": "减：前期\n计入其他",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            0,
+            1
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.0437,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.0437,
+              "large_gaps": 0,
+              "text_preview": "减：前期"
+            },
+            {
+              "idx": 1,
+              "type": "paragraph",
+              "x_coverage": 0.0437,
+              "large_gaps": 0,
+              "text_preview": "计入其他"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 195.91,
+        "x1": 595.28,
+        "y1": 228.42,
+        "region_type": "table",
+        "text": "综合收益 其他综合\n2024年 2024年 本年因出售 减：所得税 税后归属于 收益结转 税后归属 税后归属 本年所得\n12月31日 1月1日 少数股东 转入损益 于母公司 留存收益 影响 于母公司 税前发生额",
+        "item_count": 20,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            2,
+            3,
+            4
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4457,
+          "avg_large_gaps": 2.0,
+          "row_details": [
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.2389,
+              "large_gaps": 1,
+              "text_preview": "综合收益 其他综合"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.5498,
+              "large_gaps": 2,
+              "text_preview": "2024年 2024年 本年因出售 减：所得税 税后归属于 收益结转 税后归属 税后归属 本年所得"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.5484,
+              "large_gaps": 3,
+              "text_preview": "12月31日 1月1日 少数股东 转入损益 于母公司 留存收益 影响 于母公司 税前发生额"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 85.6,
+        "y0": 256.82,
+        "x1": 177.04,
+        "y1": 277.3,
+        "region_type": "paragraph",
+        "text": "指 定为以公允价值计量且其变动\n计入其他综合收益的权益工具",
+        "item_count": 3,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            7,
+            8
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.1481,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "paragraph",
+              "x_coverage": 0.1536,
+              "large_gaps": 0,
+              "text_preview": "指 定为以公允价值计量且其变动"
+            },
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.1426,
+              "large_gaps": 0,
+              "text_preview": "计入其他综合收益的权益工具"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 279.26,
+        "x1": 595.28,
+        "y1": 300.67,
+        "region_type": "table",
+        "text": "217 8,509 (7) 8,719 12,355 – (3,203) 8,509 643 公允价值变动\n791 74 – 865 74 – – 74 – 其他",
+        "item_count": 20,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            9,
+            10
+          ],
+          "table_rows": 2,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7221,
+          "avg_large_gaps": 9.0,
+          "row_details": [
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7166,
+              "large_gaps": 9,
+              "text_preview": "217 8,509 (7) 8,719 12,355 – (3,203) 8,509 643 公允价值变动"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.7276,
+              "large_gaps": 9,
+              "text_preview": "791 74 – 865 74 – – 74 – 其他"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 67.66,
+        "y0": 314.32,
+        "x1": 177.21,
+        "y1": 346.3,
+        "region_type": "paragraph",
+        "text": "（二） 将重分类进损益的其他综合收益\n以 公允价值计量且其变动计入其\n他综合收益的债务工具公允价",
+        "item_count": 5,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            11,
+            12,
+            13
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 3,
+          "avg_x_coverage": 0.1601,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.184,
+              "large_gaps": 0,
+              "text_preview": "（二） 将重分类进损益的其他综合收益"
+            },
+            {
+              "idx": 12,
+              "type": "paragraph",
+              "x_coverage": 0.1536,
+              "large_gaps": 0,
+              "text_preview": "以 公允价值计量且其变动计入其"
+            },
+            {
+              "idx": 13,
+              "type": "paragraph",
+              "x_coverage": 0.1426,
+              "large_gaps": 0,
+              "text_preview": "他综合收益的债务工具公允价"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 85.62,
+        "y0": 360.31,
+        "x1": 177.05,
+        "y1": 380.79,
+        "region_type": "paragraph",
+        "text": "以 公允价值计量且其变动计入其\n他综合收益的债务工具信用损",
+        "item_count": 3,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            15,
+            16
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.1481,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 15,
+              "type": "paragraph",
+              "x_coverage": 0.1536,
+              "large_gaps": 0,
+              "text_preview": "以 公允价值计量且其变动计入其"
+            },
+            {
+              "idx": 16,
+              "type": "paragraph",
+              "x_coverage": 0.1426,
+              "large_gaps": 0,
+              "text_preview": "他综合收益的债务工具信用损"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 382.75,
+        "x1": 595.28,
+        "y1": 451.87,
+        "region_type": "table",
+        "text": "5,617 (1,239) – 4,378 (1,655) – 414 (1,239) (2) 失准备\n706 100 – 806 100 – – 100 – 现金流量套期储备\n482 1,304 – 1,786 1,273 – – 1,304 (31) 外币报表折算差额\n(7,347) (5,238) – (12,585) (18,494) – 8,224 (5,238) (5,032) 其他\n...",
+        "item_count": 50,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            17,
+            18,
+            19,
+            20,
+            21
+          ],
+          "table_rows": 5,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7334,
+          "avg_large_gaps": 9.0,
+          "row_details": [
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.72,
+              "large_gaps": 9,
+              "text_preview": "5,617 (1,239) – 4,378 (1,655) – 414 (1,239) (2) 失准备"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.7281,
+              "large_gaps": 9,
+              "text_preview": "706 100 – 806 100 – – 100 – 现金流量套期储备"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.7315,
+              "large_gaps": 9,
+              "text_preview": "482 1,304 – 1,786 1,273 – – 1,304 (31) 外币报表折算差额"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.7315,
+              "large_gaps": 9,
+              "text_preview": "(7,347) (5,238) – (12,585) (18,494) – 8,224 (5,238) (5,032) "
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.7558,
+              "large_gaps": 9,
+              "text_preview": "23,981 33,927 (7) 57,901 42,708 (3,996) (5,887) 33,927 (1,10"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

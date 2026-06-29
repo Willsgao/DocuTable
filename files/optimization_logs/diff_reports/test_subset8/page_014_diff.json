@@ -1,0 +1,497 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 14,
+  "timestamp": "2026-06-25T11:31:19.908053",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 10,
+    "after_table_regions": 5,
+    "after_paragraph_regions": 5,
+    "region_count_delta": 9,
+    "paragraphs_newly_found": 5,
+    "changes": [
+      "单区域被拆分为 10 个子区域（表段分离）",
+      "新识别出 5 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          80.79,
+          595.28,
+          646.3
+        ],
+        "item_count": 119,
+        "text_preview": "47 信用减值损失 本集团 本行 2024年 2023年 2024年 2023年 发放贷款和垫款 118,938 144,682 118,639 142,138 金融投资 －以摊余成本计量的金融资产 6,007 (7,468) 5,612 (7,611) －以"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 14,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 10,
+    "table_regions": 5,
+    "paragraph_regions": 5,
+    "segment_time_ms": 0.83,
+    "regions": [
+      {
+        "x0": 42.52,
+        "y0": 104.57,
+        "x1": 135.0,
+        "y1": 118.81,
+        "region_type": "paragraph",
+        "text": "47 信用减值损失",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            0
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1554,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.1554,
+              "large_gaps": 0,
+              "text_preview": "47 信用减值损失"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 126.51,
+        "x1": 595.28,
+        "y1": 165.03,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n118,938 118,639 144,682 142,138 发放贷款和垫款",
+        "item_count": 11,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            1,
+            2,
+            3
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4595,
+          "avg_large_gaps": 2.67,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "118,938 118,639 144,682 142,138 发放贷款和垫款"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 201.1,
+        "x1": 595.28,
+        "y1": 258.72,
+        "region_type": "table",
+        "text": "(2,077) (2,119) (374) (530) 金融资产\n(4,838) (4,963) (6,109) (6,100) 表外信贷业务\n2,670 2,516 6,043 5,579 其他\n120,700 119,685 136,774 133,476 合计",
+        "item_count": 20,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            7,
+            8,
+            9,
+            10
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7439,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7147,
+              "large_gaps": 4,
+              "text_preview": "(2,077) (2,119) (374) (530) 金融资产"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.7559,
+              "large_gaps": 4,
+              "text_preview": "(4,838) (4,963) (6,109) (6,100) 表外信贷业务"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "2,670 2,516 6,043 5,579 其他"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "120,700 119,685 136,774 133,476 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 42.52,
+        "y0": 276.09,
+        "x1": 158.32,
+        "y1": 290.34,
+        "region_type": "paragraph",
+        "text": "48 其他资产减值损失",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            11
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1945,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.1945,
+              "large_gaps": 0,
+              "text_preview": "48 其他资产减值损失"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 298.04,
+        "x1": 595.28,
+        "y1": 336.56,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n298 103 463 60 其他资产减值损失",
+        "item_count": 11,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            12,
+            13,
+            14
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4595,
+          "avg_large_gaps": 2.67,
+          "row_details": [
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "298 103 463 60 其他资产减值损失"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 42.52,
+        "y0": 353.93,
+        "x1": 135.0,
+        "y1": 368.18,
+        "region_type": "paragraph",
+        "text": "49 其他业务成本",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            15
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1554,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 15,
+              "type": "paragraph",
+              "x_coverage": 0.1554,
+              "large_gaps": 0,
+              "text_preview": "49 其他业务成本"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 375.88,
+        "x1": 595.28,
+        "y1": 450.58,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n11,002 – 13,502 – 保险业务支出\n11,304 1,478 11,206 1,688 其他\n22,306 1,478 24,708 1,688 合计",
+        "item_count": 21,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "table_rows": 5,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.5766,
+          "avg_large_gaps": 3.2,
+          "row_details": [
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "11,002 – 13,502 – 保险业务支出"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "11,304 1,478 11,206 1,688 其他"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "22,306 1,478 24,708 1,688 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 42.52,
+        "y0": 467.96,
+        "x1": 135.53,
+        "y1": 496.54,
+        "region_type": "paragraph",
+        "text": "50 所得税费用\n(1) 所得税费用",
+        "item_count": 4,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            21,
+            22
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.127,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 21,
+              "type": "paragraph",
+              "x_coverage": 0.1358,
+              "large_gaps": 0,
+              "text_preview": "50 所得税费用"
+            },
+            {
+              "idx": 22,
+              "type": "paragraph",
+              "x_coverage": 0.1181,
+              "large_gaps": 0,
+              "text_preview": "(1) 所得税费用"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 505.94,
+        "x1": 595.28,
+        "y1": 615.15,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n53,439 49,403 65,995 63,080 当期所得税\n51,012 48,444 62,866 61,881 －中国内地\n1,172 84 1,295 244 －香港\n1,255 875 1,834 955 －其他国家及地区\n(5,344) (7,556) (9,078) (9,699) 当期确认递延所得税\n48,095 ...",
+        "item_count": 36,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30
+          ],
+          "table_rows": 8,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6093,
+          "avg_large_gaps": 3.5,
+          "row_details": [
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 24,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 25,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "53,439 49,403 65,995 63,080 当期所得税"
+            },
+            {
+              "idx": 26,
+              "type": "table",
+              "x_coverage": 0.7006,
+              "large_gaps": 4,
+              "text_preview": "51,012 48,444 62,866 61,881 －中国内地"
+            },
+            {
+              "idx": 27,
+              "type": "table",
+              "x_coverage": 0.7006,
+              "large_gaps": 4,
+              "text_preview": "1,172 84 1,295 244 －香港"
+            },
+            {
+              "idx": 28,
+              "type": "table",
+              "x_coverage": 0.7006,
+              "large_gaps": 4,
+              "text_preview": "1,255 875 1,834 955 －其他国家及地区"
+            },
+            {
+              "idx": 29,
+              "type": "table",
+              "x_coverage": 0.7179,
+              "large_gaps": 4,
+              "text_preview": "(5,344) (7,556) (9,078) (9,699) 当期确认递延所得税"
+            },
+            {
+              "idx": 30,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "48,095 41,847 56,917 53,381 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 87.86,
+        "y0": 633.48,
+        "x1": 524.4,
+        "y1": 655.85,
+        "region_type": "paragraph",
+        "text": "中国内地和香港地区的当期所得税费用分别按中国内地和香港地区业务估计的应纳税所得额的25%和16.5%计\n提。其他境外业务的当期所得税费用按相关税收管辖权所规定的适当的现行比例计提。",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            31,
+            32
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.6569,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 31,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "中国内地和香港地区的当期所得税费用分别按中国内地和香港地区业务估计的应纳税所得额的25%和16.5%计"
+            },
+            {
+              "idx": 32,
+              "type": "paragraph",
+              "x_coverage": 0.5806,
+              "large_gaps": 0,
+              "text_preview": "提。其他境外业务的当期所得税费用按相关税收管辖权所规定的适当的现行比例计提。"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

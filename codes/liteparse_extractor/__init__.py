@@ -35,7 +35,7 @@ LiteParse Extractor — 独立 PDF 解析模块
 """
 
 from .config import LITEPARSE_CONFIG, FINANCIAL_KEYWORDS
-from .models import TextItem, TableRegion, PageResult, ParseResult
+from .models import TextItem, TableRegion, ParagraphRegion, PageResult, ParseResult
 from .parser import LiteParseParser
 from .cache_manager import (
     save_parse_result,
@@ -52,6 +52,7 @@ __all__ = [
     # 数据模型
     "TextItem",
     "TableRegion",
+    "ParagraphRegion",
     "PageResult",
     "ParseResult",
     # 解析器

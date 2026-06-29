@@ -1,0 +1,174 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 6,
+  "timestamp": "2026-06-25T11:31:19.704826",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 3,
+    "after_table_regions": 2,
+    "after_paragraph_regions": 1,
+    "region_count_delta": 2,
+    "paragraphs_newly_found": 1,
+    "changes": [
+      "单区域被拆分为 3 个子区域（表段分离）",
+      "新识别出 1 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          484.72,
+          595.28,
+          646.3
+        ],
+        "item_count": 21,
+        "text_preview": "折现率 1.75% 2.50% 医疗费用年增长率 7.00% 7.00% 预计平均未来寿命 9.6年 10.4年 死亡率的假设是基于中国人寿保险业经验生命表（2010-2013）确定的，该表为中国地区的公开统计 信息。 (ii) 本集团及本行补充退休福利义务现值主要精算假设的敏感性分析如下： 对补充退休福利义务现值的影响 精算假设 提高0.25% 精算假设 降低0.25% 折现率 (84)"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 6,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 3,
+    "table_regions": 2,
+    "paragraph_regions": 1,
+    "segment_time_ms": 0.28,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 486.31,
+        "x1": 595.28,
+        "y1": 519.22,
+        "region_type": "table",
+        "text": "1.75% 2.50% 折现率\n7.00% 7.00% 医疗费用年增长率\n9.6年 10.4年 预计平均未来寿命",
+        "item_count": 9,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            0,
+            1,
+            2
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6381,
+          "avg_large_gaps": 2.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.6381,
+              "large_gaps": 2,
+              "text_preview": "1.75% 2.50% 折现率"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.6381,
+              "large_gaps": 2,
+              "text_preview": "7.00% 7.00% 医疗费用年增长率"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.6381,
+              "large_gaps": 2,
+              "text_preview": "9.6年 10.4年 预计平均未来寿命"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 133.23,
+        "y0": 534.3,
+        "x1": 524.36,
+        "y1": 556.67,
+        "region_type": "paragraph",
+        "text": "死亡率的假设是基于中国人寿保险业经验生命表（2010-2013）确定的，该表为中国地区的公开统计\n信息。",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            3,
+            4
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.3522,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 3,
+              "type": "paragraph",
+              "x_coverage": 0.6571,
+              "large_gaps": 0,
+              "text_preview": "死亡率的假设是基于中国人寿保险业经验生命表（2010-2013）确定的，该表为中国地区的公开统计"
+            },
+            {
+              "idx": 4,
+              "type": "paragraph",
+              "x_coverage": 0.0474,
+              "large_gaps": 0,
+              "text_preview": "信息。"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 613.67,
+        "x1": 595.28,
+        "y1": 649.43,
+        "region_type": "table",
+        "text": "精算假设 精算假设\n提高0.25% 降低0.25%\n(84) 87 折现率",
+        "item_count": 7,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            7,
+            8,
+            9
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.326,
+          "avg_large_gaps": 1.33,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.1641,
+              "large_gaps": 1,
+              "text_preview": "精算假设 精算假设"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.1757,
+              "large_gaps": 1,
+              "text_preview": "提高0.25% 降低0.25%"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.6381,
+              "large_gaps": 2,
+              "text_preview": "(84) 87 折现率"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

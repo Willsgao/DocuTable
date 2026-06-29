@@ -6,8 +6,11 @@ LiteParse Extractor — 表格区域检测器
 用文本密度网格定位表格区域的物理坐标，
 并提取区域文本和上下文文本。
 
-算法与 V2-Lite (page_assigner.py) 保持一致：
-  关键词预筛 → 密度网格 → 连续行合并 → 上下文提取
+算法流程:
+  关键词预筛 → 密度网格 → 连续行合并 → ContentSegmenter 段切分离 → 上下文提取
+
+v2 优化: 引入 ContentSegmenter 将密度法合并的大区域拆分为
+    "表格子区域" + "段子落区域"，避免段落描述文本被吞进表格。
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 from typing import List, Tuple
 
 from .config import LITEPARSE_CONFIG, FINANCIAL_KEYWORDS
-from .models import PageResult, TableRegion
+from .models import PageResult, TableRegion, ParagraphRegion
 
 
 class RegionDetector:
@@ -23,11 +26,30 @@ class RegionDetector:
 
     在 liteparse 的 TextItem 列表上运行密度网格算法，
     不依赖 PyMuPDF / pdfplumber。
+
+    v2: 集成 ContentSegmenter 进行表段分离。
     """
 
-    def __init__(self, cfg: dict | None = None):
+    def __init__(self, cfg: dict | None = None, enable_segmentation: bool = True):
         self.cfg = cfg or LITEPARSE_CONFIG
         self.keywords = FINANCIAL_KEYWORDS
+        self._enable_segmentation = enable_segmentation
+        self._segmenter = None  # lazy init
+
+    @property
+    def enable_segmentation(self) -> bool:
+        return self._enable_segmentation
+
+    @enable_segmentation.setter
+    def enable_segmentation(self, value: bool):
+        self._enable_segmentation = value
+
+    def _get_segmenter(self):
+        """懒加载 ContentSegmenter。"""
+        if self._segmenter is None:
+            from codes.content_segmenter.segmenter import ContentSegmenter
+            self._segmenter = ContentSegmenter()
+        return self._segmenter
 
     # ================================================================
     # 公开接口
@@ -57,24 +79,49 @@ class RegionDetector:
             return page
 
         # 步骤 3：合并连续表格行为物理区域
-        table_regions_rects = self._merge_to_regions(
+        merged_regions_rects = self._merge_to_regions(
             page, density_rows, table_row_groups
         )
 
-        # 步骤 4：提取区域文本 + 上下文
-        for (rx0, ry0, rx1, ry1) in table_regions_rects:
-            region_text = self._extract_region_text(page, rx0, ry0, rx1, ry1)
-            context_text = self._extract_context(page, rx0, ry0, rx1, ry1)
-            confidence = self._calc_confidence(page, rx0, ry0, rx1, ry1)
+        if not merged_regions_rects:
+            page.is_table_page = False
+            return page
 
-            page.table_regions.append(TableRegion(
-                x0=rx0, y0=ry0, x1=rx1, y1=ry1,
-                region_text=region_text,
-                context_text=context_text,
-                confidence=confidence,
-            ))
+        # ---- v2: 步骤 3.5 — ContentSegmenter 段切分离 ----
+        if self._enable_segmentation:
+            split_regions = self._segment_merged_regions(page, merged_regions_rects)
+        else:
+            # 回退到旧逻辑：所有区域直接当表格
+            split_regions = [
+                {"type": "table", "bbox": rect, "items": []}
+                for rect in merged_regions_rects
+            ]
+
+        # 步骤 4：按类型提取区域文本
+        for sr in split_regions:
+            rx0, ry0, rx1, ry1 = sr["bbox"]
+            if sr["type"] == "table":
+                region_text = self._extract_region_text(page, rx0, ry0, rx1, ry1)
+                context_text = self._extract_context(page, rx0, ry0, rx1, ry1)
+                confidence = self._calc_confidence(page, rx0, ry0, rx1, ry1)
+                page.table_regions.append(TableRegion(
+                    x0=rx0, y0=ry0, x1=rx1, y1=ry1,
+                    region_text=region_text,
+                    context_text=context_text,
+                    confidence=confidence,
+                ))
+            elif sr["type"] == "paragraph":
+                paragraph_text = self._extract_paragraph_text(page, rx0, ry0, rx1, ry1)
+                line_count = self._count_lines_in_region(page, rx0, ry0, rx1, ry1)
+                page.paragraph_regions.append(ParagraphRegion(
+                    x0=rx0, y0=ry0, x1=rx1, y1=ry1,
+                    text=paragraph_text,
+                    line_count=line_count,
+                    confidence=sr.get("confidence", 0.5),
+                ))
 
         page.is_table_page = len(page.table_regions) > 0
+        page.has_paragraphs = len(page.paragraph_regions) > 0
         return page
 
     def detect_all(self, pages: List[PageResult]) -> List[PageResult]:
@@ -82,6 +129,123 @@ class RegionDetector:
         for p in pages:
             self.detect(p)
         return pages
+
+    def detect_with_logging(self, page: PageResult) -> Tuple[PageResult, dict, dict]:
+        """带日志记录的检测（用于优化前后对比）。
+
+        Returns:
+            (PageResult, before_log, after_log)
+        """
+        # 记录"优化前"状态（纯密度法不分割的结果）
+        before_log = self._build_before_log(page)
+
+        # 执行带分割的检测
+        result = self.detect(page)
+
+        # 记录"优化后"状态
+        after_log = self._build_after_log(page)
+
+        return result, before_log, after_log
+
+    # ================================================================
+    # v2: ContentSegmenter 段切分离
+    # ================================================================
+
+    def _segment_merged_regions(
+        self,
+        page: PageResult,
+        merged_regions: List[Tuple[float, float, float, float]],
+    ) -> List[dict]:
+        """对每个密度法合并的大区域，用 ContentSegmenter 拆分为独立子区域。
+
+        Returns:
+            [{"type": "table"|"paragraph", "bbox": (x0,y0,x1,y1), "confidence": float}, ...]
+        """
+        segmenter = self._get_segmenter()
+        all_split = []
+
+        for rect in merged_regions:
+            rx0, ry0, rx1, ry1 = rect
+
+            # 提取该区域内的所有 text_items
+            region_items = [
+                w for w in page.text_items
+                if rx0 <= w.center_x <= rx1 and ry0 <= w.center_y <= ry1
+            ]
+
+            if len(region_items) < 3:
+                # 区域太小，直接当表格
+                all_split.append({"type": "table", "bbox": rect, "confidence": 0.3})
+                continue
+
+            # 调用 ContentSegmenter 分割
+            seg_result = segmenter.segment_region(
+                text_items=region_items,
+                page_width=page.page_width,
+                page_height=page.page_height,
+                page_number=page.page_number,
+                region_bbox=rect,
+            )
+
+            if not seg_result.regions:
+                all_split.append({"type": "table", "bbox": rect, "confidence": 0.3})
+                continue
+
+            for sr in seg_result.regions:
+                all_split.append({
+                    "type": sr.region_type,
+                    "bbox": (sr.x0, sr.y0, sr.x1, sr.y1),
+                    "confidence": sr.confidence,
+                    "diagnosis": sr.diagnosis,
+                })
+
+        return all_split
+
+    # ================================================================
+    # v2: 优化前后日志
+    # ================================================================
+
+    def _build_before_log(self, page: PageResult) -> dict:
+        """构建优化前的日志快照（仅密度网格，不做段切）。"""
+        if not page.text_items:
+            return {"page": page.page_number, "regions": []}
+
+        density_rows = self._build_density_grid(page)
+        table_row_groups = self._find_table_rows(density_rows)
+        if not table_row_groups:
+            return {"page": page.page_number, "regions": []}
+
+        merged_regions = self._merge_to_regions(page, density_rows, table_row_groups)
+        regions = []
+        for rect in merged_regions:
+            rx0, ry0, rx1, ry1 = rect
+            region_items = [
+                w for w in page.text_items
+                if rx0 <= w.center_x <= rx1 and ry0 <= w.center_y <= ry1
+            ]
+            regions.append({
+                "bbox": [round(rx0, 2), round(ry0, 2), round(rx1, 2), round(ry1, 2)],
+                "item_count": len(region_items),
+                "text_preview": " ".join(w.text for w in region_items[:20]),
+            })
+
+        return {
+            "page": page.page_number,
+            "method": "density_only",
+            "region_count": len(regions),
+            "regions": regions,
+        }
+
+    def _build_after_log(self, page: PageResult) -> dict:
+        """构建优化后的日志快照。"""
+        return {
+            "page": page.page_number,
+            "method": "density_with_segmentation",
+            "table_count": len(page.table_regions),
+            "paragraph_count": len(page.paragraph_regions),
+            "tables": [tr.to_dict() for tr in page.table_regions],
+            "paragraphs": [pr.to_dict() for pr in page.paragraph_regions],
+        }
 
     # ================================================================
     # 关键词预筛
@@ -226,6 +390,65 @@ class RegionDetector:
         # 按 Y 优先排序（从上到下、从左到右）
         region_words.sort(key=lambda w: (w.center_y, w.center_x))
         return " ".join(w.text for w in region_words)
+
+    def _extract_paragraph_text(
+        self, page: PageResult,
+        rx0: float, ry0: float, rx1: float, ry1: float,
+    ) -> str:
+        """提取段落区域内的文本（按行拼接，保留换行）。"""
+        region_words = []
+        for w in page.text_items:
+            if (rx0 <= w.center_x <= rx1
+                    and ry0 <= w.center_y <= ry1
+                    and w.text.strip()):
+                region_words.append(w)
+
+        if not region_words:
+            return ""
+
+        # 按 y 排序后分行
+        region_words.sort(key=lambda w: (w.center_y, w.center_x))
+        lines = []
+        current_line = []
+        current_y = None
+
+        for w in region_words:
+            if current_y is None or abs(w.center_y - current_y) <= 5.0:
+                current_line.append(w.text)
+                if current_y is None:
+                    current_y = w.center_y
+            else:
+                lines.append(" ".join(current_line))
+                current_line = [w.text]
+                current_y = w.center_y
+
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        return "\n".join(lines).strip()
+
+    def _count_lines_in_region(
+        self, page: PageResult,
+        rx0: float, ry0: float, rx1: float, ry1: float,
+    ) -> int:
+        """统计区域内的文本行数。"""
+        region_words = [
+            w for w in page.text_items
+            if rx0 <= w.center_x <= rx1
+            and ry0 <= w.center_y <= ry1
+            and w.text.strip()
+        ]
+        if not region_words:
+            return 0
+
+        region_words.sort(key=lambda w: w.center_y)
+        lines = 1
+        last_y = region_words[0].center_y
+        for w in region_words[1:]:
+            if abs(w.center_y - last_y) > 5.0:
+                lines += 1
+                last_y = w.center_y
+        return lines
 
     def _extract_context(
         self, page: PageResult,

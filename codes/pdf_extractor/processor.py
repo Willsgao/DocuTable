@@ -24,6 +24,174 @@ from openpyxl.utils import get_column_letter
 
 
 # ============================================================
+# 跨表去重（自动流水线用）
+# ============================================================
+
+def _dedup_adjacent_tables_in_pipeline(results: list) -> list:
+    """对同页相邻表进行跨表去重：前表尾/头部 ↔ 后表头部 方向性去重。
+
+    检测同页内相邻表对 (Table_i, Table_{i+1})：
+    - 表i头部 ↔ 表i+1头部（表头行重叠）
+    - 表i尾部 ↔ 表i+1头部（数据行重叠）
+    若表i+1结构完整 → 从表i删除重叠行。
+
+    Args:
+        results: 标准格式表格列表，每项含 data (List[List[str]]) 和 page 字段
+
+    Returns:
+        去重后的 results（原地修改 data 字段）
+    """
+    if not results or len(results) < 2:
+        return results
+
+    from codes.table_validator.rule_based_repair import (
+        _has_complete_table_structure,
+        _normalize_cell_content,
+        _is_effectively_empty,
+        _is_numeric_cell,
+    )
+
+    MAX_CHECK = 8
+
+    def _row_fp(row):
+        parts = []
+        for c in row:
+            s = _normalize_cell_content(str(c))
+            if s:
+                parts.append(s)
+        return " | ".join(parts)
+
+    def _row_cell_set(row):
+        return {
+            _normalize_cell_content(str(c))
+            for c in row
+            if _normalize_cell_content(str(c))
+        }
+
+    def _num_ratio(row):
+        non_empty = [c for c in row if not _is_effectively_empty(str(c))]
+        if not non_empty:
+            return 0.0
+        return sum(1 for c in non_empty if _is_numeric_cell(str(c))) / len(non_empty)
+
+    def _jaccard(s1, s2):
+        if not s1 and not s2:
+            return 1.0
+        if not s1 or not s2:
+            return 0.0
+        return len(s1 & s2) / len(s1 | s2)
+
+    def _detect_header_indices(data):
+        indices = []
+        for i in range(min(MAX_CHECK, len(data))):
+            row = data[i]
+            nr = _num_ratio(row)
+            if nr < 0.3 and any(not _is_effectively_empty(str(c)) for c in row):
+                indices.append(i)
+            else:
+                break
+        return indices
+
+    def _row_matches(row_a, row_b):
+        fp_a = _row_fp(row_a)
+        fp_b = _row_fp(row_b)
+        if fp_a and fp_b and fp_a == fp_b:
+            return True
+        set_a = _row_cell_set(row_a)
+        set_b = _row_cell_set(row_b)
+        if set_a and set_b and _jaccard(set_a, set_b) >= 0.7:
+            sz = min(len(set_a), len(set_b)) / max(len(set_a), len(set_b))
+            if sz >= 0.5:
+                return True
+        return False
+
+    # 按页分组
+    page_groups = {}
+    for i, tbl in enumerate(results):
+        p = tbl.get("page", 0)
+        page_groups.setdefault(p, []).append(i)
+
+    total_removed = 0
+
+    for page, indices in page_groups.items():
+        if len(indices) < 2:
+            continue
+
+        for j in range(len(indices) - 1):
+            idx_a, idx_b = indices[j], indices[j + 1]
+            tbl_a = results[idx_a]
+            tbl_b = results[idx_b]
+            data_a = tbl_a.get("data", [])
+            data_b = tbl_b.get("data", [])
+
+            if not data_a or not data_b:
+                continue
+            if not _has_complete_table_structure(data_b):
+                continue
+
+            rows_to_remove = set()
+
+            # A1: 前表头部 ↔ 后表头部
+            # 仅当表A是"表头碎片"（几乎无数据行）时才删除其表头
+            # 防止从有数据内容的表中错误删除正常表头（如连续财务表共享列名）
+            data_rows_a = sum(1 for r in data_a if _num_ratio(r) >= 0.3)
+            is_header_fragment = (len(data_a) <= 5 and data_rows_a <= 1) or data_rows_a == 0
+
+            if is_header_fragment:
+                head_a = _detect_header_indices(data_a)
+                head_b = _detect_header_indices(data_b)
+                head_b_rows = [data_b[i] for i in head_b]
+                for hi in head_a:
+                    for hb_row in head_b_rows:
+                        if _row_matches(data_a[hi], hb_row):
+                            rows_to_remove.add(hi)
+                            break
+
+            # A2: 前表尾部 ↔ 后表头部
+            tail_start = max(0, len(data_a) - MAX_CHECK)
+            tail = data_a[tail_start:]
+            head = data_b[:MAX_CHECK]
+            for offset, row in enumerate(tail):
+                if not _row_fp(row):
+                    continue
+                for h_row in head:
+                    if _row_matches(row, h_row):
+                        rows_to_remove.add(tail_start + offset)
+                        break
+
+            # A2+: 处理孤立章节标题行
+            # 章节标题行（如"48 其他资产减值损失"）非空单元格少，
+            # 无法通过常规 Jaccard 匹配到下一表的数据行。
+            # 检测条件：尾部最后2行内、低数值占比、1-2个非空单元格、
+            # 且后表有自己的表头结构 → 标题应归属下一个表
+            head_b_for_title = _detect_header_indices(data_b)
+            if head_b_for_title:
+                for offset in range(1, min(3, len(data_a) + 1)):
+                    tail_idx = len(data_a) - offset
+                    if tail_idx in rows_to_remove:
+                        continue
+                    row = data_a[tail_idx]
+                    nr = _num_ratio(row)
+                    non_empty_count = sum(1 for c in row if not _is_effectively_empty(str(c)))
+                    if nr < 0.3 and 1 <= non_empty_count <= 2:
+                        rows_to_remove.add(tail_idx)
+
+            # 执行删除
+            if rows_to_remove:
+                sorted_indices = sorted(rows_to_remove, reverse=True)
+                for row_idx in sorted_indices:
+                    del data_a[row_idx]
+                removed = len(sorted_indices)
+                total_removed += removed
+                print(f"  [跨表去重] P{page} 表#{j + 1}→表#{j + 2}: "
+                      f"从表#{j + 1}尾部删除 {removed} 行重叠数据（后表结构完整）")
+
+    if total_removed > 0:
+        print(f"  [跨表去重] 总计删除 {total_removed} 行重叠数据")
+    return results
+
+
+# ============================================================
 # PDF处理器
 # ============================================================
 class PDFProcessor:
@@ -40,6 +208,8 @@ class PDFProcessor:
         "align_tolerance": 4.0,          # 对齐聚簇容差(pt)
         "gap_factor": 0.3,               # gap阈值：中位gap + stdev × 因子
         "gap_min": 10.0,                 # gap最小值
+        "line_merge_tolerance": 2.0,     # 竖线去重容差(pt)
+        "column_line_min_count": 2,      # 指令1最少竖线条数
 
         # 表格区域
         "table_min_width_ratio": 0.3,    # 表格最小宽度/页宽
@@ -704,17 +874,33 @@ class PDFProcessor:
 
     # ---- v2 入口 ----
 
-    def _extract_text_tables_v2(self, pdf_path=None, max_pages=None, context=None, progress_callback=None, progress_base=20, skip_drawings=False):
-        """v2 表格提取入口
+    def _extract_text_tables_v2(self, pdf_path=None, max_pages=None, context=None,
+                                 progress_callback=None, progress_base=20, skip_drawings=False):
+        """v2 表格提取入口（委托给 V2Pipeline 模块化管线）
         
         Args:
-            pdf_path: PDF 文件路径（向后兼容）
+            pdf_path: PDF 文件路径
             max_pages: 最大处理页数
             context:  PDFContext 共享上下文（优先使用）
-            progress_callback:  callback(value, message) 用于推送逐页进度
-            progress_base: 进度条起始值（默认20，auto模式下为40）
-            skip_drawings:  跳过 get_drawings()（auto模式为True，避免PyMuPDF崩溃）
+            progress_callback: callback(value, message) 逐页进度
+            progress_base: 进度条起始值
+            skip_drawings: 跳过 get_drawings()
         """
+        from codes.v2_steps.pipeline import V2Pipeline
+
+        pipeline = V2Pipeline()
+        return pipeline.run(
+            pdf_path=pdf_path,
+            max_pages=max_pages,
+            context=context,
+            progress_callback=progress_callback,
+            progress_base=progress_base,
+            skip_drawings=skip_drawings,
+        )
+
+    def _extract_text_tables_v2_legacy(self, pdf_path=None, max_pages=None, context=None,
+                                        progress_callback=None, progress_base=20, skip_drawings=False):
+        """[回退] v2 表格提取入口（原始单体实现，当 Pipeline 出问题时使用）"""
         import fitz
         import statistics
 
@@ -736,12 +922,10 @@ class PDFProcessor:
             page = doc[page_num]
             page_rect = page.rect
 
-            # 逐页进度回调
             if progress_callback:
                 pct = progress_base + int((page_num + 1) / total_pages * 10)
                 progress_callback(pct, f"V2扫描: 第{page_num + 1}/{total_pages}页")
 
-            # 1. 提取 words + drawings
             words_raw = page.get_text("words")
             words = []
             for w in words_raw:
@@ -752,8 +936,6 @@ class PDFProcessor:
                     "baseline": w[3],
                 })
 
-            # PyMuPDF get_drawings() 存在 C 扩展 refcount bug(pdf2docx 后崩溃)
-            # auto 模式下完全跳过 drawings，仅用纯文本密度检测表格区域
             drawings = []
             if not skip_drawings:
                 try:
@@ -779,7 +961,6 @@ class PDFProcessor:
                 except Exception:
                     print(f"  [V2] 第{page_num+1}页: get_drawings() 失败，使用纯文本检测")
 
-            # 回退：如果 get_text("words") 返回空，尝试 get_text("dict")
             if not words:
                 print(f"  [V2] 第{page_num+1}页: get_text('words')返回空，尝试dict回退...")
                 words = PDFProcessor._extract_words_from_dict(page)
@@ -789,7 +970,6 @@ class PDFProcessor:
                     print(f"  [V2] 第{page_num+1}页: dict回退也失败，跳过该页")
                     continue
 
-            # 2. 金融关键词过滤
             full_text = " ".join(w["text"] for w in words)
             if not any(kw in full_text for kw in cfg["financial_keywords"]):
                 print(f"  [V2] 第{page_num+1}页: 未匹配金融关键词，跳过 (文本长度={len(full_text)}, 预览={full_text[:60]!r})")
@@ -798,7 +978,6 @@ class PDFProcessor:
                 print(f"  [V2] 第{page_num+1}页: 文本长度{len(full_text)}不满足最低{cfg['min_text_length']}要求，跳过")
                 continue
 
-            # 3. 表格区域定位
             table_regions = self._detect_table_region(drawings, page_rect.width, page_rect.height)
             if not table_regions:
                 table_regions = self._detect_table_region_by_text(words, page_rect.width, page_rect.height)
@@ -806,59 +985,144 @@ class PDFProcessor:
                 print(f"  [V2] 第{page_num+1}页: 未检测到表格区域，跳过")
                 continue
 
-            # 4. 为每个表格区域提取数据
+            from codes.content_segmenter.segmenter import ContentSegmenter
+            from codes.content_segmenter.segment_logger import SegmentLogger
+
+            segmenter = ContentSegmenter()
+            pdf_stem = Path(pdf_path).stem if pdf_path else "unknown"
+
             for region in table_regions:
                 rx0, ry0, rx1, ry1 = region
                 region_words = [w for w in words
                                 if rx0 <= w["x0"] <= rx1 and ry0 <= w["y0"] <= ry1]
-
                 if len(region_words) < 3:
                     continue
 
-                # 提取表格区域上方的上下文文本（表格上方 100pt 范围内的文本）
-                context_text = PDFProcessor._extract_context_text_from_words(
-                    words, rx0, ry0, rx1, ry1, margin=100.0
+                def _word_getter(w):
+                    return (w["x0"], w["x1"], w["y0"], w["y1"], w["text"])
+
+                seg_result = segmenter.segment_region(
+                    text_items=region_words,
+                    page_width=page_rect.width,
+                    page_height=page_rect.height,
+                    page_number=page_num + 1,
+                    region_bbox=region,
+                    item_getter=_word_getter,
                 )
 
-                # 行边界
-                row_bounds = self._detect_horizontal_lines(page, region_words, drawings)
-                if len(row_bounds) < 2:
-                    continue
+                try:
+                    SegmentLogger.log_page_diff(
+                        pdf_name=pdf_stem,
+                        page_number=page_num + 1,
+                        before_regions=[{
+                            "bbox": [round(rx0, 2), round(ry0, 2), round(rx1, 2), round(ry1, 2)],
+                            "item_count": len(region_words),
+                            "text_preview": " ".join(w["text"] for w in region_words[:20]),
+                        }],
+                        after_segment=seg_result,
+                        page_size={"width": round(page_rect.width, 2), "height": round(page_rect.height, 2)},
+                    )
+                except Exception:
+                    pass
 
-                # 列边界
-                col_bounds = self._detect_vertical_lines(page, region_words, drawings)
-                if len(col_bounds) < 3:
-                    continue
+                paragraph_found_count = 0
+                for sr in seg_result.regions:
+                    srx0, sry0, srx1, sry1 = sr.x0, sr.y0, sr.x1, sr.y1
 
-                # 网格填充
-                table_data = self._assign_words_to_grid(region_words, row_bounds, col_bounds)
-                if not table_data or len(table_data) < 2:
-                    continue
+                    if sr.is_paragraph:
+                        paragraph_found_count += 1
+                        para_words = [w for w in words
+                                      if srx0 <= w["x0"] <= srx1 and sry0 <= w["y0"] <= sry1]
+                        para_words.sort(key=lambda w: (w["y0"], w["x0"]))
+                        lines = []
+                        cur_line = []
+                        cur_y = None
+                        for w in para_words:
+                            if cur_y is None or abs(w["y0"] - cur_y) <= 5.0:
+                                cur_line.append(w["text"])
+                                if cur_y is None:
+                                    cur_y = w["y0"]
+                            else:
+                                if cur_line:
+                                    lines.append(" ".join(cur_line))
+                                cur_line = [w["text"]]
+                                cur_y = w["y0"]
+                        if cur_line:
+                            lines.append(" ".join(cur_line))
+                        para_text = "\n".join(lines).strip()
+                        if para_text and len(para_text) >= 3:
+                            results.append({
+                                "page": page_num + 1,
+                                "type": "paragraph",
+                                "data": para_text,
+                                "text": para_text,
+                                "extractor": "v2_segmenter",
+                                "confidence": sr.confidence,
+                                "rows": len(lines),
+                                "cols": 1,
+                                "bbox": [round(srx0, 2), round(sry0, 2), round(srx1, 2), round(sry1, 2)],
+                            })
+                        continue
 
-                # 规范化
-                table_data = self._normalize_table_columns(table_data)
+                    sub_region_words = [w for w in words
+                                        if rx0 <= w["x0"] <= rx1 and sry0 <= w["y0"] <= sry1]
+                    if len(sub_region_words) < 3:
+                        continue
 
-                # 置信度
-                has_border = bool([d for d in drawings if d["direction"] in ("h", "v")])
-                confidence = self._compute_table_confidence(table_data, has_border, words)
+                    context_text = PDFProcessor._extract_context_text_from_words(
+                        words, srx0, sry0, srx1, sry1, margin=100.0)
 
-                results.append({
-                    "page": page_num + 1,
-                    "type": "table",
-                    "data": table_data,
-                    "text": full_text,
-                    "extractor": "v2_position_based",
-                    "confidence": confidence,
-                    "rows": len(table_data),
-                    "cols": len(col_bounds) - 1,
-                    "has_border": has_border,
-                    "context_text": context_text,
-                })
+                    row_bounds = self._detect_horizontal_lines(page, sub_region_words, drawings)
+                    if len(row_bounds) < 2:
+                        continue
+
+                    col_bounds = self._detect_vertical_lines(page, sub_region_words, drawings)
+                    if len(col_bounds) < 3:
+                        continue
+
+                    table_data = self._assign_words_to_grid(sub_region_words, row_bounds, col_bounds)
+                    if not table_data or len(table_data) < 2:
+                        continue
+
+                    merge_info = {}
+                    merge_stats = {}
+                    table_data_before_merge = [list(row) for row in table_data]
+                    if drawings:
+                        table_data, merge_info, merge_stats = self._detect_and_apply_merge_cells(
+                            table_data, drawings, row_bounds, col_bounds)
+                        if merge_stats.get("total_spans", 0) > 0:
+                            print(f"  [V2 Merge] 第{page_num+1}页: 检测到 {merge_stats['total_spans']} 个合并单元格 "
+                                  f"(线条={merge_stats.get('line_spans',0)}, 文本={merge_stats.get('text_spans',0)}, "
+                                  f"合并={merge_stats.get('cells_merged',0)}个cell)")
+
+                    table_data = self._normalize_table_columns(table_data)
+
+                    has_border = bool([d for d in drawings if d["direction"] in ("h", "v")])
+                    confidence = self._compute_table_confidence(table_data, has_border, words)
+
+                    results.append({
+                        "page": page_num + 1,
+                        "type": "table",
+                        "data": table_data,
+                        "text": full_text,
+                        "extractor": "v2_position_based",
+                        "confidence": confidence,
+                        "rows": len(table_data),
+                        "cols": len(col_bounds) - 1,
+                        "has_border": has_border,
+                        "context_text": context_text,
+                        "merge_info": merge_info,
+                        "merge_stats": merge_stats,
+                        "table_data_before_merge": table_data_before_merge,
+                    })
+
+                if paragraph_found_count > 0:
+                    seg_info = seg_result.to_dict()
+                    print(f"  [V2] 第{page_num+1}页: 内容分割 → {seg_info['table_regions']}个表格 + {seg_info['paragraph_regions']}个段落")
+                    print(f"  [V2] 第{page_num+1}页: 段切详情 → {seg_result.region_count}个子区域, {round(seg_result.segment_time_ms,1)}ms")
 
         if close_doc:
             doc.close()
-        # V2 不再合并同一页的多个表格，每个表格区域独立保留
-        # results = self._merge_tables_on_same_page(results)
         return results
 
     @staticmethod
@@ -2061,25 +2325,41 @@ class PDFProcessor:
 
     def _detect_vertical_lines(self, page, words, page_drawings):
         """
-        检测列边界（v2规格：三指令融合）
+        检测列边界（v2.1规格：三指令融合 + 线条锚点增强）
+        
+        增强点：
+        - 指令1放宽阈值：>=2条竖线即尝试按线切分
+        - 新增线条去重（合并1pt内的相近线）
+        - 指令3增加线条锚点：部分竖线作为gap检测的强制分割点
+        
         返回值：[x0, x1, x2, ...] 列分割线位置
         """
         import statistics
         cfg = self.V2_CONFIG
+        page_width = page.rect.width
 
-        # ----- 指令1：垂直线（最精确） -----
-        v_lines = sorted(set(
+        # ----- 提取并去重垂直线 -----
+        raw_v_lines = sorted(set(
             d["x0"] for d in page_drawings
             if d["type"] == "line" and d["direction"] == "v"
         ))
+        v_lines = self._merge_nearby_lines(raw_v_lines, cfg["line_merge_tolerance"])
 
-        if len(v_lines) >= 3:
-            # 有3条以上垂直线 → ≥2列
-            # 检查是否有两条线在页面中间（排除左右边框）
-            inner_lines = [x for x in v_lines
-                           if page.rect.width * 0.05 < x < page.rect.width * 0.95]
-            if len(inner_lines) >= 2:
-                return v_lines  # 直接用垂直线坐标
+        # 区分为内线和外线
+        inner_lines = [x for x in v_lines
+                       if page_width * 0.05 < x < page_width * 0.95]
+
+        # ----- 指令1：垂直线直接切分（增强版） -----
+        min_line_count = cfg.get("column_line_min_count", 2)
+        if len(v_lines) >= min_line_count and len(inner_lines) >= 1:
+            # 至少有1条内部竖线 → 可以用线条定义列结构
+            # 组合：左边距 + 所有线条 + 右边距（去重排序）
+            boundaries = sorted(set([0] + v_lines + [page_width]))
+            if len(boundaries) >= 3:  # 确保至少有2列
+                return boundaries
+
+        # 收集可用于后续融合的锚点线（内部竖线是强信号）
+        anchor_lines = inner_lines[:]
 
         # ----- 指令2：文本对齐聚簇 -----
         x0_list = [w["x0"] for w in words if w["text"].strip()]
@@ -2093,7 +2373,12 @@ class PDFProcessor:
             # 合并左右对齐点
             all_aligns = sorted(set(left_aligns + right_aligns))
 
-            # 如果对齐点多于2个，用对齐点作为列边界
+            # 如果有锚点线，与对齐点融合
+            if anchor_lines:
+                all_aligns = self._fuse_line_anchors_with_aligns(
+                    all_aligns, anchor_lines, cfg["align_tolerance"])
+
+            # 如果对齐点足够，直接返回
             if len(all_aligns) >= 3:
                 return all_aligns
 
@@ -2101,7 +2386,7 @@ class PDFProcessor:
         all_x = sorted(set(x0_list + x1_list))
 
         if len(all_x) < 3:
-            return [0, page.rect.width]
+            return [0, page_width]
 
         # 计算gap
         gaps = []
@@ -2113,7 +2398,7 @@ class PDFProcessor:
                 gap_positions.append((all_x[i], all_x[i + 1]))
 
         if not gaps:
-            return [0, page.rect.width]
+            return [0, page_width]
 
         # 用中位数 + 标准差作为阈值
         median_gap = statistics.median(gaps)
@@ -2125,9 +2410,70 @@ class PDFProcessor:
         for (left, right), gap in zip(gap_positions, gaps):
             if gap > gap_threshold:
                 boundaries.append((left + right) / 2)
-        boundaries.append(page.rect.width)
 
-        return boundaries
+        # 线条锚点注入：确保锚点线位置被纳入列边界
+        if anchor_lines:
+            boundaries = self._fuse_line_anchors_with_aligns(
+                boundaries, anchor_lines, cfg["gap_min"])
+        else:
+            boundaries.append(page_width)
+
+        return sorted(set(boundaries))
+
+    # ---- 线条辅助方法 ----
+
+    @staticmethod
+    def _merge_nearby_lines(lines, tolerance):
+        """合并容差范围内的邻近竖线（PDF常见双线/冗余线问题）
+        
+        例如：[100, 101, 200, 300] tolerance=2.0 → [100.5, 200, 300]
+        """
+        if not lines:
+            return []
+        sorted_lines = sorted(lines)
+        merged = [sorted_lines[0]]
+        for x in sorted_lines[1:]:
+            if x - merged[-1] <= tolerance:
+                # 合并为均值
+                merged[-1] = round((merged[-1] + x) / 2, 1)
+            else:
+                merged.append(x)
+        return merged
+
+    @staticmethod
+    def _fuse_line_anchors_with_aligns(aligns, anchors, tolerance):
+        """将线条锚点融合到对齐点/边界列表中
+        
+        策略：
+        1. 如果锚点与已有对齐点距离 ≤ tolerance*2 → 用锚点替换（锚点更精确）
+        2. 如果锚点远离已有对齐点 → 作为新边界插入
+        3. 确保首尾节点存在
+        """
+        if not anchors:
+            return sorted(set(aligns))
+
+        result = list(aligns) if isinstance(aligns, list) else list(aligns)
+        result_set = set(result)
+
+        for anchor in anchors:
+            # 找最近的已有边界
+            if result:
+                nearest = min(result, key=lambda x: abs(x - anchor))
+                if abs(nearest - anchor) <= tolerance * 2:
+                    # 替换为更精确的锚点坐标
+                    if nearest not in result_set:
+                        continue
+                    idx = result.index(nearest)
+                    result[idx] = anchor
+                    result_set.discard(nearest)
+                    result_set.add(anchor)
+                else:
+                    # 作为新分割点插入
+                    if anchor not in result_set:
+                        result.append(anchor)
+                        result_set.add(anchor)
+
+        return sorted(set(result))
 
     def _cluster_1d(self, values, tolerance=4):
         """一维坐标聚簇，找出文本对齐位置（v2规格：最小簇大小=3）"""
@@ -2286,6 +2632,394 @@ class PDFProcessor:
             confidence += cfg["confidence_line_bonus"]
 
         return min(1.0, max(0.0, confidence))
+
+    # ---- 合并单元格视觉恢复（Step 2） ----
+
+    def _detect_merge_cells_from_lines(self, drawings, row_bounds, col_bounds):
+        """从表格线检测合并单元格（v2 Step 2：视觉线索）
+        
+        原理：
+        - 若某列边界在特定行范围内缺少竖线 → 该行此处为 colspan 合并
+        - 若某行边界在特定列范围内缺少横线 → 该列此处为 rowspan 合并
+        
+        Args:
+            drawings: get_drawings() 提取的线条列表
+            row_bounds: [(y_top, y_bottom), ...] 行边界
+            col_bounds: [x0, x1, ...] 列分割线
+        
+        Returns:
+            [(row, col, rowspan, colspan, confidence), ...]
+        """
+        if not drawings or len(row_bounds) < 2 or len(col_bounds) < 3:
+            return []
+
+        n_rows = len(row_bounds)
+        n_cols = len(col_bounds) - 1
+        line_merge_tol = self.V2_CONFIG.get("line_merge_tolerance", 2.0)
+
+        # 提取线条
+        v_lines = [(d["x0"], d["y0"], d["y1"]) for d in drawings
+                    if d["type"] == "line" and d["direction"] == "v"]
+        h_lines = [(d["y0"], d["x0"], d["x1"]) for d in drawings
+                    if d["type"] == "line" and d["direction"] == "h"]
+
+        merge_spans = []
+
+        # ---- 检测横向合并（colspan） ----
+        # 把竖线按 x 坐标合并去重
+        v_x_groups = {}
+        for x, y0, y1 in v_lines:
+            matched = None
+            for gx in v_x_groups:
+                if abs(x - gx) <= line_merge_tol * 2:
+                    matched = gx
+                    break
+            if matched is not None:
+                v_x_groups[matched].append((y0, y1))
+            else:
+                v_x_groups[x] = [(y0, y1)]
+
+        # 只有存在内部竖线时才信任线条检测（无线表格不适用）
+        has_inner_v_lines = any(
+            min(cx for cx in v_x_groups) < col_bounds[-1] * 0.9
+            for _ in v_x_groups
+        ) if v_x_groups else False
+
+        for r, (ry0, ry1) in enumerate(row_bounds):
+            row_center_y = (ry0 + ry1) / 2
+            row_height = ry1 - ry0
+
+            # 统计当前行中各列边界位置的竖线覆盖情况
+            missing_boundaries = []
+            for c in range(1, n_cols):
+                boundary_x = col_bounds[c]
+                has_line = False
+                for gx, segs in v_x_groups.items():
+                    if abs(gx - boundary_x) <= line_merge_tol * 3:
+                        for sy0, sy1 in segs:
+                            overlap = max(0.0, min(sy1, ry1) - max(sy0, ry0))
+                            if overlap > row_height * 0.6:
+                                has_line = True
+                                break
+                        if has_line:
+                            break
+                if not has_line:
+                    missing_boundaries.append(c)
+
+            if not missing_boundaries:
+                continue
+
+            # 分组连续缺失边界 → 每组对应一个可能的 colspan 合并
+            groups = []
+            group_start = missing_boundaries[0]
+            group_prev = missing_boundaries[0]
+            for b in missing_boundaries[1:]:
+                if b == group_prev + 1:
+                    group_prev = b
+                else:
+                    groups.append((group_start, group_prev))
+                    group_start = b
+                    group_prev = b
+            groups.append((group_start, group_prev))
+
+            for gs, ge in groups:
+                # 起始列：缺失边界左侧的第一列
+                start_col = gs - 1
+                if start_col < 0:
+                    start_col = 0
+                # 结束边界索引：缺失边界的最后一个 + 1
+                end_boundary = ge + 1
+                span_cols = end_boundary - start_col
+
+                # 排除整行合并和单列
+                if 2 <= span_cols < n_cols:
+                    merge_spans.append((r, start_col, 1, span_cols, 0.85))
+
+        # ---- 检测纵向合并（rowspan） ----
+        h_y_groups = {}
+        for y, x0, x1 in h_lines:
+            matched = None
+            for gy in h_y_groups:
+                if abs(y - gy) <= line_merge_tol * 2:
+                    matched = gy
+                    break
+            if matched is not None:
+                h_y_groups[matched].append((x0, x1))
+            else:
+                h_y_groups[y] = [(x0, x1)]
+
+        # 只有存在内部横线时才信任线条检测
+        has_inner_h_lines = any(
+            min(gy for gy in h_y_groups) < row_bounds[-1][1] * 0.9
+            for _ in h_y_groups
+        ) if h_y_groups else False
+
+        for c in range(n_cols):
+            cx0, cx1 = col_bounds[c], col_bounds[c + 1]
+            col_width = cx1 - cx0
+
+            # 统计当前列中各行边界位置的横线覆盖情况
+            missing_boundaries = []
+            for r in range(1, n_rows):
+                boundary_y = row_bounds[r][0]
+                has_line = False
+                for gy, segs in h_y_groups.items():
+                    if abs(gy - boundary_y) <= line_merge_tol * 3:
+                        for sx0, sx1 in segs:
+                            overlap = max(0.0, min(sx1, cx1) - max(sx0, cx0))
+                            if overlap > col_width * 0.6:
+                                has_line = True
+                                break
+                        if has_line:
+                            break
+                if not has_line:
+                    missing_boundaries.append(r)
+
+            if not missing_boundaries:
+                continue
+
+            # 排除整列无横线（说明列宽范围内根本没有横线覆盖）
+            if len(missing_boundaries) >= n_rows - 1:
+                continue
+
+            # 分组连续缺失
+            groups = []
+            gs = missing_boundaries[0]
+            gp = missing_boundaries[0]
+            for b in missing_boundaries[1:]:
+                if b == gp + 1:
+                    gp = b
+                else:
+                    groups.append((gs, gp))
+                    gs = b
+                    gp = b
+            groups.append((gs, gp))
+
+            for gs, ge in groups:
+                start_r = gs - 1  # 缺失边界的上方行
+                if start_r < 0:
+                    start_r = 0
+                span_rows = (ge + 1) - start_r
+                if 2 <= span_rows < n_rows:
+                    merge_spans.append((start_r, c, span_rows, 1, 0.8))
+
+        # 去重 & 合并重叠 span
+        return self._merge_overlapping_spans(merge_spans, n_rows, n_cols)
+
+    def _detect_merge_cells_from_text(self, table_data):
+        """从文本模式检测合并单元格（v2 Step 2：文本重复模式）
+        
+        检测模式：
+        1. 相邻行同一列内容完全相同 → rowspan（纵向合并）
+        2. 同行连续空单元格 → 可能 colspan（需配合线条检测确认）
+        
+        Args:
+            table_data: 当前网格填充结果 List[List[str]]
+        
+        Returns:
+            [(row, col, rowspan, colspan, confidence), ...]
+        """
+        if not table_data or len(table_data) < 2:
+            return []
+
+        n_rows = len(table_data)
+        n_cols = max(len(row) for row in table_data) if table_data else 0
+        if n_cols < 2:
+            return []
+
+        merge_spans = []
+
+        # ---- 模式1：相邻行同一列内容完全相同 → rowspan ----
+        for c in range(n_cols):
+            r = 0
+            while r < n_rows - 1:
+                cur_val = self._safe_cell(table_data, r, c)
+                if not cur_val or len(cur_val) < 2:
+                    r += 1
+                    continue
+
+                # 向下查找相同内容的连续行
+                span_rows = 1
+                for nr in range(r + 1, n_rows):
+                    next_val = self._safe_cell(table_data, nr, c)
+                    if next_val == cur_val:
+                        span_rows += 1
+                    else:
+                        break
+
+                if span_rows >= 2:
+                    merge_spans.append((r, c, span_rows, 1, 0.7))
+                    r += span_rows
+                else:
+                    r += 1
+
+        # ---- 模式2：表头行连续空单元格 → 可能 colspan ----
+        # 只检查前几行（表头区域）
+        header_rows = min(n_rows, max(2, n_rows // 3))
+        for r in range(header_rows):
+            c = 0
+            while c < n_cols:
+                cur_val = self._safe_cell(table_data, r, c)
+                if cur_val and len(cur_val) >= 2:
+                    # 向右查找连续空单元格
+                    empty_count = 0
+                    for nc in range(c + 1, n_cols):
+                        next_val = self._safe_cell(table_data, r, nc)
+                        if not next_val or len(next_val.strip()) == 0:
+                            empty_count += 1
+                        else:
+                            break
+
+                    if empty_count >= 1:
+                        merge_spans.append((r, c, 1, empty_count + 1, 0.55))
+                        c += empty_count + 1
+                    else:
+                        c += 1
+                else:
+                    c += 1
+
+        # 去重
+        return self._merge_overlapping_spans(merge_spans, n_rows, n_cols)
+
+    @staticmethod
+    def _safe_cell(table_data, row, col):
+        """安全获取单元格值"""
+        if 0 <= row < len(table_data) and 0 <= col < len(table_data[row]):
+            return str(table_data[row][col]).strip()
+        return ""
+
+    @staticmethod
+    def _merge_overlapping_spans(spans, n_rows, n_cols):
+        """合并重叠的合并单元格 span，去重并处理冲突
+        
+        策略：
+        1. 线条检测优先（高置信度）
+        2. 合并相邻的有重叠的 span
+        3. 限制 span 不超过表格边界
+        """
+        if not spans:
+            return []
+
+        # 按置信度降序排列（高优先级先处理）
+        sorted_spans = sorted(spans, key=lambda s: s[4], reverse=True)
+
+        # 占用网格
+        occupied = [[False] * n_cols for _ in range(n_rows)]
+        result = []
+
+        for row, col, rowspan, colspan, conf in sorted_spans:
+            # 限制范围
+            rowspan = min(rowspan, n_rows - row)
+            colspan = min(colspan, n_cols - col)
+
+            if rowspan < 1 or colspan < 1:
+                continue
+            if rowspan == 1 and colspan == 1:
+                continue  # 不算合并
+
+            # 检查是否与已有 span 冲突
+            conflict = False
+            for dr in range(rowspan):
+                for dc in range(colspan):
+                    if occupied[row + dr][col + dc]:
+                        conflict = True
+                        break
+                if conflict:
+                    break
+
+            if not conflict:
+                result.append((row, col, rowspan, colspan, round(conf, 2)))
+                for dr in range(rowspan):
+                    for dc in range(colspan):
+                        occupied[row + dr][col + dc] = True
+
+        return sorted(result, key=lambda s: (s[0], s[1]))
+
+    def _apply_merge_cells(self, table_data, merge_spans):
+        """将检测到的合并 span 应用到表格数据
+        
+        对于每个合并 span：
+        - 保留 (row, col) 位置的值
+        - 将被合并的单元格设为 None 或合并标记
+        
+        Args:
+            table_data: 2D 表格数据
+            merge_spans: [(row, col, rowspan, colspan, confidence), ...]
+        
+        Returns:
+            (modified_table, merge_info_dict)
+            merge_info_dict: {(row, col): {"rowspan": n, "colspan": m, "confidence": c}}
+        """
+        if not merge_spans:
+            return table_data, {}
+
+        n_rows = len(table_data)
+        n_cols = max(len(row) for row in table_data) if table_data else 0
+
+        # 先补齐所有行到相同列数
+        normalized = []
+        for row in table_data:
+            r = list(row)
+            while len(r) < n_cols:
+                r.append("")
+            normalized.append(r)
+
+        merge_info = {}
+        for row, col, rowspan, colspan, conf in merge_spans:
+            if rowspan <= 1 and colspan <= 1:
+                continue
+            merge_info[(row, col)] = {
+                "rowspan": rowspan,
+                "colspan": colspan,
+                "confidence": conf,
+            }
+            # 清空被合并的单元格（保留原始位置的文本）
+            for dr in range(rowspan):
+                for dc in range(colspan):
+                    if dr == 0 and dc == 0:
+                        continue
+                    if row + dr < n_rows and col + dc < n_cols:
+                        normalized[row + dr][col + dc] = ""
+
+        return normalized, merge_info
+
+    # ---- 合并单元格检测主入口 ----
+
+    def _detect_and_apply_merge_cells(self, table_data, drawings, row_bounds, col_bounds):
+        """合并单元格检测与恢复主入口（v2 Step 2）
+        
+        三阶段策略：
+        1. 线条视觉检测（最高置信度）
+        2. 文本模式检测（辅助）
+        3. 应用合并
+        
+        Returns:
+            (table_data_with_merge, merge_info, stats)
+            stats: {"line_spans": N, "text_spans": N, "total_spans": N, "cells_merged": N}
+        """
+        # 阶段1：线条视觉检测
+        line_spans = self._detect_merge_cells_from_lines(drawings, row_bounds, col_bounds)
+
+        # 阶段2：文本模式检测
+        text_spans = self._detect_merge_cells_from_text(table_data)
+
+        # 合并两阶段结果（线条优先）
+        all_spans = line_spans + text_spans
+        n_rows = len(table_data)
+        n_cols = max(len(row) for row in table_data) if table_data else 0
+        merged_spans = self._merge_overlapping_spans(all_spans, max(n_rows, 1), max(n_cols, 1))
+
+        # 阶段3：应用合并
+        modified_table, merge_info = self._apply_merge_cells(table_data, merged_spans)
+
+        stats = {
+            "line_spans": len(line_spans),
+            "text_spans": len(text_spans),
+            "total_spans": len(merged_spans),
+            "cells_merged": sum(rs * cs - 1 for _, _, rs, cs, _ in merged_spans),
+        }
+
+        return modified_table, merge_info, stats
 
 
 # ============================================================
@@ -4521,6 +5255,11 @@ class ProcessingWorker(QThread):
                               f"分割后 {len(results)} 张表, "
                               f"可信 {real_count} 张, 待复核 {len(review_tables)} 张, "
                               f"已拒绝 {len(rejected_tables)} 张")
+
+                        # ---- 跨表去重：相邻表 头部/尾部 ↔ 头部 方向性去重 ----
+                        if len(results) > 1:
+                            self.progress.emit(97, "正在跨表去重...")
+                            results = _dedup_adjacent_tables_in_pipeline(results)
                     else:
                         print("  [自动分割] 分割未产生结果，保留原始表格")
             except ImportError:

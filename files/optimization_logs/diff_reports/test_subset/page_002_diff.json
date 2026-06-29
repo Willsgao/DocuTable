@@ -1,0 +1,514 @@
+{
+  "pdf_name": "test_subset",
+  "page_number": 2,
+  "timestamp": "2026-06-25T11:47:27.410116",
+  "page_size": {
+    "width": 595.35,
+    "height": 842.0
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 7,
+    "after_table_regions": 3,
+    "after_paragraph_regions": 4,
+    "region_count_delta": 6,
+    "paragraphs_newly_found": 4,
+    "changes": [
+      "单区域被拆分为 7 个子区域（表段分离）",
+      "新识别出 4 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          84.45,
+          64.95,
+          510.9,
+          722.49
+        ],
+        "item_count": 121,
+        "text_preview": "向中央银行借款 13,187,495 1.70 11,942,292 1.92 同业和其他金融机构存放 款项 53,709,574 2.08 53,859,937 2.57 应付债券 90,699,300 2.12 82,788,291 2.51 付息负债合计 378,498,246 2.03 344,676,486"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 2,
+    "page_width": 595.35,
+    "page_height": 842.0,
+    "total_regions": 7,
+    "table_regions": 3,
+    "paragraph_regions": 4,
+    "segment_time_ms": 0.81,
+    "regions": [
+      {
+        "x0": 89.88,
+        "y0": 112.14,
+        "x1": 209.89,
+        "y1": 122.59,
+        "region_type": "paragraph",
+        "text": "同业和其他金融机构存放",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            1
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.2814,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "paragraph",
+              "x_coverage": 0.2814,
+              "large_gaps": 0,
+              "text_preview": "同业和其他金融机构存放"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 89.88,
+        "y0": 125.7,
+        "x1": 110.77,
+        "y1": 136.15,
+        "region_type": "paragraph",
+        "text": "款项",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            3
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.049,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 3,
+              "type": "paragraph",
+              "x_coverage": 0.049,
+              "large_gaps": 0,
+              "text_preview": "款项"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 84.45,
+        "y0": 137.99,
+        "x1": 510.9,
+        "y1": 194.41,
+        "region_type": "table",
+        "text": "90,699,300 2.12 82,788,291 2.51 应付债券\n378,498,246 2.03 344,676,486 2.43 付息负债合计\n净利差（%） 1.07 1.07\n净息差（%） 1.09 1.13",
+        "item_count": 16,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6464,
+          "avg_large_gaps": 3.0,
+          "row_details": [
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "90,699,300 2.12 82,788,291 2.51 应付债券"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "378,498,246 2.03 344,676,486 2.43 付息负债合计"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.5947,
+              "large_gaps": 2,
+              "text_preview": "净利差（%） 1.07 1.07"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.5947,
+              "large_gaps": 2,
+              "text_preview": "净息差（%） 1.09 1.13"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 89.88,
+        "y0": 204.9,
+        "x1": 505.44,
+        "y1": 362.11,
+        "region_type": "paragraph",
+        "text": "注：1、生息资产、付息负债平均余额是本公司的日均余额。\n2、平均利率计算公式为：利息收入（支出）/平均余额。\n3、存拆放同业和其他金融机构款项包括：存放同业及其他金融机构款项、拆出资金及买入返售金融资\n产。\n4、同业和其他金融性公司存放款项包括：同业及其他金融机构存放款项、拆入资金及卖出回购金融资\n产款。\n2. 报告期营业收入地区分布情况\n报告期内，公司的业务主要分布在福建省厦门市、福建省其他部分...",
+        "item_count": 12,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 11,
+          "row_indices": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 11,
+          "avg_x_coverage": 0.5343,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.5591,
+              "large_gaps": 0,
+              "text_preview": "注：1、生息资产、付息负债平均余额是本公司的日均余额。"
+            },
+            {
+              "idx": 9,
+              "type": "paragraph",
+              "x_coverage": 0.5228,
+              "large_gaps": 0,
+              "text_preview": "2、平均利率计算公式为：利息收入（支出）/平均余额。"
+            },
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.9323,
+              "large_gaps": 0,
+              "text_preview": "3、存拆放同业和其他金融机构款项包括：存放同业及其他金融机构款项、拆出资金及买入返售金融资"
+            },
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.0422,
+              "large_gaps": 0,
+              "text_preview": "产。"
+            },
+            {
+              "idx": 12,
+              "type": "paragraph",
+              "x_coverage": 0.9323,
+              "large_gaps": 0,
+              "text_preview": "4、同业和其他金融性公司存放款项包括：同业及其他金融机构存放款项、拆入资金及卖出回购金融资"
+            },
+            {
+              "idx": 13,
+              "type": "paragraph",
+              "x_coverage": 0.0633,
+              "large_gaps": 0,
+              "text_preview": "产款。"
+            },
+            {
+              "idx": 14,
+              "type": "paragraph",
+              "x_coverage": 0.2512,
+              "large_gaps": 0,
+              "text_preview": "2. 报告期营业收入地区分布情况"
+            },
+            {
+              "idx": 15,
+              "type": "paragraph",
+              "x_coverage": 0.925,
+              "large_gaps": 0,
+              "text_preview": "报告期内，公司的业务主要分布在福建省厦门市、福建省其他部分市县及重庆市。公司"
+            },
+            {
+              "idx": 16,
+              "type": "paragraph",
+              "x_coverage": 0.8613,
+              "large_gaps": 0,
+              "text_preview": "践行“持续深耕、重点突破”的区域战略，不断优化客群结构，服务地方经济。"
+            },
+            {
+              "idx": 17,
+              "type": "paragraph",
+              "x_coverage": 0.5906,
+              "large_gaps": 0,
+              "text_preview": "厦门地区及其他地区的营业收入和营业利润列示如下："
+            },
+            {
+              "idx": 18,
+              "type": "paragraph",
+              "x_coverage": 0.1967,
+              "large_gaps": 0,
+              "text_preview": "单位：人民币千元"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 84.45,
+        "y0": 365.7,
+        "x1": 510.9,
+        "y1": 433.93,
+        "region_type": "table",
+        "text": "较上年同期 占比（%）较上年同期\n占比（%） 地区 营业收入 营业利润\n增减（%） 增减（%）\n3,409,497 58.18 -2.61 1,314,549 47.46 -39.74 厦门地区\n2,450,318 41.82 8.50 1,455,181 52.54 156.23 其他地区\n5,859,815 100.00 1.75 2,769,730 100.00 0.74 合计",
+        "item_count": 29,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 6,
+          "row_indices": [
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ],
+          "table_rows": 6,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.5553,
+          "avg_large_gaps": 3.33,
+          "row_details": [
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.3836,
+              "large_gaps": 1,
+              "text_preview": "较上年同期 占比（%）较上年同期"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.4745,
+              "large_gaps": 3,
+              "text_preview": "占比（%） 地区 营业收入 营业利润"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.3806,
+              "large_gaps": 1,
+              "text_preview": "增减（%） 增减（%）"
+            },
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.6977,
+              "large_gaps": 5,
+              "text_preview": "3,409,497 58.18 -2.61 1,314,549 47.46 -39.74 厦门地区"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.6977,
+              "large_gaps": 5,
+              "text_preview": "2,450,318 41.82 8.50 1,455,181 52.54 156.23 其他地区"
+            },
+            {
+              "idx": 24,
+              "type": "table",
+              "x_coverage": 0.6977,
+              "large_gaps": 5,
+              "text_preview": "5,859,815 100.00 1.75 2,769,730 100.00 0.74 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 89.88,
+        "y0": 451.19,
+        "x1": 505.45,
+        "y1": 622.27,
+        "region_type": "paragraph",
+        "text": "注：厦门地区的营业收入和营业利润含资金业务。\n3. 报告期内营业收入分部情况\n公司的主要业务分部有公司业务、个人业务、资金业务和其他业务。公司实施内部资金\n转移定价以确认分部间的利息收入与利息支出，以促进公司优化资产负债结构、合理产品定\n价、集中利率风险管理以及综合评价绩效水平。\n本公司有节奏地加大对公一般贷款增量提质，公司业务收益同比提升；因零售市场需求\n仍处低迷，量价共同影响个人业务收益同比下...",
+        "item_count": 10,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 9,
+          "row_indices": [
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 9,
+          "avg_x_coverage": 0.6062,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 25,
+              "type": "paragraph",
+              "x_coverage": 0.4643,
+              "large_gaps": 0,
+              "text_preview": "注：厦门地区的营业收入和营业利润含资金业务。"
+            },
+            {
+              "idx": 26,
+              "type": "paragraph",
+              "x_coverage": 0.2334,
+              "large_gaps": 0,
+              "text_preview": "3. 报告期内营业收入分部情况"
+            },
+            {
+              "idx": 27,
+              "type": "paragraph",
+              "x_coverage": 0.925,
+              "large_gaps": 0,
+              "text_preview": "公司的主要业务分部有公司业务、个人业务、资金业务和其他业务。公司实施内部资金"
+            },
+            {
+              "idx": 28,
+              "type": "paragraph",
+              "x_coverage": 0.9745,
+              "large_gaps": 0,
+              "text_preview": "转移定价以确认分部间的利息收入与利息支出，以促进公司优化资产负债结构、合理产品定"
+            },
+            {
+              "idx": 29,
+              "type": "paragraph",
+              "x_coverage": 0.5169,
+              "large_gaps": 0,
+              "text_preview": "价、集中利率风险管理以及综合评价绩效水平。"
+            },
+            {
+              "idx": 30,
+              "type": "paragraph",
+              "x_coverage": 0.9252,
+              "large_gaps": 0,
+              "text_preview": "本公司有节奏地加大对公一般贷款增量提质，公司业务收益同比提升；因零售市场需求"
+            },
+            {
+              "idx": 31,
+              "type": "paragraph",
+              "x_coverage": 0.9742,
+              "large_gaps": 0,
+              "text_preview": "仍处低迷，量价共同影响个人业务收益同比下行；资金业务因市场行情影响，债券类资产公"
+            },
+            {
+              "idx": 32,
+              "type": "paragraph",
+              "x_coverage": 0.246,
+              "large_gaps": 0,
+              "text_preview": "允价值同比有所下降。"
+            },
+            {
+              "idx": 33,
+              "type": "paragraph",
+              "x_coverage": 0.1967,
+              "large_gaps": 0,
+              "text_preview": "单位：人民币千元"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 84.45,
+        "y0": 625.98,
+        "x1": 510.9,
+        "y1": 722.29,
+        "region_type": "table",
+        "text": "较上年同期 占比（%）较上年同期\n占比（%） 分部 营业收入 营业利润\n增减（%） 增减（%）\n3,601,946 61.47 9.36 1,612,863 58.23 6.01 公司业务\n1,268,473 21.65 -6.90 567,152 20.48 -3.44 个人业务\n982,973 16.77 -10.53 586,270 21.17 -8.70 资金业务\n6,423 0.11 4...",
+        "item_count": 43,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41
+          ],
+          "table_rows": 8,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.591,
+          "avg_large_gaps": 4.12,
+          "row_details": [
+            {
+              "idx": 34,
+              "type": "table",
+              "x_coverage": 0.3838,
+              "large_gaps": 1,
+              "text_preview": "较上年同期 占比（%）较上年同期"
+            },
+            {
+              "idx": 35,
+              "type": "table",
+              "x_coverage": 0.4745,
+              "large_gaps": 3,
+              "text_preview": "占比（%） 分部 营业收入 营业利润"
+            },
+            {
+              "idx": 36,
+              "type": "table",
+              "x_coverage": 0.3806,
+              "large_gaps": 1,
+              "text_preview": "增减（%） 增减（%）"
+            },
+            {
+              "idx": 37,
+              "type": "table",
+              "x_coverage": 0.6979,
+              "large_gaps": 5,
+              "text_preview": "3,601,946 61.47 9.36 1,612,863 58.23 6.01 公司业务"
+            },
+            {
+              "idx": 38,
+              "type": "table",
+              "x_coverage": 0.6979,
+              "large_gaps": 6,
+              "text_preview": "1,268,473 21.65 -6.90 567,152 20.48 -3.44 个人业务"
+            },
+            {
+              "idx": 39,
+              "type": "table",
+              "x_coverage": 0.6979,
+              "large_gaps": 6,
+              "text_preview": "982,973 16.77 -10.53 586,270 21.17 -8.70 资金业务"
+            },
+            {
+              "idx": 40,
+              "type": "table",
+              "x_coverage": 0.6978,
+              "large_gaps": 6,
+              "text_preview": "6,423 0.11 49.94 3,445 0.12 其他业务 不适用"
+            },
+            {
+              "idx": 41,
+              "type": "table",
+              "x_coverage": 0.6979,
+              "large_gaps": 5,
+              "text_preview": "5,859,815 100.00 1.75 2,769,730 100.00 0.74 合计"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

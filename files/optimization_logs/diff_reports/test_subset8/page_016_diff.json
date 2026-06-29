@@ -1,0 +1,326 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 16,
+  "timestamp": "2026-06-25T11:31:19.954964",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 3,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 2,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 3 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          80.79,
+          595.28,
+          565.51
+        ],
+        "item_count": 46,
+        "text_preview": "58 承诺及或有事项（续） (2) 信用风险加权资产金额 信用风险加权资产金额按照金融监管总局制定的规则，根据交易对手的状况和到期期限的特点进行计算。 本集团 本行 2024年 12月31日 2023年 12月31日 2024年 12月31日 2023年 12月31日 或有负债及承诺的信用风险加权资产金额 1,225,217 1,224,736 1,154,539 1,194,322"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 16,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 3,
+    "table_regions": 1,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.43,
+    "regions": [
+      {
+        "x0": 42.52,
+        "y0": 104.57,
+        "x1": 505.75,
+        "y1": 148.99,
+        "region_type": "paragraph",
+        "text": "58 承诺及或有事项（续）\n(2) 信用风险加权资产金额\n信用风险加权资产金额按照金融监管总局制定的规则，根据交易对手的状况和到期期限的特点进行计算。",
+        "item_count": 5,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            0,
+            1,
+            2
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 3,
+          "avg_x_coverage": 0.3748,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.2241,
+              "large_gaps": 0,
+              "text_preview": "58 承诺及或有事项（续）"
+            },
+            {
+              "idx": 1,
+              "type": "paragraph",
+              "x_coverage": 0.1983,
+              "large_gaps": 0,
+              "text_preview": "(2) 信用风险加权资产金额"
+            },
+            {
+              "idx": 2,
+              "type": "paragraph",
+              "x_coverage": 0.702,
+              "large_gaps": 0,
+              "text_preview": "信用风险加权资产金额按照金融监管总局制定的规则，根据交易对手的状况和到期期限的特点进行计算。"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 166.38,
+        "x1": 595.28,
+        "y1": 216.4,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n12月31日 12月31日 12月31日 12月31日\n1,225,217 1,154,539 1,224,736 1,194,322 或有负债及承诺的信用风险加权资产金额",
+        "item_count": 15,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            3,
+            4,
+            5,
+            6
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4317,
+          "avg_large_gaps": 2.75,
+          "row_details": [
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.3867,
+              "large_gaps": 3,
+              "text_preview": "12月31日 12月31日 12月31日 12月31日"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "1,225,217 1,154,539 1,224,736 1,194,322 或有负债及承诺的信用风险加权资产金额"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 65.2,
+        "y0": 233.75,
+        "x1": 524.53,
+        "y1": 570.62,
+        "region_type": "paragraph",
+        "text": "(3) 资本支出承诺\n于资产负债表日，本集团已订约未拨付的资本支出承诺为人民币32.45亿元（2023年12月31日：人民币20.71亿\n元）。\n(4) 证券承销承诺\n于2024年12月31日，本集团及本行无未到期的证券承销承诺（2023年12月31日：无）。\n(5) 国债兑付承诺\n作为中国国债承销商，若债券持有人于债券到期日前兑付债券，本集团有责任就所销售的国债为债券持有人兑\n付该债券。该债券于...",
+        "item_count": 26,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 20,
+          "row_indices": [
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 20,
+          "avg_x_coverage": 0.4496,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "paragraph",
+              "x_coverage": 0.1342,
+              "large_gaps": 0,
+              "text_preview": "(3) 资本支出承诺"
+            },
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "于资产负债表日，本集团已订约未拨付的资本支出承诺为人民币32.45亿元（2023年12月31日：人民币20.71亿"
+            },
+            {
+              "idx": 9,
+              "type": "paragraph",
+              "x_coverage": 0.0379,
+              "large_gaps": 0,
+              "text_preview": "元）。"
+            },
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.1342,
+              "large_gaps": 0,
+              "text_preview": "(4) 证券承销承诺"
+            },
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.5613,
+              "large_gaps": 0,
+              "text_preview": "于2024年12月31日，本集团及本行无未到期的证券承销承诺（2023年12月31日：无）。"
+            },
+            {
+              "idx": 12,
+              "type": "paragraph",
+              "x_coverage": 0.1342,
+              "large_gaps": 0,
+              "text_preview": "(5) 国债兑付承诺"
+            },
+            {
+              "idx": 13,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "作为中国国债承销商，若债券持有人于债券到期日前兑付债券，本集团有责任就所销售的国债为债券持有人兑"
+            },
+            {
+              "idx": 14,
+              "type": "paragraph",
+              "x_coverage": 0.733,
+              "large_gaps": 0,
+              "text_preview": "付该债券。该债券于到期日前的兑付金额是包括债券面值及截至兑付日止的未付利息。应付债券持有人的应计"
+            },
+            {
+              "idx": 15,
+              "type": "paragraph",
+              "x_coverage": 0.7172,
+              "large_gaps": 0,
+              "text_preview": "利息按照财政部和人行有关规则计算。兑付金额可能与于兑付日市场上交易的相近似债券的公允价值不同。"
+            },
+            {
+              "idx": 16,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "于2024年12月31日，本集团及本行按债券面值对已承销、出售，但未到期的国债兑付承诺为人民币454.72亿元"
+            },
+            {
+              "idx": 17,
+              "type": "paragraph",
+              "x_coverage": 0.274,
+              "large_gaps": 0,
+              "text_preview": "（2023年12月31日：人民币477.43亿元）。"
+            },
+            {
+              "idx": 18,
+              "type": "paragraph",
+              "x_coverage": 0.1502,
+              "large_gaps": 0,
+              "text_preview": "(6) 未决诉讼和纠纷"
+            },
+            {
+              "idx": 19,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "于2024年12月31日，本集团尚有作为被起诉方，涉案金额约为人民币127.90亿元（2023年12月31日：人民币81"
+            },
+            {
+              "idx": 20,
+              "type": "paragraph",
+              "x_coverage": 0.7334,
+              "large_gaps": 0,
+              "text_preview": "亿元）的未决诉讼案件及纠纷。本集团根据内部及外部经办律师意见，将这些案件及纠纷的很可能损失确认为"
+            },
+            {
+              "idx": 21,
+              "type": "paragraph",
+              "x_coverage": 0.4418,
+              "large_gaps": 0,
+              "text_preview": "预计负债（附注31）。本集团相信计提的预计负债是合理并足够的。"
+            },
+            {
+              "idx": 22,
+              "type": "paragraph",
+              "x_coverage": 0.1021,
+              "large_gaps": 0,
+              "text_preview": "(7) 或有负债"
+            },
+            {
+              "idx": 23,
+              "type": "paragraph",
+              "x_coverage": 0.7335,
+              "large_gaps": 0,
+              "text_preview": "本集团及本行已经根据相关的会计政策对任何很可能引致经济利益流出的承诺及或有负债作出评估并确认预计"
+            },
+            {
+              "idx": 24,
+              "type": "paragraph",
+              "x_coverage": 0.0474,
+              "large_gaps": 0,
+              "text_preview": "负债。"
+            },
+            {
+              "idx": 25,
+              "type": "paragraph",
+              "x_coverage": 0.3906,
+              "large_gaps": 0,
+              "text_preview": "(8) 《关于规范金融机构资产管理业务的指导意见》影响"
+            },
+            {
+              "idx": 26,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "根据人民银行等四部委颁布的《关于规范金融机构资产管理业务的指导意见》以及人民银行相关公告，本集团除"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

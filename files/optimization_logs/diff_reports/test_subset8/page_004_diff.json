@@ -1,0 +1,161 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 4,
+  "timestamp": "2026-06-25T11:31:19.637551",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 2,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 1,
+    "region_count_delta": 1,
+    "paragraphs_newly_found": 1,
+    "changes": [
+      "单区域被拆分为 2 个子区域（表段分离）",
+      "新识别出 1 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          484.72,
+          595.28,
+          646.3
+        ],
+        "item_count": 37,
+        "text_preview": "(1) 按交易对手类别分析 本集团 本行 2024年 12月31日 2023年 12月31日 2024年 12月31日 2023年 12月31日 银行 124,986 131,935 71,452 92,267 非银行金融机构 29,083 16,064"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 4,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 2,
+    "table_regions": 1,
+    "paragraph_regions": 1,
+    "segment_time_ms": 0.26,
+    "regions": [
+      {
+        "x0": 93.54,
+        "y0": 490.62,
+        "x1": 202.02,
+        "y1": 502.39,
+        "region_type": "paragraph",
+        "text": "(1) 按交易对手类别分析",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            0
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1822,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.1822,
+              "large_gaps": 0,
+              "text_preview": "(1) 按交易对手类别分析"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 511.79,
+        "x1": 595.28,
+        "y1": 634.18,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n12月31日 12月31日 12月31日 12月31日\n124,986 71,452 131,935 92,267 银行\n29,083 28,244 16,064 15,803 非银行金融机构\n570 90 379 76 应计利息\n154,639 99,786 148,378 108,146 总额\n(107) (74) 减值准备（附注2...",
+        "item_count": 35,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "table_rows": 8,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.5735,
+          "avg_large_gaps": 3.38,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.3867,
+              "large_gaps": 3,
+              "text_preview": "12月31日 12月31日 12月31日 12月31日"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "124,986 71,452 131,935 92,267 银行"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "29,083 28,244 16,064 15,803 非银行金融机构"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "570 90 379 76 应计利息"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "154,639 99,786 148,378 108,146 总额"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.7179,
+              "large_gaps": 4,
+              "text_preview": "(107) (74) 减值准备（附注22） (160) (103)"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

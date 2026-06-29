@@ -2544,6 +2544,39 @@ def _detect_and_split_mixed_tables(tables: List[dict]) -> Tuple[List[dict], int]
                             is_header = True
                             break
 
+            # ------ Tier 1.7: 编号+短标题分隔行检测 ------
+            # 场景："31  预计负债" —— 前表以"合计"结束，紧跟一个短的章节编号+标题，
+            # 然后是下一个同结构但不同指标的表格。
+            # 与 Tier 1.6（cn_chars ≥ 6）的区别：
+            #   - 降低中文字符阈值至 ≥ 4，覆盖短标题如"预计负债""递延所得税""雇员福利"等
+            #   - 非空单元格 ≤ 2（编号+标题，而非宽行数据）
+            if not is_header:
+                all_text = all(not _is_numeric_cell(t) for t in data_cells)
+                cn_chars = sum(len(re.findall(r'[\u4e00-\u9fff]', t))
+                               for t in non_empty)
+                # 中文 ≥ 4 且非空单元格数 ≤ 2（编号+短标题）
+                if all_text and cn_chars >= 4 and 1 <= len(non_empty) <= 2:
+                    SUMMARY_WORDS = [
+                        '合计', '总计', '总额', '营业收入', '利润总额',
+                        '营业支出', '净利润', '综合收益', '营业利润',
+                    ]
+                    for prev_offset in range(1, min(4, ri + 1)):
+                        prev_row = rows[ri - prev_offset]
+                        prev_texts = prev_row.get("texts", [])
+                        prev_non_empty = [t.strip() for t in prev_texts if t.strip()]
+                        prev_joined = ''.join(prev_non_empty)
+                        is_summary = any(kw in prev_joined for kw in SUMMARY_WORDS)
+                        has_num = any(_is_numeric_cell(t) for t in prev_non_empty)
+                        if is_summary and has_num:
+                            # 额外检查：分隔行 non_empty ≤ 2 确保不是宽数据行
+                            if _DEBUG_MIXED_SPLIT:
+                                print(f"  [Tier1.7] ri={ri} cn_chars={cn_chars} "
+                                      f"prev_offset={prev_offset} non_empty={len(non_empty)} "
+                                      f"matched_kw={[kw for kw in SUMMARY_WORDS if kw in prev_joined]} "
+                                      f"has_num={has_num} texts={non_empty[:2]}")
+                            is_header = True
+                            break
+
             # ------ Tier 2: 中置信度（新增：检测无年份/变化词的表头） ------
             if not is_header and not has_year and not has_delta:
                 n_items = len(row.get("items", []))
@@ -4963,6 +4996,25 @@ def liteparse_tables_to_standard(
         # 从 rows 中推断统一的列 X 范围（用于 UI 渲染和调试）
         column_x_ranges = _infer_column_x_ranges(rows)
 
+        # ── V2 自动表头合成：从原始 text_items 提取 entity×year 表头 ──
+        header_synthesized = False
+        text_items = st.get("text_items", [])
+        if text_items and len(data) >= 2 and column_x_ranges and len(column_x_ranges) >= 2:
+            try:
+                from codes.table_validator.rule_based_repair import (
+                    _extract_headers_from_raw_items,
+                    _synthesize_header_if_needed,
+                )
+                raw_header_info = _extract_headers_from_raw_items(
+                    text_items, column_x_ranges
+                )
+                if raw_header_info:
+                    header_synthesized = _synthesize_header_if_needed(
+                        data, len(data[0]), caption, raw_header_info
+                    )
+            except Exception:
+                pass  # 静默失败，不影响主流程
+
         page = st.get("page", 0)
         caption = st.get("caption", "")
 
@@ -5000,7 +5052,7 @@ def liteparse_tables_to_standard(
             # 质量标记
             "is_real_table": st.get("is_real_table", True),
             "is_complete": st.get("is_complete", True),
-            "has_header": st.get("has_header", False),
+            "has_header": st.get("has_header", False) or header_synthesized,
             "has_numeric_data": st.get("has_numeric_data", False),
             "table_category": st.get("table_category", ""),
             "financial_confidence": st.get("financial_confidence", 0.0),

@@ -1,0 +1,40 @@
+=== 1. 2级表头（年份→科目）===
+  [PASS] 2级表头: 根节点存在
+  [PASS] 2级表头: 顶层2个child
+  [PASS] 2级表头: 左child='2024年'
+  [PASS] 2级表头: 左child col_span=3
+  [PASS] 2级表头: 右child='2023年'
+  [PASS] 2级表头: 左分支3个叶子
+  [PASS] 2级表头: 叶子label='金额'
+  [PASS] 2级表头: 右分支2个叶子
+
+=== 2. 3级表头（大类→中类→细类）===
+  [PASS] 3级表头: 根有2个child
+  [PASS] 3级表头: L0='流动资产'
+  [PASS] 3级表头: 中类有3个child
+  [PASS] 3级表头: child[0]='货币资金'
+  [PASS] 3级表头: L2[0]='金额'
+  [PASS] 3级表头: max_depth=4
+
+=== 3. fill_gaps 空缺填充 ===
+  [PASS] gap填充: child[0].col_end <= child[1].col_start
+
+=== 4. fix_column_alignment ===
+  [PASS] 列修正: 最大col_end=6
+
+=== 5. to_dict / to_2d_header ===
+  [PASS] to_dict: label
+  [PASS] to_dict: children
+  [PASS] to_2d_header: 2行
+  [PASS] to_2d_header: 每行6列
+
+=== 6. 单行表头 ===
+  [PASS] 单行表头: 3个叶子
+
+=== 7. flatten_levels 展平 ===
+  [PASS] 3级展平: 3行（wrapper保护后完整层级）
+  [PASS] 3级展平: 流动资产存在
+
+========================================
+Results: 23 PASS, 0 FAIL
+All passed!

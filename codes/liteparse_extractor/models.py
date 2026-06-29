@@ -106,6 +106,42 @@ class TableRegion:
 
 
 # ============================================================
+# 段落区域
+# ============================================================
+
+@dataclass
+class ParagraphRegion:
+    """页面上一个被识别为段落文本的区域。"""
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str = ""                     # 段落全文
+    line_count: int = 0                # 行数
+    confidence: float = 0.0            # 段落置信度 0~1
+
+    def to_dict(self) -> dict:
+        return {
+            "x0": round(self.x0, 2),
+            "y0": round(self.y0, 2),
+            "x1": round(self.x1, 2),
+            "y1": round(self.y1, 2),
+            "text": self.text,
+            "line_count": self.line_count,
+            "confidence": round(self.confidence, 4),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ParagraphRegion":
+        return cls(
+            x0=d["x0"], y0=d["y0"], x1=d["x1"], y1=d["y1"],
+            text=d.get("text", ""),
+            line_count=d.get("line_count", 0),
+            confidence=d.get("confidence", 0.0),
+        )
+
+
+# ============================================================
 # 单页结果
 # ============================================================
 
@@ -118,6 +154,7 @@ class PageResult:
     - 全部文本片段（含坐标）
     - 保留版式的全文文本
     - 检测到的表格区域列表
+    - 检测到的段落区域列表（v2 新增）
     """
     page_number: int                         # 1-based
     page_width: float                        # pt
@@ -125,13 +162,20 @@ class PageResult:
     full_text: str = ""                      # 保留空格对齐的版式文本
     text_items: List[TextItem] = field(default_factory=list)
     table_regions: List[TableRegion] = field(default_factory=list)
+    paragraph_regions: List[ParagraphRegion] = field(default_factory=list)  # v2: 段落区域
     is_table_page: bool = False              # 是否可能包含表格
+    has_paragraphs: bool = False             # v2: 是否包含段落区域
     error: Optional[str] = None              # 本页解析错误信息
 
     @property
     def table_texts(self) -> List[str]:
         """便捷属性：所有表格区域的 region_text 列表。"""
         return [r.region_text for r in self.table_regions if r.region_text.strip()]
+
+    @property
+    def paragraph_texts(self) -> List[str]:
+        """便捷属性：所有段落区域的 text 列表。"""
+        return [r.text for r in self.paragraph_regions if r.text.strip()]
 
     def to_dict(self) -> dict:
         return {
@@ -141,7 +185,9 @@ class PageResult:
             "full_text": self.full_text,
             "text_items": [ti.to_dict() for ti in self.text_items],
             "table_regions": [tr.to_dict() for tr in self.table_regions],
+            "paragraph_regions": [pr.to_dict() for pr in self.paragraph_regions],
             "is_table_page": self.is_table_page,
+            "has_paragraphs": self.has_paragraphs,
             "error": self.error,
         }
 
@@ -154,7 +200,9 @@ class PageResult:
             full_text=d.get("full_text", ""),
             text_items=[TextItem.from_dict(ti) for ti in d.get("text_items", [])],
             table_regions=[TableRegion.from_dict(tr) for tr in d.get("table_regions", [])],
+            paragraph_regions=[ParagraphRegion.from_dict(pr) for pr in d.get("paragraph_regions", [])],
             is_table_page=d.get("is_table_page", False),
+            has_paragraphs=d.get("has_paragraphs", False),
             error=d.get("error"),
         )
 

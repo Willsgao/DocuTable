@@ -1,0 +1,347 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 1,
+  "timestamp": "2026-06-25T11:31:19.560867",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 4,
+    "after_table_regions": 2,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 3,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 4 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          565.51
+        ],
+        "item_count": 95,
+        "text_preview": "长江三角洲 5,239,658 18.25 5,402,635 19.54 珠江三角洲 4,139,205 14.41 4,132,280 14.94 环渤海地区 5,387,852 18.76 5,030,828 18.19 中部地区 5,357,116 18.66 5,059,057 18.30"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 1,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 4,
+    "table_regions": 2,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.51,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 176.43,
+        "x1": 595.28,
+        "y1": 299.06,
+        "region_type": "table",
+        "text": "5,239,658 18.25 5,402,635 19.54 长江三角洲\n4,139,205 14.41 4,132,280 14.94 珠江三角洲\n5,387,852 18.76 5,030,828 18.19 环渤海地区\n5,357,116 18.66 5,059,057 18.30 中部地区\n5,601,417 19.51 5,266,200 19.04 西部地区\n1,977,185 6....",
+        "item_count": 50,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 10,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "table_rows": 10,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7905,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "5,239,658 18.25 5,402,635 19.54 长江三角洲"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "4,139,205 14.41 4,132,280 14.94 珠江三角洲"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "5,387,852 18.76 5,030,828 18.19 环渤海地区"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "5,357,116 18.66 5,059,057 18.30 中部地区"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "5,601,417 19.51 5,266,200 19.04 西部地区"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "1,977,185 6.89 1,848,350 6.68 东北地区"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "15,339 0.05 15,583 0.06 总行"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "520,800 1.81 468,371 1.69 境外"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "475,298 1.66 430,707 1.56 应计利息"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 4,
+              "text_preview": "28,713,870 100.00 27,654,011 100.00 吸收存款"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 70.87,
+        "y0": 313.96,
+        "x1": 299.48,
+        "y1": 351.48,
+        "region_type": "paragraph",
+        "text": "股东权益\n下表列出所示日期本集团股东权益总额及构成情况。",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            10,
+            11
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.227,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.0699,
+              "large_gaps": 0,
+              "text_preview": "股东权益"
+            },
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.384,
+              "large_gaps": 0,
+              "text_preview": "下表列出所示日期本集团股东权益总额及构成情况。"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 362.27,
+        "x1": 595.28,
+        "y1": 535.86,
+        "region_type": "table",
+        "text": "2024年 2023年\n12月31日 12月31日 （人民币百万元）\n250,011 250,011 股本\n159,977 199,968 其他权益工具\n59,977 59,977 优先股\n100,000 139,991 永续债\n135,736 135,619 资本公积\n57,901 23,981 其他综合收益\n402,196 369,906 盈余公积\n534,591 496,255 一般风险准备...",
+        "item_count": 41,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 14,
+          "row_indices": [
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
+          ],
+          "table_rows": 14,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7457,
+          "avg_large_gaps": 1.93,
+          "row_details": [
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.1854,
+              "large_gaps": 1,
+              "text_preview": "2024年 2023年"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.7972,
+              "large_gaps": 2,
+              "text_preview": "12月31日 12月31日 （人民币百万元）"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "250,011 250,011 股本"
+            },
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "159,977 199,968 其他权益工具"
+            },
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.7762,
+              "large_gaps": 2,
+              "text_preview": "59,977 59,977 优先股"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.7762,
+              "large_gaps": 2,
+              "text_preview": "100,000 139,991 永续债"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "135,736 135,619 资本公积"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "57,901 23,981 其他综合收益"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "402,196 369,906 盈余公积"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "534,591 496,255 一般风险准备"
+            },
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "1,781,715 1,674,405 未分配利润"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "3,322,127 3,150,145 归属于本行股东权益"
+            },
+            {
+              "idx": 24,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "21,838 21,929 少数股东权益"
+            },
+            {
+              "idx": 25,
+              "type": "table",
+              "x_coverage": 0.7905,
+              "large_gaps": 2,
+              "text_preview": "3,343,965 3,172,074 股东权益总额"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 70.87,
+        "y0": 550.89,
+        "x1": 552.81,
+        "y1": 562.74,
+        "region_type": "paragraph",
+        "text": "2024年末，本集团股东权益3.34万亿元，较上年增加1,718.91亿元，增幅5.42% ，主要是由于未分配利润较上年增",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            26
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.8096,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 26,
+              "type": "paragraph",
+              "x_coverage": 0.8096,
+              "large_gaps": 0,
+              "text_preview": "2024年末，本集团股东权益3.34万亿元，较上年增加1,718.91亿元，增幅5.42% ，主要是由于未分配利润较上年"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

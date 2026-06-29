@@ -1,0 +1,321 @@
+{
+  "pdf_name": "test_subset",
+  "page_number": 5,
+  "timestamp": "2026-06-25T11:47:27.497578",
+  "page_size": {
+    "width": 595.44,
+    "height": 841.92
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 5,
+    "after_table_regions": 0,
+    "after_paragraph_regions": 5,
+    "region_count_delta": 4,
+    "paragraphs_newly_found": 5,
+    "changes": [
+      "单区域被拆分为 5 个子区域（表段分离）",
+      "新识别出 5 个段落区域",
+      "表格区域从 1 减少到 0"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          68.18,
+          194.93,
+          559.44,
+          609.55
+        ],
+        "item_count": 53,
+        "text_preview": "关键审计事项 审计应对 一、发放贷款及垫款损失准备的确定 厦门银行根据《企业会计准则第22号——金 融工具确认和计量》，采用预期信用损失法 计提发放贷款及垫款的损失准备。 于2025 年12 月31 日，厦门银行以摊余成本 计量的发放贷款及垫款总额人民币2,319.20 亿元，损失准备余额人民币58.17 亿元 ；以 公允价值计量且其变动计入其他综合收益的 发放贷款及垫款账面价值人民币118.12 亿 元，损失准备余额人民币0.26 亿元。 厦门银行在发放贷款及垫款的损失准备计量"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 5,
+    "page_width": 595.44,
+    "page_height": 841.92,
+    "total_regions": 5,
+    "table_regions": 0,
+    "paragraph_regions": 5,
+    "segment_time_ms": 0.48,
+    "regions": [
+      {
+        "x0": 76.58,
+        "y0": 227.12,
+        "x1": 553.9,
+        "y1": 299.63,
+        "region_type": "paragraph",
+        "text": "一、发放贷款及垫款损失准备的确定 我们对发放贷款及垫款的损失准备执行的审\n计程序主要包括以下方面：\n厦门银行根据《企业会计准则第22号——金\n(1) 融工具确认和计量》，采用预期信用损失法 关键内部控制的设计和运行的有效性：\n计提发放贷款及垫款的损失准备。",
+        "item_count": 8,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 5,
+          "avg_x_coverage": 0.5451,
+          "avg_large_gaps": 0.4,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "paragraph",
+              "x_coverage": 0.8016,
+              "large_gaps": 1,
+              "text_preview": "一、发放贷款及垫款损失准备的确定 我们对发放贷款及垫款的损失准备执行的审"
+            },
+            {
+              "idx": 2,
+              "type": "paragraph",
+              "x_coverage": 0.2931,
+              "large_gaps": 0,
+              "text_preview": "计程序主要包括以下方面："
+            },
+            {
+              "idx": 3,
+              "type": "paragraph",
+              "x_coverage": 0.4716,
+              "large_gaps": 0,
+              "text_preview": "厦门银行根据《企业会计准则第22号——金"
+            },
+            {
+              "idx": 4,
+              "type": "paragraph",
+              "x_coverage": 0.7926,
+              "large_gaps": 1,
+              "text_preview": "(1) 融工具确认和计量》，采用预期信用损失法 关键内部控制的设计和运行的有效性："
+            },
+            {
+              "idx": 5,
+              "type": "paragraph",
+              "x_coverage": 0.3666,
+              "large_gaps": 0,
+              "text_preview": "计提发放贷款及垫款的损失准备。"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 73.7,
+        "y0": 316.77,
+        "x1": 553.85,
+        "y1": 437.89,
+        "region_type": "paragraph",
+        "text": "于2025 年12 月31 日，厦门银行以摊余成本 型相关的关键内部控制的设计和运\n计量的发放贷款及垫款总额人民币2,319.20 行的有效性，包括：预期信用损失\n亿元，损失准备余额人民币58.17 亿元 ；以 模型方法论的选择、审批及应用，\n公允价值计量且其变动计入其他综合收益的 模型优化、模型的参数更新及定期\n发放贷款及垫款账面价值人民币118.12 亿 验证，基础数据及相关参数的输\n元，损失...",
+        "item_count": 22,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 8,
+          "avg_x_coverage": 0.7494,
+          "avg_large_gaps": 0.88,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "paragraph",
+              "x_coverage": 0.8015,
+              "large_gaps": 1,
+              "text_preview": "于2025 年12 月31 日，厦门银行以摊余成本 型相关的关键内部控制的设计和运"
+            },
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.8015,
+              "large_gaps": 1,
+              "text_preview": "计量的发放贷款及垫款总额人民币2,319.20 行的有效性，包括：预期信用损失"
+            },
+            {
+              "idx": 9,
+              "type": "paragraph",
+              "x_coverage": 0.8015,
+              "large_gaps": 1,
+              "text_preview": "亿元，损失准备余额人民币58.17 亿元 ；以 模型方法论的选择、审批及应用，"
+            },
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.8015,
+              "large_gaps": 1,
+              "text_preview": "公允价值计量且其变动计入其他综合收益的 模型优化、模型的参数更新及定期"
+            },
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.8015,
+              "large_gaps": 1,
+              "text_preview": "发放贷款及垫款账面价值人民币118.12 亿 验证，基础数据及相关参数的输"
+            },
+            {
+              "idx": 12,
+              "type": "paragraph",
+              "x_coverage": 0.8015,
+              "large_gaps": 1,
+              "text_preview": "元，损失准备余额人民币0.26 亿元。 入，基于发放贷款及垫款的资产质"
+            },
+            {
+              "idx": 13,
+              "type": "paragraph",
+              "x_coverage": 0.3801,
+              "large_gaps": 0,
+              "text_preview": "量而进行的阶段划分，现金流折现"
+            },
+            {
+              "idx": 14,
+              "type": "paragraph",
+              "x_coverage": 0.8063,
+              "large_gaps": 1,
+              "text_preview": "厦门银行在发放贷款及垫款的损失准备计量 模型中现金流的预测，前瞻性信息"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 73.7,
+        "y0": 455.43,
+        "x1": 307.73,
+        "y1": 467.43,
+        "region_type": "paragraph",
+        "text": "放贷款及垫款的阶段划分，包括信用风险是",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            16
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.4764,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 16,
+              "type": "paragraph",
+              "x_coverage": 0.4764,
+              "large_gaps": 0,
+              "text_preview": "放贷款及垫款的阶段划分，包括信用风险是"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 73.7,
+        "y0": 486.39,
+        "x1": 553.9,
+        "y1": 545.22,
+        "region_type": "paragraph",
+        "text": "对于阶段一和阶段二的企业贷款及垫款、票 统和控制的设计和运行的有效性，\n据贴现和全部个人贷款及垫款，采用风险参 包括：系统的整体控制、系统间数\n数模型法评估其损失准备，关键参数包含违 据传输、预期信用损失模型参数的\n约概率、违约损失率、违约风险敞口、折现 映像，以及发放贷款及垫款损失准",
+        "item_count": 8,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            18,
+            19,
+            20,
+            21
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 4,
+          "avg_x_coverage": 0.8064,
+          "avg_large_gaps": 1.0,
+          "row_details": [
+            {
+              "idx": 18,
+              "type": "paragraph",
+              "x_coverage": 0.8063,
+              "large_gaps": 1,
+              "text_preview": "对于阶段一和阶段二的企业贷款及垫款、票 统和控制的设计和运行的有效性，"
+            },
+            {
+              "idx": 19,
+              "type": "paragraph",
+              "x_coverage": 0.8063,
+              "large_gaps": 1,
+              "text_preview": "据贴现和全部个人贷款及垫款，采用风险参 包括：系统的整体控制、系统间数"
+            },
+            {
+              "idx": 20,
+              "type": "paragraph",
+              "x_coverage": 0.8063,
+              "large_gaps": 1,
+              "text_preview": "数模型法评估其损失准备，关键参数包含违 据传输、预期信用损失模型参数的"
+            },
+            {
+              "idx": 21,
+              "type": "paragraph",
+              "x_coverage": 0.8065,
+              "large_gaps": 1,
+              "text_preview": "约概率、违约损失率、违约风险敞口、折现 映像，以及发放贷款及垫款损失准"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 73.7,
+        "y0": 564.42,
+        "x1": 308.52,
+        "y1": 607.4,
+        "region_type": "paragraph",
+        "text": "及垫款，采用现金流折现法评估其损失准\n备，关键参数包含预计可收回的现金流和折\n现率等。",
+        "item_count": 3,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            23,
+            24,
+            25
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 3,
+          "avg_x_coverage": 0.3507,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 23,
+              "type": "paragraph",
+              "x_coverage": 0.478,
+              "large_gaps": 0,
+              "text_preview": "及垫款，采用现金流折现法评估其损失准"
+            },
+            {
+              "idx": 24,
+              "type": "paragraph",
+              "x_coverage": 0.4765,
+              "large_gaps": 0,
+              "text_preview": "备，关键参数包含预计可收回的现金流和折"
+            },
+            {
+              "idx": 25,
+              "type": "paragraph",
+              "x_coverage": 0.0977,
+              "large_gaps": 0,
+              "text_preview": "现率等。"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,530 @@
+{
+  "pdf_name": "test_subset",
+  "page_number": 1,
+  "timestamp": "2026-06-25T11:47:27.383990",
+  "page_size": {
+    "width": 595.35,
+    "height": 842.0
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 7,
+    "after_table_regions": 3,
+    "after_paragraph_regions": 4,
+    "region_count_delta": 6,
+    "paragraphs_newly_found": 4,
+    "changes": [
+      "单区域被拆分为 7 个子区域（表段分离）",
+      "新识别出 4 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          84.45,
+          64.95,
+          510.9,
+          772.04
+        ],
+        "item_count": 140,
+        "text_preview": "五、报告期内主要经营情况 （一）利润表分析 报告期内，公司实现营业收入58.60 亿元，同比增长1.75%；公司实现利润总额27.70 亿元，较上年增加0.34 亿元，同比增长1.25%。公司实现归属于母公司股东的净利润26.35 亿元，较上年增加0.40 亿元，同比增长1.55%。 下表列出2025 年度公司利润表项目构成及变化情况： 单位：人民币千元 项目 2025 年 2024 年 同比变动（%） 营业收入 5,859,815 5,759,163"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 1,
+    "page_width": 595.35,
+    "page_height": 842.0,
+    "total_regions": 7,
+    "table_regions": 3,
+    "paragraph_regions": 4,
+    "segment_time_ms": 0.87,
+    "regions": [
+      {
+        "x0": 89.88,
+        "y0": 97.5,
+        "x1": 505.51,
+        "y1": 226.75,
+        "region_type": "paragraph",
+        "text": "五、报告期内主要经营情况\n（一）利润表分析\n报告期内，公司实现营业收入58.60 亿元，同比增长1.75%；公司实现利润总额27.70\n亿元，较上年增加0.34 亿元，同比增长1.25%。公司实现归属于母公司股东的净利润26.35\n亿元，较上年增加0.40 亿元，同比增长1.55%。\n下表列出2025 年度公司利润表项目构成及变化情况：\n单位：人民币千元",
+        "item_count": 11,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 7,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 7,
+          "avg_x_coverage": 0.4053,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.2963,
+              "large_gaps": 0,
+              "text_preview": "五、报告期内主要经营情况"
+            },
+            {
+              "idx": 1,
+              "type": "paragraph",
+              "x_coverage": 0.1973,
+              "large_gaps": 0,
+              "text_preview": "（一）利润表分析"
+            },
+            {
+              "idx": 2,
+              "type": "paragraph",
+              "x_coverage": 0.6628,
+              "large_gaps": 0,
+              "text_preview": "报告期内，公司实现营业收入58.60 亿元，同比增长1.75%；公司实现利润总额27.70"
+            },
+            {
+              "idx": 3,
+              "type": "paragraph",
+              "x_coverage": 0.6979,
+              "large_gaps": 0,
+              "text_preview": "亿元，较上年增加0.34 亿元，同比增长1.25%。公司实现归属于母公司股东的净利润26.35"
+            },
+            {
+              "idx": 4,
+              "type": "paragraph",
+              "x_coverage": 0.3717,
+              "large_gaps": 0,
+              "text_preview": "亿元，较上年增加0.40 亿元，同比增长1.55%。"
+            },
+            {
+              "idx": 5,
+              "type": "paragraph",
+              "x_coverage": 0.4142,
+              "large_gaps": 0,
+              "text_preview": "下表列出2025 年度公司利润表项目构成及变化情况："
+            },
+            {
+              "idx": 6,
+              "type": "paragraph",
+              "x_coverage": 0.1967,
+              "large_gaps": 0,
+              "text_preview": "单位：人民币千元"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 84.45,
+        "y0": 228.59,
+        "x1": 510.9,
+        "y1": 481.81,
+        "region_type": "table",
+        "text": "2025 2024 同比变动（%） 项目 年 年\n5,859,815 5,759,163 1.75 营业收入\n4,195,011 4,004,981 4.74 利息净收入\n1,664,804 1,754,182 -5.10 非利息净收入\n3,090,085 3,009,832 2.67 营业支出\n69,761 69,463 0.43 税金及附加\n2,266,899 2,238,498 1.27 业...",
+        "item_count": 74,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 18,
+          "row_indices": [
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ],
+          "table_rows": 18,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6718,
+          "avg_large_gaps": 3.0,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.5769,
+              "large_gaps": 3,
+              "text_preview": "2025 2024 同比变动（%） 项目 年 年"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "5,859,815 5,759,163 1.75 营业收入"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "4,195,011 4,004,981 4.74 利息净收入"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "1,664,804 1,754,182 -5.10 非利息净收入"
+            },
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "3,090,085 3,009,832 2.67 营业支出"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "69,761 69,463 0.43 税金及附加"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "2,266,899 2,238,498 1.27 业务及管理费"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "753,133 697,838 7.92 信用减值损失"
+            },
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "- 3,555 -100.00 资产减值损失"
+            },
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "292 478 -38.75 其他业务成本"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "2,769,730 2,749,331 0.74 营业利润"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "10,156 9,395 8.10 加：营业外收入"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "10,253 23,384 -56.15 减：营业外支出"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "2,769,633 2,735,342 1.25 利润总额"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.6628,
+              "large_gaps": 3,
+              "text_preview": "17,957 29,465 -39.06 减：所得税费用"
+            },
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "2,751,676 2,705,877 1.69 净利润"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "2,634,763 2,594,646 1.55 归属于母公司股东的净利润"
+            },
+            {
+              "idx": 24,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 3,
+              "text_preview": "116,913 111,231 5.11 少数股东权益"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 89.88,
+        "y0": 494.63,
+        "x1": 510.73,
+        "y1": 629.59,
+        "region_type": "paragraph",
+        "text": "1. 生息资产和付息负债情况\n报告期内，公司净利差为1.07%，同比持平，净息差为1.09%，同比下降0.04 个百分点。\n在LPR 持续下行、同业竞争加剧的压力下，公司积极优化资负结构，一方面，有节奏地发\n力对公一般贷款增量提质，有效减缓资产端收益率下行程度，另一方面，加强低成本存款吸\n纳、推动存款久期缩短，活期存款日均占比提升2.38 个百分点，负债成本率实现显著压降。\n“双足并行”推动公司净...",
+        "item_count": 11,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 7,
+          "row_indices": [
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 7,
+          "avg_x_coverage": 0.6264,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 25,
+              "type": "paragraph",
+              "x_coverage": 0.2159,
+              "large_gaps": 0,
+              "text_preview": "1. 生息资产和付息负债情况"
+            },
+            {
+              "idx": 26,
+              "type": "paragraph",
+              "x_coverage": 0.6716,
+              "large_gaps": 0,
+              "text_preview": "报告期内，公司净利差为1.07%，同比持平，净息差为1.09%，同比下降0.04 个百分点。"
+            },
+            {
+              "idx": 27,
+              "type": "paragraph",
+              "x_coverage": 0.698,
+              "large_gaps": 0,
+              "text_preview": "在LPR 持续下行、同业竞争加剧的压力下，公司积极优化资负结构，一方面，有节奏地发"
+            },
+            {
+              "idx": 28,
+              "type": "paragraph",
+              "x_coverage": 0.9742,
+              "large_gaps": 0,
+              "text_preview": "力对公一般贷款增量提质，有效减缓资产端收益率下行程度，另一方面，加强低成本存款吸"
+            },
+            {
+              "idx": 29,
+              "type": "paragraph",
+              "x_coverage": 0.7069,
+              "large_gaps": 0,
+              "text_preview": "纳、推动存款久期缩短，活期存款日均占比提升2.38 个百分点，负债成本率实现显著压降。"
+            },
+            {
+              "idx": 30,
+              "type": "paragraph",
+              "x_coverage": 0.9216,
+              "large_gaps": 0,
+              "text_preview": "“双足并行”推动公司净利差保持去年同期水平，净息差降幅较去年同期改善11BP。"
+            },
+            {
+              "idx": 31,
+              "type": "paragraph",
+              "x_coverage": 0.1967,
+              "large_gaps": 0,
+              "text_preview": "单位：人民币千元"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 84.45,
+        "y0": 631.43,
+        "x1": 510.9,
+        "y1": 687.85,
+        "region_type": "table",
+        "text": "2025 2024 项目 年 年\n平均利率（%） 平均利率（%） 平均余额 平均余额\n218,389,827 3.63 205,734,528 4.06 发放贷款和垫款\n16,288,871 1.33 16,191,814 1.33 存放中央银行款项",
+        "item_count": 19,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            32,
+            33,
+            34,
+            35
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6182,
+          "avg_large_gaps": 3.25,
+          "row_details": [
+            {
+              "idx": 32,
+              "type": "table",
+              "x_coverage": 0.6077,
+              "large_gaps": 2,
+              "text_preview": "2025 2024 项目 年 年"
+            },
+            {
+              "idx": 33,
+              "type": "table",
+              "x_coverage": 0.4686,
+              "large_gaps": 3,
+              "text_preview": "平均利率（%） 平均利率（%） 平均余额 平均余额"
+            },
+            {
+              "idx": 34,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "218,389,827 3.63 205,734,528 4.06 发放贷款和垫款"
+            },
+            {
+              "idx": 35,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "16,288,871 1.33 16,191,814 1.33 存放中央银行款项"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 89.88,
+        "y0": 689.7,
+        "x1": 209.89,
+        "y1": 700.15,
+        "region_type": "paragraph",
+        "text": "存拆放同业和其他金融机",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            36
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.2814,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 36,
+              "type": "paragraph",
+              "x_coverage": 0.2814,
+              "large_gaps": 0,
+              "text_preview": "存拆放同业和其他金融机"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 89.88,
+        "y0": 703.26,
+        "x1": 121.33,
+        "y1": 713.71,
+        "region_type": "paragraph",
+        "text": "构款项",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            38
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.0737,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 38,
+              "type": "paragraph",
+              "x_coverage": 0.0737,
+              "large_gaps": 0,
+              "text_preview": "构款项"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 84.45,
+        "y0": 715.55,
+        "x1": 510.9,
+        "y1": 771.97,
+        "region_type": "table",
+        "text": "115,098,777 2.57 102,093,914 2.88 金融资产投资\n383,413,856 3.09 353,955,086 3.50 生息资产合计\n平均利率（%） 平均利率（%） 平均余额 平均余额\n220,901,877 2.00 196,085,966 2.38 吸收存款",
+        "item_count": 19,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            39,
+            40,
+            41,
+            42
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6408,
+          "avg_large_gaps": 3.75,
+          "row_details": [
+            {
+              "idx": 39,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "115,098,777 2.57 102,093,914 2.88 金融资产投资"
+            },
+            {
+              "idx": 40,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "383,413,856 3.09 353,955,086 3.50 生息资产合计"
+            },
+            {
+              "idx": 41,
+              "type": "table",
+              "x_coverage": 0.4686,
+              "large_gaps": 3,
+              "text_preview": "平均利率（%） 平均利率（%） 平均余额 平均余额"
+            },
+            {
+              "idx": 42,
+              "type": "table",
+              "x_coverage": 0.6981,
+              "large_gaps": 4,
+              "text_preview": "220,901,877 2.00 196,085,966 2.38 吸收存款"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

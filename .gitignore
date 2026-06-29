@@ -26,6 +26,7 @@ cache/
 
 # WorkBuddy plans
 .codebuddy/
+mycodebuddy/
 
 # OS
 .DS_Store

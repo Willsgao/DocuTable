@@ -1,0 +1,466 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 17,
+  "timestamp": "2026-06-25T11:31:19.986209",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 7,
+    "after_table_regions": 4,
+    "after_paragraph_regions": 3,
+    "region_count_delta": 6,
+    "paragraphs_newly_found": 3,
+    "changes": [
+      "单区域被拆分为 7 个子区域（表段分离）",
+      "新识别出 3 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          646.3
+        ],
+        "item_count": 144,
+        "text_preview": "交易金额 2024年 2023年 注释 交易金额 占同类交易 的比例 交易金额 占同类交易 的比例 利息收入 21,674 1.75% 20,578 1.65% 利息支出 9,293 1.43% 11,071 1.76%"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 17,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 7,
+    "table_regions": 4,
+    "paragraph_regions": 3,
+    "segment_time_ms": 0.85,
+    "regions": [
+      {
+        "x0": 109.34,
+        "y0": 177.27,
+        "x1": 150.2,
+        "y1": 187.93,
+        "region_type": "paragraph",
+        "text": "交易金额",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            0
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.0686,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.0686,
+              "large_gaps": 0,
+              "text_preview": "交易金额"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 195.75,
+        "x1": 595.28,
+        "y1": 315.15,
+        "region_type": "table",
+        "text": "2024年 2023年\n占同类交易 占同类交易\n交易金额 的比例 注释 交易金额 的比例\n21,674 1.75% 20,578 1.65% 利息收入\n9,293 1.43% 11,071 1.76% 利息支出\n470 0.40% 433 0.33% 手续费及佣金收入\n16 0.12% 28 0.20% 手续费及佣金支出\n4,434 20.70% 5,427 32.14% 投资收益\n736 3.4...",
+        "item_count": 45,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 10,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "table_rows": 10,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.5748,
+          "avg_large_gaps": 3.5,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.2617,
+              "large_gaps": 1,
+              "text_preview": "2024年 2023年"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.2873,
+              "large_gaps": 1,
+              "text_preview": "占同类交易 占同类交易"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.466,
+              "large_gaps": 4,
+              "text_preview": "交易金额 的比例 注释 交易金额 的比例"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "21,674 1.75% 20,578 1.65% 利息收入"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "9,293 1.43% 11,071 1.76% 利息支出"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "470 0.40% 433 0.33% 手续费及佣金收入"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "16 0.12% 28 0.20% 手续费及佣金支出"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "4,434 20.70% 5,427 32.14% 投资收益"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "736 3.47% 1,248 6.17% 其他业务收入"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 5,
+              "text_preview": "652 0.30% (i) 1,069 0.51% 业务及管理费"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 109.34,
+        "y0": 333.34,
+        "x1": 236.89,
+        "y1": 343.99,
+        "region_type": "paragraph",
+        "text": "资产负债表日重大交易的余额",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            11
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.2143,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.2143,
+              "large_gaps": 0,
+              "text_preview": "资产负债表日重大交易的余额"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 351.81,
+        "x1": 595.28,
+        "y1": 448.22,
+        "region_type": "table",
+        "text": "2024年12月31日 2023年12月31日\n占同类交易 占同类交易\n交易余额 的比例 注释 交易余额 的比例\n37,494 24.26% 26,110 17.62% 存放同业款项\n130,800 19.44% 148,527 22.00% 拆出资金\n15,959 14.77% 3,560 8.12% 衍生金融资产\n31,295 5.03% 45,774 4.67% 买入返售金融资产\n157,4...",
+        "item_count": 34,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "table_rows": 8,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.5566,
+          "avg_large_gaps": 3.25,
+          "row_details": [
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.3183,
+              "large_gaps": 1,
+              "text_preview": "2024年12月31日 2023年12月31日"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.2873,
+              "large_gaps": 1,
+              "text_preview": "占同类交易 占同类交易"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.466,
+              "large_gaps": 4,
+              "text_preview": "交易余额 的比例 注释 交易余额 的比例"
+            },
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "37,494 24.26% 26,110 17.62% 存放同业款项"
+            },
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "130,800 19.44% 148,527 22.00% 拆出资金"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "15,959 14.77% 3,560 8.12% 衍生金融资产"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "31,295 5.03% 45,774 4.67% 买入返售金融资产"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "157,404 0.63% 245,845 1.07% 发放贷款和垫款"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 116.22,
+        "y0": 450.37,
+        "x1": 230.51,
+        "y1": 470.84,
+        "region_type": "paragraph",
+        "text": "金融投资\n以 公允价值计量且其变动计入",
+        "item_count": 3,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            20,
+            21
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.1165,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 20,
+              "type": "paragraph",
+              "x_coverage": 0.0546,
+              "large_gaps": 0,
+              "text_preview": "金融投资"
+            },
+            {
+              "idx": 21,
+              "type": "paragraph",
+              "x_coverage": 0.1783,
+              "large_gaps": 0,
+              "text_preview": "以 公允价值计量且其变动计入"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 472.8,
+        "x1": 595.28,
+        "y1": 494.21,
+        "region_type": "table",
+        "text": "152,874 24.96% 161,299 26.78% 当期损益的金融资产\n201,682 2.71% 197,187 2.90% 以摊余成本计量的金融资产",
+        "item_count": 10,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            22,
+            23
+          ],
+          "table_rows": 2,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6556,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.6487,
+              "large_gaps": 4,
+              "text_preview": "152,874 24.96% 161,299 26.78% 当期损益的金融资产"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.6625,
+              "large_gaps": 4,
+              "text_preview": "201,682 2.71% 197,187 2.90% 以摊余成本计量的金融资产"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 507.29,
+        "x1": 595.28,
+        "y1": 635.99,
+        "region_type": "table",
+        "text": "398,031 15.07% 272,277 12.18% 其他综合收益的金融资产\n562 0.23% 7 0.00% 其他资产\n192,798 6.80% (ii) 248,508 8.90% 同业及其他金融机构存放款项\n186,085 38.78% 177,615 43.56% 拆入资金\n11,188 11.90% 4,455 10.64% 衍生金融负债\n34,944 4.72% 7,749 ...",
+        "item_count": 48,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 10,
+          "row_indices": [
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34
+          ],
+          "table_rows": 10,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6557,
+          "avg_large_gaps": 3.8,
+          "row_details": [
+            {
+              "idx": 25,
+              "type": "table",
+              "x_coverage": 0.6487,
+              "large_gaps": 4,
+              "text_preview": "398,031 15.07% 272,277 12.18% 其他综合收益的金融资产"
+            },
+            {
+              "idx": 26,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "562 0.23% 7 0.00% 其他资产"
+            },
+            {
+              "idx": 27,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 5,
+              "text_preview": "192,798 6.80% (ii) 248,508 8.90% 同业及其他金融机构存放款项"
+            },
+            {
+              "idx": 28,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "186,085 38.78% 177,615 43.56% 拆入资金"
+            },
+            {
+              "idx": 29,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "11,188 11.90% 4,455 10.64% 衍生金融负债"
+            },
+            {
+              "idx": 30,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "34,944 4.72% 7,749 3.30% 卖出回购金融资产款"
+            },
+            {
+              "idx": 31,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "133,328 0.46% 114,591 0.41% 吸收存款"
+            },
+            {
+              "idx": 32,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "39,973 6.12% 18,936 3.46% 其他负债"
+            },
+            {
+              "idx": 33,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "11,585 0.29% 9,293 0.24% 信贷承诺"
+            },
+            {
+              "idx": 34,
+              "type": "table",
+              "x_coverage": 0.4985,
+              "large_gaps": 1,
+              "text_preview": "(i) 业务及管理费主要指本集团接受母公司旗下公司提供后勤服务所支付的费用。"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

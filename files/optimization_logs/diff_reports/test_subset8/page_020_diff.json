@@ -1,0 +1,123 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 20,
+  "timestamp": "2026-06-25T11:31:20.064131",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 1,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 0,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "无变化（该页无段落混入表格区域）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          403.94,
+          595.28,
+          565.51
+        ],
+        "item_count": 37,
+        "text_preview": "2024年12月31日 阶段一 12个月 预期信用损失 阶段二 整个存续期 预期信用损失 阶段三 整个存续期 预期信用损失 总计 低风险 24,655,387 287,748 – 24,943,135 中风险 – 505,891 –"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 20,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 1,
+    "table_regions": 1,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.23,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 420.38,
+        "x1": 595.28,
+        "y1": 515.09,
+        "region_type": "table",
+        "text": "阶段三 阶段二 阶段一\n12个月 整个存续期 整个存续期\n预期信用损失 总计 预期信用损失 预期信用损失\n24,655,387 287,748 – 24,943,135 低风险\n– 505,891 – 505,891 中风险\n– – 344,691 344,691 高风险\n24,655,387 793,639 344,691 25,793,717 账面总额",
+        "item_count": 30,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 7,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "table_rows": 7,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.5195,
+          "avg_large_gaps": 3.29,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.2599,
+              "large_gaps": 2,
+              "text_preview": "阶段三 阶段二 阶段一"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.2617,
+              "large_gaps": 2,
+              "text_preview": "12个月 整个存续期 整个存续期"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.4106,
+              "large_gaps": 3,
+              "text_preview": "预期信用损失 总计 预期信用损失 预期信用损失"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "24,655,387 287,748 – 24,943,135 低风险"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "– 505,891 – 505,891 中风险"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "– – 344,691 344,691 高风险"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 4,
+              "text_preview": "24,655,387 793,639 344,691 25,793,717 账面总额"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

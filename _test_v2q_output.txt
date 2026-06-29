@@ -1,0 +1,58 @@
+============================================================
+DocuTable V2 模块化快速验证
+============================================================
+
+>>> Test 1: 模块导入
+  [PASS] 主模块
+  [PASS] 数据模型
+  [PASS] 配置系统
+  [PASS] Pipeline
+  [PASS] Step1 列切分
+  [PASS] Step2 合并检测
+  [PASS] Step3 分类器
+  [PASS] Step4 LLM
+  [PASS] Step5 三通道
+  [PASS] Step6 TextItem
+  [PASS] Step7 表头树
+  [PASS] Step8 质量评估
+
+>>> Test 2: 数据模型
+  [PASS] PipelineContext 实例化
+  [PASS] GridResult 实例化
+  [PASS] MergeSpan 实例化
+  [PASS] ClassifyResult 实例化
+  [PASS] TextItem 实例化
+
+>>> Test 3: Pipeline 结构
+  [PASS] Step1 默认启用
+  [PASS] Step2 默认启用
+  [FAIL] Step3 默认禁用(待迁移)
+  [PASS] disable/enable
+  [PASS] enable 恢复
+  [PASS] Step1 配置获取
+  [PASS] Step1 全局默认
+
+>>> Test 4: Step1 单元方法
+  [PASS] _merge_consecutive
+  [PASS] _merge_nearby_lines
+  [PASS] _cluster_1d
+  [PASS] _normalize_table_columns
+
+>>> Test 5: Step2 单元方法
+  [PASS] _safe_cell 正常
+  [PASS] _safe_cell OOB
+  [PASS] _safe_cell 空
+  [PASS] _group_consecutive
+  [PASS] _detect_from_text 空
+  [PASS] _merge_overlapping_spans
+
+>>> Test 6: Processor 兼容性
+临时文件目录: D:temp\pdf_extractor
+  [PASS] PDFProcessor 实例化
+  [PASS] _extract_text_tables_v2 存在
+  [PASS] _extract_text_tables_v2_legacy 存在
+
+============================================================
+结果: 36 PASS, 1 FAIL
+============================================================
+Some tests failed, please check.

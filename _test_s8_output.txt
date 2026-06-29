@@ -1,0 +1,43 @@
+=== 1. 结构完整性 ===
+  [PASS] 好表格结构分 >0.7
+  [PASS] 好表格无 issues
+  [PASS] 劣质表结构分 <0.6
+  [PASS] 劣质表有 issues
+
+=== 2. 内容一致性 ===
+  [PASS] 内容一致性 >0.6
+  [PASS] 纯文本表也可评分
+
+=== 3. 财务特征 ===
+  [PASS] 财务特征 >0.5
+  [PASS] 命中模式
+  [PASS] 非财报特征 <0.3
+  [PASS] 无匹配模式
+
+=== 4. 提取源可信度 ===
+  [PASS] pymupdf=0.95
+  [PASS] unknown=0.50
+
+=== 5. 综合评估 ===
+  [PASS] 综合分 >0.7
+  [PASS] 评级 A/B
+  [PASS] is_reliable=True
+  [PASS] needs_review=False
+  [PASS] 非财报财务特征 <0.3
+  [PASS] 非财报有 issues（财务）
+
+=== 6. 评级映射 ===
+  [PASS] 0.95→A
+  [PASS] 0.80→B
+  [PASS] 0.65→C
+  [PASS] 0.50→D
+  [PASS] 0.30→E
+
+=== 7. to_dict ===
+  [PASS] to_dict grade
+  [PASS] to_dict 有 issues
+  [PASS] to_dict 有 suggestions
+
+========================================
+Results: 26 PASS, 0 FAIL
+All passed!

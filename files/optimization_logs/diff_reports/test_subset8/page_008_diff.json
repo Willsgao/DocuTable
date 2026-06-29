@@ -1,0 +1,147 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 8,
+  "timestamp": "2026-06-25T11:31:19.770675",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 1,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 0,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "无变化（该页无段落混入表格区域）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          565.51,
+          595.28,
+          727.09
+        ],
+        "item_count": 51,
+        "text_preview": "本集团 本行 注释 2024年 12月31日 2023年 12月31日 2024年 12月31日 2023年 12月31日 已发行同业存单及存款证 (1) 1,553,226 1,242,136 1,551,846 1,239,099 已发行债券 (2) 166,658"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 8,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 1,
+    "table_regions": 1,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.27,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 585.49,
+        "x1": 595.28,
+        "y1": 731.4,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n12月31日 12月31日 12月31日 12月31日 注释\n1,553,226 1,551,846 (1) 1,242,136 1,239,099 已发行同业存单及存款证\n166,658 134,627 (2) 141,430 90,906 已发行债券\n11,998 – (3) 11,998 – 已发行次级债券\n49,997 49,9...",
+        "item_count": 51,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 10,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "table_rows": 10,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6362,
+          "avg_large_gaps": 4.1,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.4696,
+              "large_gaps": 4,
+              "text_preview": "12月31日 12月31日 12月31日 12月31日 注释"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "1,553,226 1,551,846 (1) 1,242,136 1,239,099 已发行同业存单及存款证"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "166,658 134,627 (2) 141,430 90,906 已发行债券"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "11,998 – (3) 11,998 – 已发行次级债券"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "49,997 49,997 (4) – – 已发行总损失吸收能力非资本债券"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "594,092 594,092 (5) 491,427 491,455 已发行合格二级资本债券"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "10,624 9,948 8,744 7,873 应计利息"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "2,386,595 2,340,510 1,895,735 1,829,333 合计"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

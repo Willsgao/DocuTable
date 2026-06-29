@@ -3,8 +3,11 @@
 对比预览Tab管理模块
 负责表格对比预览、筛选、导航、编辑等功能
 """
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QApplication,
@@ -25,6 +28,25 @@ from codes.pdf_extractor.ai_correction import RuleChecker, LLMCorrector
 from codes.ui.ai_correction_dialog import PromptEditDialog
 from codes.ui.validation_dialog import CrossValidationDialog, CrossValidationWorker, LiteparseTableDialog
 from codes.table_validator.cell_differ import diff_table_with_liteparse, classify_rows_with_liteparse, _cluster_items_by_y, _normalize_for_search
+
+
+def _extract_table_title_from_data(table_data):
+    """从表格数据中提取标题（用于拆分后子表命名）"""
+    if not table_data:
+        return "子表"
+    # 取第一个长度>=4的非空单元格作为标题
+    for row in table_data:
+        for cell in row:
+            cell_str = str(cell).strip()
+            if cell_str and len(cell_str) >= 4:
+                # 截取前12字作为标题
+                return cell_str[:12].replace('\n', ' ').replace('\r', '')
+    # 回退：取第一行前3个非空单元拼接
+    if table_data:
+        parts = [str(c).strip() for c in table_data[0] if str(c).strip()][:3]
+        if parts:
+            return '-'.join(p)[:20]
+    return "子表"
 
 
 class TableCompareManager(QObject):
@@ -49,6 +71,24 @@ class TableCompareManager(QObject):
         # 分割后/原始表格视图切换（默认显示分割后）
         self.segment_view_mode = True  # True=分割后, False=原始
         self.segment_view_btn = None
+        
+        # LLM 语义结构修复按钮
+        self.llm_repair_btn = None
+        
+        # 规则修复按钮（纯规则，零LLM调用）
+        self.rules_repair_btn = None
+        
+        # 规则修复前后切换（类似 LLM 切换机制）
+        self.rules_repair_toggle_btn = None
+        self._rules_repair_original_data = None   # 修复前的原始数据快照
+        self._rules_repair_repaired_data = None   # 修复后的数据快照
+        self._showing_rules_repair_original = False  # True=正在查看原始, False=查看修复后
+        
+        # LLM 修复前后切换
+        self.llm_toggle_btn = None
+        self._llm_original_data = None   # 修复前的原始数据快照
+        self._llm_repaired_data = None   # 修复后的数据快照（用于切换回）
+        self._showing_llm_original = False  # True=正在查看原始数据, False=正在查看修复后
         
         # 差异标注模式
         self.diff_mode = False
@@ -290,6 +330,81 @@ class TableCompareManager(QObject):
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
         btn_layout.addWidget(self.llm_boundary_btn)
+
+        btn_layout.addSpacing(8)
+
+        # LLM 语义结构修复按钮（语义推理驱动，非机械规则）
+        self.llm_repair_btn = QPushButton("🧠 LLM 结构修复")
+        self.llm_repair_btn.setToolTip(
+            "用LLM语义推理修复当前表格的结构问题：\n"
+            "• 识别表头父子层级（如'2024年'→4个季度）\n"
+            "• 合并被错误拆分的文本（如断裂的指标名）\n"
+            "• 展开合并单元格并填充空值\n"
+            "• 纯语义驱动，容忍列偏移\n"
+            "⚠ 仅处理当前显示的表格，需已配置 DeepSeek API"
+        )
+        self.llm_repair_btn.setFocusPolicy(Qt.NoFocus)
+        self.llm_repair_btn.clicked.connect(self.on_llm_repair_clicked)
+        self.llm_repair_btn.setStyleSheet("""
+            QPushButton { background-color: #8E44AD; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #7D3C98; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.llm_repair_btn)
+
+        # 规则修复按钮（纯规则，零LLM调用，自底向上分层修复）
+        self.rules_repair_btn = QPushButton("🔧 规则修复")
+        self.rules_repair_btn.setToolTip(
+            "基于规则自动修复当前表格结构（无需LLM）：\n"
+            "• 定位数据区域 → 确定数据列数\n"
+            "• 自底向上识别表头行\n"
+            "• 合并被截断的表头文本\n"
+            "• 恢复表头层级嵌套关系\n"
+            "• 移除表格上方的描述文本\n"
+            "⚠ 纯规则驱动，零 API 成本，即时执行"
+        )
+        self.rules_repair_btn.setFocusPolicy(Qt.NoFocus)
+        self.rules_repair_btn.clicked.connect(self.on_rules_repair_clicked)
+        self.rules_repair_btn.setStyleSheet("""
+            QPushButton { background-color: #27AE60; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #229954; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.rules_repair_btn)
+
+        # 规则修复前后切换/撤销按钮（默认隐藏，修复完成后才显示）
+        self.rules_repair_toggle_btn = QPushButton("↩️ 撤销修复")
+        self.rules_repair_toggle_btn.setToolTip(
+            "点击在规则修复前后的表格数据之间切换查看\n"
+            "再次点击「确认还原」可永久回退到修复前的原始数据"
+        )
+        self.rules_repair_toggle_btn.setFocusPolicy(Qt.NoFocus)
+        self.rules_repair_toggle_btn.clicked.connect(self.on_rules_repair_toggle_clicked)
+        self.rules_repair_toggle_btn.setStyleSheet("""
+            QPushButton { background-color: #E67E22; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #D35400; }
+        """)
+        self.rules_repair_toggle_btn.setVisible(False)
+        btn_layout.addWidget(self.rules_repair_toggle_btn)
+
+        # LLM 修复前后切换按钮（默认隐藏，修复完成后才显示）
+        self.llm_toggle_btn = QPushButton("🔁 查看原始")
+        self.llm_toggle_btn.setToolTip(
+            "在 LLM 修复前后的表格数据之间切换查看\n"
+            "点击切换到原始数据对比修复效果"
+        )
+        self.llm_toggle_btn.setFocusPolicy(Qt.NoFocus)
+        self.llm_toggle_btn.clicked.connect(self.on_llm_toggle_clicked)
+        self.llm_toggle_btn.setStyleSheet("""
+            QPushButton { background-color: #8E44AD; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #7D3C98; }
+        """)
+        self.llm_toggle_btn.setVisible(False)
+        btn_layout.addWidget(self.llm_toggle_btn)
 
         btn_layout.addSpacing(8)
 
@@ -1303,6 +1418,10 @@ class TableCompareManager(QObject):
         if row < 0:
             print(f"[DEBUG] row < 0，提前返回")
             return
+        
+        # 切换表格时清除 LLM 修复切换状态（新表格没有修复历史）
+        self._reset_llm_toggle()
+        self._reset_rules_repair_toggle()
         
         tables = self._get_active_tables()
         print(f"[DEBUG] tables 数量: {len(tables)}")
@@ -3327,6 +3446,741 @@ class TableCompareManager(QObject):
             self.llm_boundary_btn.setEnabled(True)
             self.llm_boundary_btn.setText("🔮 LLM 边界优化")
 
+    def on_llm_repair_clicked(self):
+        """LLM 语义结构修复 — 语义推理修复当前表格的结构问题"""
+        from PyQt5.QtCore import QThread, pyqtSignal
+
+        # 检查是否有数据
+        if not self.main_window.processed_results:
+            QMessageBox.warning(self.main_window, "无数据",
+                              "请先处理PDF文件，提取表格后再使用 LLM 结构修复。")
+            return
+
+        # 获取当前表格索引
+        table_idx = self._get_current_table_index()
+        if table_idx is None:
+            QMessageBox.warning(self.main_window, "未选中表格",
+                              "请先在左侧列表中选择一个表格。")
+            return
+
+        # 获取当前表格数据（从 table_widget 读取，因为可能有未保存的编辑）
+        current_data = []
+        for i in range(self.table_widget.rowCount()):
+            row_data = []
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                row_data.append(item.text().strip() if item else "")
+            # 过滤全空行（但保留有数据的行）
+            if any(cell for cell in row_data):
+                current_data.append(row_data)
+
+        if not current_data:
+            QMessageBox.warning(self.main_window, "空表格",
+                              "当前表格没有数据，无法修复。")
+            return
+
+        # 获取表格元信息作为上下文
+        tables = self._get_active_tables()
+        table_info = tables[table_idx] if table_idx < len(tables) else {}
+        page_num = table_info.get('page', '?')
+        table_type = table_info.get('type', '')
+        context_text = table_info.get('context_text', '')
+        # 提取context_text前200字符作为简要上下文
+        brief_context = context_text[:200] if context_text else ""
+
+        # 构建上下文描述
+        context = f"页码: P{page_num}, 类型: {table_type}"
+        if brief_context:
+            context += f"\n页面上下文: {brief_context}"
+
+        # 确认对话框
+        row_count = len(current_data)
+        col_count = max(len(r) for r in current_data) if current_data else 0
+        reply = QMessageBox.question(
+            self.main_window, "确认 LLM 结构修复",
+            f"将对当前表格进行 LLM 语义结构修复：\n\n"
+            f"📊 表格规模: {row_count} 行 × {col_count} 列\n"
+            f"📄 来源页码: P{page_num}\n\n"
+            f"将自动识别并修复以下问题：\n"
+            f"  1️⃣ 表头父子层级关系（如'2024年'→4个季度）\n"
+            f"  2️⃣ 被错误拆分的文本合并（如断裂的指标名）\n"
+            f"  3️⃣ 合并单元格展开填充（消除空值）\n\n"
+            f"⚠ 此操作会调用 DeepSeek API。\n"
+            f"⚠ 修复后的数据将直接替换当前表格。\n\n"
+            f"是否继续？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 禁用按钮，显示处理中
+        self.llm_repair_btn.setEnabled(False)
+        self.llm_repair_btn.setText("🧠 修复中...")
+        self.main_window.status_bar.showMessage("🧠 LLM 语义结构修复中...")
+
+        # 在后台线程中运行（避免阻塞UI）
+        class RepairWorker(QThread):
+            finished_signal = pyqtSignal(object)
+
+            def __init__(self, table_data, context):
+                super().__init__()
+                self.table_data = table_data
+                self.context = context
+
+            def run(self):
+                from codes.table_validator.llm_table_repair import (
+                    repair_table_with_llm, generate_repair_report
+                )
+                result = repair_table_with_llm(self.table_data, context=self.context)
+                if result.success:
+                    result._report = generate_repair_report(result)
+                self.finished_signal.emit(result)
+
+        self._repair_worker = RepairWorker(current_data, context)
+        self._repair_worker.finished_signal.connect(self._on_llm_repair_finished)
+        self._repair_worker.start()
+
+    def _reset_llm_toggle(self):
+        """清除 LLM 修复前后切换状态（切表时自动调用）"""
+        if self._showing_llm_original:
+            # 如果当前正在看原始数据但还没切回去，不做强制回写
+            pass
+        self._llm_original_data = None
+        self._llm_repaired_data = None
+        self._showing_llm_original = False
+        if self.llm_toggle_btn:
+            self.llm_toggle_btn.setVisible(False)
+
+    def _reset_rules_repair_toggle(self):
+        """清除规则修复前后切换状态（切表时自动调用）"""
+        if self._showing_rules_repair_original:
+            # 如果当前正在看原始数据但还没切回去，不做强制回写
+            pass
+        self._rules_repair_original_data = None
+        self._rules_repair_repaired_data = None
+        self._showing_rules_repair_original = False
+        if self.rules_repair_toggle_btn:
+            self.rules_repair_toggle_btn.setVisible(False)
+            self.rules_repair_toggle_btn.setText("↩️ 撤销修复")
+
+    def on_rules_repair_toggle_clicked(self):
+        """规则修复撤销按钮：第一步切换查看原始数据，第二步确认永久还原"""
+        if self._rules_repair_original_data is None:
+            return
+
+        # 读取当前 table_widget 内容
+        current_data = []
+        for i in range(self.table_widget.rowCount()):
+            row_data = []
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                row_data.append(item.text() if item else "")
+            current_data.append(row_data)
+
+        if self._showing_rules_repair_original:
+            # 当前正在查看原始数据 → 用户点击「确认还原」→ 弹出二次确认
+            reply = QMessageBox.question(
+                self.main_window, "确认撤销修复",
+                "确定要永久还原到修复前的原始数据吗？\n\n"
+                "⚠ 此操作将丢弃规则修复结果，恢复表格原样。",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                # 确认还原：数据已经在 table_widget 中（原始数据），直接同步
+                self._rules_repair_original_data = None
+                self._rules_repair_repaired_data = None
+                self._showing_rules_repair_original = False
+                if self.rules_repair_toggle_btn:
+                    self.rules_repair_toggle_btn.setVisible(False)
+                    self.rules_repair_toggle_btn.setText("↩️ 撤销修复")
+                self.stats_label.setText("📋 已撤销修复，还原到原始数据")
+                self.main_window.status_bar.showMessage("✅ 已撤销规则修复，还原到修复前原始数据")
+                # 同步回数据源
+                self._sync_ui_to_processed_results()
+            else:
+                # 用户取消 → 切回修复后数据
+                target_data = self._rules_repair_repaired_data
+                self._showing_rules_repair_original = False
+                self.rules_repair_toggle_btn.setText("↩️ 撤销修复")
+                self.stats_label.setText("📊 显示规则修复后数据")
+                self._render_table_data(target_data)
+        else:
+            # 当前正在查看修复后数据 → 切换到原始数据预览
+            self._rules_repair_repaired_data = current_data
+            target_data = self._rules_repair_original_data
+            self._showing_rules_repair_original = True
+            self.rules_repair_toggle_btn.setText("✅ 确认还原")
+            self.stats_label.setText("📋 显示修复前原始数据（再次点击按钮确认还原）")
+            self._render_table_data(target_data)
+
+    def _render_table_data(self, data):
+        """将数据渲染到 table_widget（内部辅助方法）"""
+        self.table_widget.blockSignals(True)
+        self.table_widget.clear()
+        rows = len(data)
+        cols = max(len(row) for row in data) if data else 0
+        self.table_widget.setRowCount(rows)
+        self.table_widget.setColumnCount(cols)
+        for i, row in enumerate(data):
+            for j in range(cols):
+                cell = row[j] if j < len(row) else ""
+                item = QTableWidgetItem(str(cell))
+                self.table_widget.setItem(i, j, item)
+        self.table_widget.resizeColumnsToContents()
+        self.table_widget.blockSignals(False)
+
+    def on_llm_toggle_clicked(self):
+        """在 LLM 修复前后的表格数据之间切换查看"""
+        if self._llm_original_data is None:
+            return
+
+        current_data = []
+        for i in range(self.table_widget.rowCount()):
+            row_data = []
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                row_data.append(item.text() if item else "")
+            current_data.append(row_data)
+
+        if self._showing_llm_original:
+            # 当前在看原始 → 切回修复后数据
+            target_data = self._llm_repaired_data
+            self.llm_toggle_btn.setText("🔁 查看原始")
+            self.stats_label.setText("📊 显示 LLM 修复后数据")
+        else:
+            # 当前在看修复后 → 保存修复后数据，切换到原始数据
+            self._llm_repaired_data = current_data
+            target_data = self._llm_original_data
+            self.llm_toggle_btn.setText("🔁 查看修复后")
+            self.stats_label.setText("📋 显示 LLM 修复前原始数据")
+
+        # 渲染目标数据
+        self.table_widget.blockSignals(True)
+        self.table_widget.clear()
+        rows = len(target_data)
+        cols = max(len(row) for row in target_data) if target_data else 0
+        self.table_widget.setRowCount(rows)
+        self.table_widget.setColumnCount(cols)
+        for i, row in enumerate(target_data):
+            for j in range(cols):
+                cell = row[j] if j < len(row) else ""
+                self.table_widget.setItem(i, j, QTableWidgetItem(str(cell)))
+        self.table_widget.resizeColumnsToContents()
+        self.table_widget.blockSignals(False)
+
+        self._showing_llm_original = not self._showing_llm_original
+        self.main_window.status_bar.showMessage(
+            "📋 查看原始数据（仅供对比，不会保存）" if self._showing_llm_original
+            else "📊 查看 LLM 修复后数据（已应用到数据源）"
+        )
+
+    def _on_llm_repair_finished(self, result):
+        """LLM 语义修复完成后的回调"""
+        self.llm_repair_btn.setEnabled(True)
+        self.llm_repair_btn.setText("🧠 LLM 结构修复")
+        self.main_window.status_bar.showMessage("")
+
+        if not result.success:
+            QMessageBox.critical(self.main_window, "修复失败",
+                               f"LLM 结构修复失败：\n{result.llm_error}")
+            return
+
+        # 确认是否应用修复
+        report = getattr(result, '_report', '')
+        brief = (f"修复完成 ✅\n\n"
+                 f"📊 {result.original_row_count}行 → {result.repaired_row_count}行\n"
+                 f"🎯 置信度: {result.overall_confidence:.1%}\n"
+                 f"🔧 修复操作: {len(result.repairs_applied)}处\n\n"
+                 f"点击「显示详情」查看完整推理过程。")
+
+        detail_box = QMessageBox(self.main_window)
+        detail_box.setWindowTitle("LLM 结构修复结果")
+        detail_box.setText(brief)
+        detail_box.setStandardButtons(
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Help
+        )
+        detail_box.button(QMessageBox.Yes).setText("✅ 应用修复")
+        detail_box.button(QMessageBox.No).setText("❌ 放弃")
+        detail_box.button(QMessageBox.Help).setText("📋 显示详情")
+        detail_box.setDefaultButton(QMessageBox.Yes)
+
+        # "显示详情"按钮点击时弹出完整报告，不关闭对话框
+        def on_button_clicked(btn):
+            if detail_box.buttonRole(btn) == QMessageBox.HelpRole:
+                detail_dialog = QMessageBox(self.main_window)
+                detail_dialog.setWindowTitle("修复详情报告")
+                detail_dialog.setText(report if report else "无详情")
+                detail_dialog.setStandardButtons(QMessageBox.Ok)
+                detail_dialog.exec_()
+
+        detail_box.buttonClicked.connect(on_button_clicked)
+
+        # exec_() 在点击Yes/No后返回，Help不会关闭对话框
+        ret = detail_box.exec_()
+
+        if ret != QMessageBox.Yes:
+            return
+
+        # 应用修复：将repaired_table写回
+        repaired = result.repaired_table
+        if not repaired:
+            QMessageBox.warning(self.main_window, "空结果", "修复后的表格为空。")
+            return
+
+        # 先保存当前状态到撤销栈 + 保存修复前快照（用于切换对比）
+        self.save_current_table_state()
+
+        # 捕获修复前的原始数据（深拷贝 table_widget 内容）
+        original_data = []
+        for i in range(self.table_widget.rowCount()):
+            row_data = []
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                row_data.append(item.text() if item else "")
+            original_data.append(row_data)
+        self._llm_original_data = original_data
+        self._showing_llm_original = False
+
+        # 更新 table_widget 显示为修复后数据
+        self.table_widget.blockSignals(True)
+        self.table_widget.clear()
+        rows = len(repaired)
+        cols = max(len(row) for row in repaired) if repaired else 0
+        self.table_widget.setRowCount(rows)
+        self.table_widget.setColumnCount(cols)
+
+        for i, row in enumerate(repaired):
+            for j in range(cols):
+                cell = row[j] if j < len(row) else ""
+                item = QTableWidgetItem(str(cell))
+                self.table_widget.setItem(i, j, item)
+
+        self.table_widget.resizeColumnsToContents()
+        self.table_widget.blockSignals(False)
+
+        # 同步回 processed_results
+        self._sync_ui_to_processed_results()
+
+        # 显示切换按钮，让用户可以对比修复前后
+        self.llm_toggle_btn.setText("🔁 查看原始")
+        self.llm_toggle_btn.setVisible(True)
+
+        # 更新统计提示
+        self.stats_label.setText(
+            f"🧠 LLM修复完成 | {result.original_row_count}行→{result.repaired_row_count}行 "
+            f"| 置信度 {result.overall_confidence:.0%} | 点击「🔁 查看原始」对比"
+        )
+
+        self.main_window.status_bar.showMessage(
+            f"✅ LLM结构修复完成: {result.original_row_count}行→{result.repaired_row_count}行"
+        )
+
+    def on_rules_repair_clicked(self):
+        """规则修复 — 自底向上分层表头结构修复（纯规则，零LLM调用）"""
+        # 检查是否有数据
+        if not self.main_window.processed_results:
+            QMessageBox.warning(self.main_window, "无数据",
+                              "请先处理PDF文件，提取表格后再使用规则修复。")
+            return
+
+        # 获取当前表格索引
+        table_idx = self._get_current_table_index()
+        if table_idx is None:
+            QMessageBox.warning(self.main_window, "未选中表格",
+                              "请先在左侧列表中选择一个表格。")
+            return
+
+        # 获取当前表格数据（从 table_widget 读取，因为可能有未保存的编辑）
+        current_data = []
+        for i in range(self.table_widget.rowCount()):
+            row_data = []
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                row_data.append(item.text().strip() if item else "")
+            if any(cell for cell in row_data):
+                current_data.append(row_data)
+
+        if not current_data:
+            QMessageBox.warning(self.main_window, "空表格",
+                              "当前表格没有数据，无法修复。")
+            return
+
+        # 获取表格元信息（含页面上下文文本用于表头合成）
+        tables = self._get_active_tables()
+        table_info = tables[table_idx] if table_idx < len(tables) else {}
+        page_num = table_info.get('page', '?')
+        # 提取表格上方的描述文本作为上下文（优先 caption，其次 description_text）
+        table_context = (
+            table_info.get('caption', '') or
+            table_info.get('description_text', '') or
+            ''
+        )
+
+        # ── 从原始 liteparse items 中提取真实列标题 ──
+        raw_header_info = None
+        if isinstance(page_num, int) and page_num > 0:
+            self._load_liteparse_cache()
+            lp_page = self._get_liteparse_page(page_num)
+            if lp_page:
+                text_items = lp_page.get("text_items", [])
+                column_x_ranges = table_info.get("column_x_ranges", [])
+                if text_items and column_x_ranges:
+                    try:
+                        from codes.table_validator.rule_based_repair import (
+                            _extract_headers_from_raw_items,
+                        )
+                        raw_header_info = _extract_headers_from_raw_items(
+                            text_items, column_x_ranges
+                        )
+                        if raw_header_info:
+                            entities, years = raw_header_info
+                            logger.info(
+                                f"  [rules_repair] 从原始 items 提取表头: "
+                                f"entities={entities}, years={years}"
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            f"  [rules_repair] 原始表头提取跳过: {e}"
+                        )
+
+        row_count = len(current_data)
+        col_count = max(len(r) for r in current_data) if current_data else 0
+
+        # 确认对话框
+        reply = QMessageBox.question(
+            self.main_window, "确认规则修复",
+            f"将对当前表格进行基于规则的结构修复：\n\n"
+            f"📊 表格规模: {row_count} 行 × {col_count} 列\n"
+            f"📄 来源页码: P{page_num}\n\n"
+            f"将自动检测并修复以下问题：\n"
+            f"  1️⃣ 定位数据区域，确定数据列数\n"
+            f"  2️⃣ 自底向上识别表头层级\n"
+            f"  3️⃣ 合并被截断的表头文本\n"
+            f"  4️⃣ 恢复表头嵌套层级关系\n"
+            f"  5️⃣ 移除表格上方描述文本\n\n"
+            f"✅ 纯规则驱动，无需 LLM API\n"
+            f"⚠ 修复后的数据将直接替换当前表格。\n\n"
+            f"是否继续？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 禁用按钮，显示处理中
+        self.rules_repair_btn.setEnabled(False)
+        self.rules_repair_btn.setText("🔧 修复中...")
+        self.main_window.status_bar.showMessage("🔧 规则修复进行中...")
+        QApplication.processEvents()  # 刷新UI
+
+        try:
+            from codes.table_validator.rule_based_repair import (
+                repair_table_rules,
+                repair_and_split_tables,
+                deduplicate_cross_tables,
+                generate_rules_repair_report,
+            )
+
+            # 执行规则修复 + 多表检测与拆分（同步执行，规则计算很快）
+            # 传入表格上方上下文文本用于智能表头合成
+            # 传入原始页面 items 提取的实体×年份表头（最高优先级）
+            all_results = repair_and_split_tables(
+                current_data, context_text=table_context,
+                raw_header_info=raw_header_info,
+            )
+
+            # ---- 跨表去重：前表尾部 ↔ 后表头部 方向性去重 ----
+            # 策略：紧相邻表格（同页或相邻页），只检查尾头方向
+            #       后表结构完整 → 从前表删除重叠行
+            tables = self._get_active_tables()
+            if tables and len(all_results) >= 1:
+                reference_entries = []
+                for i, tbl in enumerate(tables):
+                    if i == table_idx:
+                        continue
+                    ref_page = tbl.get('page', 0)
+                    # 紧相邻：同页 或 相邻页（±1）
+                    if abs(ref_page - page_num) > 1:
+                        continue
+                    ref_data = tbl.get('data', [])
+                    if not ref_data:
+                        continue
+                    reference_entries.append({
+                        "data": ref_data,
+                        "is_before_source": i < table_idx,
+                        "position": i,
+                        "page": ref_page,
+                    })
+
+                if reference_entries:
+                    all_results = deduplicate_cross_tables(
+                        all_results, reference_entries
+                    )
+                    # 清理去重后变空的子表
+                    all_results = [
+                        (data, info) for data, info in all_results
+                        if data and any(
+                            any(str(c).strip() for c in row)
+                            for row in data
+                        )
+                    ]
+
+            if not all_results:
+                self.rules_repair_btn.setEnabled(True)
+                self.rules_repair_btn.setText("🔧 规则修复")
+                self.main_window.status_bar.showMessage("")
+                QMessageBox.warning(self.main_window, "空结果", "修复后表格为空。")
+                return
+
+            # 取第一个结果作为主结果
+            repaired, info = all_results[0]
+            is_split = len(all_results) > 1
+
+            if not info.get('needed') and not is_split:
+                self.rules_repair_btn.setEnabled(True)
+                self.rules_repair_btn.setText("🔧 规则修复")
+                self.main_window.status_bar.showMessage("")
+                QMessageBox.information(
+                    self.main_window, "无需修复",
+                    f"当前表格结构看似完整，无需修复。\n\n"
+                    f"原因: {info.get('reason', '未知')}"
+                )
+                return
+
+            # 生成报告
+            if is_split:
+                # 多表拆分的汇总报告
+                report_lines = ["=" * 60]
+                report_lines.append("[规则表格拆分修复报告]")
+                report_lines.append("=" * 60)
+                report_lines.append(f"\n检测到 {len(all_results)} 个独立子表，已拆分并分别修复：\n")
+                for idx, (sub_data, sub_info) in enumerate(all_results, 1):
+                    report_lines.append(
+                        f"--- 子表 {idx} ---"
+                    )
+                    title = _extract_table_title_from_data(sub_data)
+                    report_lines.append(f"  标题: {title}")
+                    report_lines.append(
+                        f"  规模: {sub_info.get('original_rows', '?')}行"
+                        f"→{sub_info.get('repaired_rows', '?')}行"
+                        f" × {sub_info.get('data_cols', '?')}列"
+                    )
+                    report_lines.append(f"  表头: {sub_info.get('header_rows_found', '?')}层")
+                    report_lines.append(f"  步骤: {'; '.join(sub_info.get('steps', []))}")
+                    report_lines.append("")
+                report = "\n".join(report_lines)
+            else:
+                report = generate_rules_repair_report(current_data, repaired, info)
+
+            # 显示结果确认对话框
+            if is_split:
+                split_desc = "\n".join(
+                    f"📋 子表{idx}: {sub_info.get('original_rows', '?')}行→{sub_info.get('repaired_rows', '?')}行"
+                    f" × {sub_info.get('data_cols', '?')}列"
+                    for idx, (sub_data, sub_info) in enumerate(all_results, 1)
+                )
+                brief = (f"表格拆分 + 修复完成 ✅\n\n"
+                         f"🔀 检测到 {len(all_results)} 个合并的子表\n"
+                         f"─────────────────\n"
+                         f"{split_desc}\n"
+                         f"─────────────────\n\n"
+                         f"第1个子表将替换当前表格，\n"
+                         f"其余子表将作为新表格插入到列表中。\n\n"
+                         f"点击「显示详情」查看完整修复过程。")
+            else:
+                brief = (f"修复完成 ✅\n\n"
+                         f"📊 {info['original_rows']}行 → {info['repaired_rows']}行\n"
+                         f"📐 数据列数: {info['data_cols']}\n"
+                         f"🏷 表头层数: {info['header_rows_found']}\n"
+                         f"🔗 表头合并: {'是' if info.get('headers_merged') else '否'}\n"
+                         f"🗑 移除描述: {'是' if info.get('description_removed') else '否'}\n\n"
+                         f"点击「显示详情」查看完整修复过程。")
+
+            detail_box = QMessageBox(self.main_window)
+            detail_box.setWindowTitle(
+                "表格拆分修复结果" if is_split else "规则修复结果"
+            )
+            detail_box.setText(brief)
+            detail_box.setStandardButtons(
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Help
+            )
+            detail_box.button(QMessageBox.Yes).setText("✅ 应用修复")
+            detail_box.button(QMessageBox.No).setText("❌ 放弃")
+            detail_box.button(QMessageBox.Help).setText("📋 显示详情")
+            detail_box.setDefaultButton(QMessageBox.Yes)
+
+            def on_button_clicked(btn):
+                if detail_box.buttonRole(btn) == QMessageBox.HelpRole:
+                    detail_dialog = QMessageBox(self.main_window)
+                    detail_dialog.setWindowTitle("修复详情报告")
+                    detail_dialog.setText(report)
+                    detail_dialog.setStandardButtons(QMessageBox.Ok)
+                    detail_dialog.exec_()
+
+            detail_box.buttonClicked.connect(on_button_clicked)
+            ret = detail_box.exec_()
+
+            if ret != QMessageBox.Yes:
+                self.rules_repair_btn.setEnabled(True)
+                self.rules_repair_btn.setText("🔧 规则修复")
+                self.main_window.status_bar.showMessage("")
+                return
+
+            # 应用修复：将 repaired_table 写回
+            if not repaired:
+                QMessageBox.warning(self.main_window, "空结果", "修复后的表格为空。")
+                self.rules_repair_btn.setEnabled(True)
+                self.rules_repair_btn.setText("🔧 规则修复")
+                self.main_window.status_bar.showMessage("")
+                return
+
+            # 保存当前表格状态用于撤销栈
+            self.save_current_table_state()
+
+            # 保存修复前原始数据（用于切换对比/撤销修复）
+            self._rules_repair_original_data = current_data
+
+            # 更新 table_widget 显示（主表 = 第一个子表）
+            self._apply_repaired_to_widget(repaired)
+
+            # 同步回 processed_results
+            self._sync_ui_to_processed_results()
+
+            # ---- 多表拆分：将剩余子表作为新表格插入 ----
+            extra_tables_info = []
+            if is_split:
+                for sub_idx, (sub_data, sub_info) in enumerate(all_results[1:], 2):
+                    if not sub_data:
+                        continue
+                    # 用 add_table_from_selection 的方式插入
+                    title = _extract_table_title_from_data(sub_data)
+                    extra_tables_info.append(
+                        f"子表{sub_idx}: {title} "
+                        f"({sub_info.get('repaired_rows', '?')}行×"
+                        f"{sub_info.get('data_cols', '?')}列)"
+                    )
+                    self._insert_split_table(
+                        page_num, sub_data, table_idx, sub_idx, title
+                    )
+
+            # 显示撤销修复切换按钮
+            self._showing_rules_repair_original = False
+            if self.rules_repair_toggle_btn:
+                self.rules_repair_toggle_btn.setText("↩️ 撤销修复")
+                self.rules_repair_toggle_btn.setVisible(True)
+
+            # 更新统计提示
+            if is_split:
+                extra_summary = "、".join(extra_tables_info[:3])
+                if len(extra_tables_info) > 3:
+                    extra_summary += f" 等{len(extra_tables_info)}个"
+                self.stats_label.setText(
+                    f"🔧 拆分修复完成 | 主表 {info['original_rows']}行→{info['repaired_rows']}行 "
+                    f"| 新增: {extra_summary}"
+                    f" | 点击「↩️ 撤销修复」可还原"
+                )
+                self.main_window.status_bar.showMessage(
+                    f"✅ 表格拆分为 {len(all_results)} 个子表并修复完成"
+                )
+            else:
+                self.stats_label.setText(
+                    f"🔧 规则修复完成 | {info['original_rows']}行→{info['repaired_rows']}行 "
+                    f"| 数据列{info['data_cols']} | 表头{info['header_rows_found']}层"
+                    f" | 点击「↩️ 撤销修复」可还原"
+                )
+                self.main_window.status_bar.showMessage(
+                    f"✅ 规则修复完成: {info['original_rows']}行→{info['repaired_rows']}行"
+                )
+
+        except Exception as e:
+            logger.exception(f"规则修复异常: {e}")
+            QMessageBox.critical(self.main_window, "修复失败",
+                               f"规则修复过程中发生错误：\n\n{str(e)}")
+
+        finally:
+            self.rules_repair_btn.setEnabled(True)
+            self.rules_repair_btn.setText("🔧 规则修复")
+            self.main_window.status_bar.showMessage("")
+
+    def _apply_repaired_to_widget(self, repaired):
+        """将修复后的表格数据更新到 table_widget"""
+        self.table_widget.blockSignals(True)
+        self.table_widget.clear()
+        rows = len(repaired)
+        cols = max(len(row) for row in repaired) if repaired else 0
+        self.table_widget.setRowCount(rows)
+        self.table_widget.setColumnCount(cols)
+
+        for i, row in enumerate(repaired):
+            for j in range(cols):
+                cell = row[j] if j < len(row) else ""
+                item = QTableWidgetItem(str(cell))
+                self.table_widget.setItem(i, j, item)
+
+        self.table_widget.resizeColumnsToContents()
+        self.table_widget.blockSignals(False)
+
+    def _insert_split_table(self, page_num, data, source_idx, sub_idx, title):
+        """将拆分出的子表插入到 processed_results 列表中。
+
+        类似 add_table_from_selection，但标记为规则拆分来源。
+        """
+        tables = self._get_active_tables()
+
+        # 标记源表
+        if source_idx is not None and source_idx < len(tables):
+            source_table = tables[source_idx]
+            if '_split_into' not in source_table:
+                source_table['_split_into'] = []
+            source_table['_split_into'].append(title)
+            source_table['_data_split'] = True
+
+        # 提取页码（支持多页）
+        pages = [page_num] if isinstance(page_num, int) else (
+            [int(p) for p in str(page_num).split(',') if p.strip().isdigit()]
+            or [page_num]
+        )
+
+        new_table = {
+            "page": pages[0] if len(pages) == 1 else pages,
+            "pages": pages,
+            "type": "text",
+            "data": data,
+            "extractor": "rules_split",
+            "title": title,
+            "parse_status": "success",
+            "parse_message": f"规则修复拆分-子表{sub_idx}",
+            "manual_mark": "table",
+            "table_category": "",
+            "_split_source": source_idx,
+        }
+
+        # 按页码找到正确的插入位置
+        insert_idx = len(tables)
+        target_page = pages[0] if isinstance(pages, list) else page_num
+        for i, t in enumerate(tables):
+            t_page = t.get('page', 0)
+            if isinstance(t_page, list):
+                t_page = t_page[0] if t_page else 0
+            if t_page > target_page:
+                insert_idx = i
+                break
+            elif t_page == target_page:
+                insert_idx = i + 1
+
+        tables.insert(insert_idx, new_table)
+        self._set_active_tables(tables)
+        self.has_unsaved_changes = True
+
+        # 更新保存按钮状态
+        if self.save_status_btn:
+            self.save_status_btn.setText("💾 保存更改")
+            self.save_status_btn.setEnabled(True)
+
+        print(
+            f"  [规则拆分] P{page_num}页 → 子表{sub_idx}'{title}'"
+            f"({len(data)}行×{max(len(r) for r in data)}列), 位置{insert_idx}"
+        )
+
     def _run_ai_correction(self, tables, force=False):
         """通用 AI 纠错启动方法
         Args:
@@ -4241,6 +5095,47 @@ class TableCompareManager(QObject):
 
         if body_end < body_start:
             body_end = body_start
+
+        # ===== 尾噪检测：识别并扣除尾部叙述段落 =====
+        # 检测 body 区底部的非表格长文本段落（col0 含长中文、cols 1+ 全空）
+        # 典型场景：表格数据后紧跟说明段落被 PDF 合并到同一表格对象（如利率敏感性分析后的叙述）
+        narrative_rows = 0
+        last_data_row = body_end
+        total_body_rows = body_end - body_start + 1
+
+        for r in range(body_end, body_start - 1, -1):
+            row = rows[r]
+            non_empty_cols = [c for c in range(len(row)) if row[c] and str(row[c]).strip()]
+            if not non_empty_cols:
+                continue
+
+            # 叙述行条件：cols 1+ 全空，且 col0 是长中文段落
+            after_col1_non_empty = [c for c in non_empty_cols if c >= 1]
+            if after_col1_non_empty:
+                # cols 1+ 有内容 → 数据行/结构行，停止向上扫描
+                break
+
+            col0_text = str(row[0]).strip()
+            chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', col0_text))
+            total_chars = len(col0_text)
+
+            # 判定为叙述行：中文占比 ≥ 50% 且 (中文 ≥10 字 或 总长 ≥30 字)
+            if total_chars > 0 and chinese_chars / total_chars >= 0.5:
+                if chinese_chars >= 10 or total_chars >= 30:
+                    narrative_rows += 1
+                    last_data_row = r - 1
+                    continue
+
+            # 非中文段落但有内容（如英文标签、纯数字页眉等）→ 停止
+            break
+
+        # 叙述行占比 ≥ 30% → 施加惩罚并修剪 body_end
+        if total_body_rows > 0 and narrative_rows / total_body_rows >= 0.3:
+            penalty = 25 if narrative_rows / total_body_rows >= 0.5 else 15
+            total_score -= penalty
+            body_end = last_data_row
+            if body_end < body_start:
+                body_end = body_start
 
         # ===== 5. 硬门槛：至少存在数据行 或 数据列 =====
         # 数据行：整行中 >= 40% 非空单元格是数值（第一列/表头行不算）

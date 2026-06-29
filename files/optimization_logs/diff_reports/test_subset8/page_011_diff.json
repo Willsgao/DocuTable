@@ -1,0 +1,230 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 11,
+  "timestamp": "2026-06-25T11:31:19.830210",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 3,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 2,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 3 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          403.94
+        ],
+        "item_count": 50,
+        "text_preview": "注释 2024年 12月31日 2023年 12月31日 2024年 12月31日 2023年 12月31日 财政部规定 (1) 521,876 484,043 521,876 484,043 香港银行业条例规定 (2) 2,124 2,124 174"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 11,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 3,
+    "table_regions": 1,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.38,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 164.22,
+        "x1": 595.28,
+        "y1": 259.33,
+        "region_type": "table",
+        "text": "2024年 2024年 2023年 2023年\n12月31日 12月31日 12月31日 12月31日 注释\n521,876 521,876 (1) 484,043 484,043 财政部规定\n2,124 174 (2) 2,124 174 香港银行业条例规定\n9,858 – (3) 9,379 – 其他中国内地监管机构规定\n733 707 709 700 其他境外监管机构规定\n534,591 5...",
+        "item_count": 37,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 7,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "table_rows": 7,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.659,
+          "avg_large_gaps": 4.29,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.4779,
+              "large_gaps": 4,
+              "text_preview": "12月31日 12月31日 12月31日 12月31日 注释"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "521,876 521,876 (1) 484,043 484,043 财政部规定"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "2,124 174 (2) 2,124 174 香港银行业条例规定"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 5,
+              "text_preview": "9,858 – (3) 9,379 – 其他中国内地监管机构规定"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "733 707 709 700 其他境外监管机构规定"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "534,591 522,757 496,255 484,917 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 65.2,
+        "y0": 276.6,
+        "x1": 524.49,
+        "y1": 335.83,
+        "region_type": "paragraph",
+        "text": "(1) 根据财政部有关规定，本行从净利润中提取一定金额作为一般风险准备，用于部分弥补尚未识别的可能性损失。财政部于\n2012年3月30日颁布《金融企业准备金计提管理办法》（财金[2012]20号），要求金融企业计提的一般风险准备余额原则上不得低\n于风险资产期末余额的1.5%。\n(2) 根据香港银行业条例的要求，本集团的香港银行业务除按照本集团的会计政策计提减值外，对发放贷款和垫款将要或可能发\n生的...",
+        "item_count": 7,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 5,
+          "avg_x_coverage": 0.5909,
+          "avg_large_gaps": 0.4,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "paragraph",
+              "x_coverage": 0.7714,
+              "large_gaps": 1,
+              "text_preview": "(1) 根据财政部有关规定，本行从净利润中提取一定金额作为一般风险准备，用于部分弥补尚未识别的可能性损失。财政部于"
+            },
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.7335,
+              "large_gaps": 0,
+              "text_preview": "2012年3月30日颁布《金融企业准备金计提管理办法》（财金[2012]20号），要求金融企业计提的一般风险准备余额原则"
+            },
+            {
+              "idx": 9,
+              "type": "paragraph",
+              "x_coverage": 0.1757,
+              "large_gaps": 0,
+              "text_preview": "于风险资产期末余额的1.5%。"
+            },
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.7714,
+              "large_gaps": 1,
+              "text_preview": "(2) 根据香港银行业条例的要求，本集团的香港银行业务除按照本集团的会计政策计提减值外，对发放贷款和垫款将要或可能发"
+            },
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.5026,
+              "large_gaps": 0,
+              "text_preview": "生的亏损提取一定金额作为监管储备。监管储备的转入或转出通过未分配利润进行。"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 42.52,
+        "y0": 366.71,
+        "x1": 524.4,
+        "y1": 407.16,
+        "region_type": "paragraph",
+        "text": "40 利润分配\n根据于2024年6月27日召开的本行2023年度股东大会审议通过的2023年度利润分配方案，本行宣派2023年度现金股息\n人民币1,000.04亿元。",
+        "item_count": 4,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            13,
+            14,
+            15
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 3,
+          "avg_x_coverage": 0.3435,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 13,
+              "type": "paragraph",
+              "x_coverage": 0.1162,
+              "large_gaps": 0,
+              "text_preview": "40 利润分配"
+            },
+            {
+              "idx": 14,
+              "type": "paragraph",
+              "x_coverage": 0.7714,
+              "large_gaps": 0,
+              "text_preview": "根据于2024年6月27日召开的本行2023年度股东大会审议通过的2023年度利润分配方案，本行宣派2023年度现金股息"
+            },
+            {
+              "idx": 15,
+              "type": "paragraph",
+              "x_coverage": 0.1429,
+              "large_gaps": 0,
+              "text_preview": "人民币1,000.04亿元。"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

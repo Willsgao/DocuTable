@@ -1,0 +1,256 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 19,
+  "timestamp": "2026-06-25T11:31:20.032888",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 2,
+    "after_table_regions": 2,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 1,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "单区域被拆分为 2 个子区域（表段分离）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          484.72
+        ],
+        "item_count": 137,
+        "text_preview": "2024年12月31日 2023年12月31日 贷款总额 比例 抵质押 贷款 贷款总额 比例 抵质押 贷款 公司类贷款和垫款 －租赁和商务服务业 2,682,018 10.38% 676,716 2,506,037 10.50% 663,717 －交通运输、仓储和邮政业 2,479,499"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 19,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 2,
+    "table_regions": 2,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.56,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 171.75,
+        "x1": 595.28,
+        "y1": 207.31,
+        "region_type": "table",
+        "text": "2024年12月31日 2023年12月31日\n抵质押 抵质押\n贷款 贷款总额 比例 贷款 贷款总额 比例",
+        "item_count": 10,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            0,
+            1,
+            2
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.3345,
+          "avg_large_gaps": 2.33,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.3129,
+              "large_gaps": 1,
+              "text_preview": "2024年12月31日 2023年12月31日"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.2633,
+              "large_gaps": 1,
+              "text_preview": "抵质押 抵质押"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.4273,
+              "large_gaps": 5,
+              "text_preview": "贷款 贷款总额 比例 贷款 贷款总额 比例"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 223.76,
+        "x1": 595.28,
+        "y1": 468.75,
+        "region_type": "table",
+        "text": "2,682,018 10.38% 676,716 2,506,037 10.50% 663,717 －租赁和商务服务业\n2,479,499 9.59% 658,592 2,328,471 9.76% 617,975 －交通运输、仓储和邮政业\n2,264,558 8.76% 421,563 2,167,353 9.08% 437,729 －制造业\n1,674,706 6.48% 235,043 1,...",
+        "item_count": 126,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 18,
+          "row_indices": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21
+          ],
+          "table_rows": 18,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6659,
+          "avg_large_gaps": 5.94,
+          "row_details": [
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "2,682,018 10.38% 676,716 2,506,037 10.50% 663,717 －租赁和商务服务业"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "2,479,499 9.59% 658,592 2,328,471 9.76% 617,975 －交通运输、仓储和邮政业"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "2,264,558 8.76% 421,563 2,167,353 9.08% 437,729 －制造业"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "1,674,706 6.48% 235,043 1,444,500 6.05% 219,330 －电力、热力、燃气及水生"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "1,441,415 5.58% 705,860 1,396,585 5.85% 698,352 －批发和零售业"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "1,014,851 3.93% 526,419 970,809 4.07% 497,958 －房地产业"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "765,953 2.96% 248,959 747,653 3.13% 269,792 －水利、环境和公共设施管理业"
+            },
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "711,472 2.75% 164,363 631,518 2.65% 161,559 －建筑业"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "702,841 2.72% 20,552 378,507 1.59% 23,787 －金融业"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "371,304 1.44% 25,640 345,315 1.45% 20,110 －采矿业"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "242,128 0.94% 87,318 221,385 0.93% 79,486 －信息传输、软件和信息技术服务业"
+            },
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "179,270 0.69% 78,752 156,459 0.66% 71,074 －科学研究和技术服务业"
+            },
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.6619,
+              "large_gaps": 6,
+              "text_preview": "654,640 2.54% 190,034 643,005 2.69% 189,776 －其他"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "15,184,655 58.76% 4,039,811 13,937,597 58.41% 3,950,645 公司类贷"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "8,977,310 34.74% 6,796,657 8,768,598 36.75% 6,873,754 个人贷款和垫"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "1,631,752 6.31% – 1,104,787 4.63% – 票据贴现"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "49,577 0.19% – 50,618 0.21% – 应计利息"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 5,
+              "text_preview": "25,843,294 100.00% 10,836,468 23,861,600 100.00% 10,824,399 "
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

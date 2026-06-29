@@ -1,0 +1,198 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 3,
+  "timestamp": "2026-06-25T11:31:19.618610",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 3,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 2,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 3 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          403.94,
+          595.28,
+          565.51
+        ],
+        "item_count": 31,
+        "text_preview": "下表列出于所示日期本集团利息净收入和权益在不同情景下变动情况。 净利息收入的影响 权益的影响 （人民币百万元） 2024年 12月31日 2023年 12月31日 2024年 12月31日 2023年 12月31日 上升100个基点 存放央行款项利率不变 (46,805) (51,907) (108,445) (66,366) 存放央行款项利率和活期利率不变 92,363"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 3,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 3,
+    "table_regions": 1,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.28,
+    "regions": [
+      {
+        "x0": 42.52,
+        "y0": 427.74,
+        "x1": 350.17,
+        "y1": 438.96,
+        "region_type": "paragraph",
+        "text": "下表列出于所示日期本集团利息净收入和权益在不同情景下变动情况。",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            0
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.5168,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "paragraph",
+              "x_coverage": 0.5168,
+              "large_gaps": 0,
+              "text_preview": "下表列出于所示日期本集团利息净收入和权益在不同情景下变动情况。"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 450.32,
+        "x1": 595.28,
+        "y1": 537.73,
+        "region_type": "table",
+        "text": "净利息收入的影响 权益的影响\n2024年 2024年 2023年 2023年\n12月31日 12月31日 12月31日 12月31日 （人民币百万元）\n(46,805) 上升100个基点 (51,907) 存放央行款项利率不变\n(108,445) (66,366)\n92,363 89,293 存放央行款项利率和活期利率不变\n46,805 下降100个基点 51,907 存放央行款项利率不变\n119...",
+        "item_count": 29,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 9,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "table_rows": 9,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4252,
+          "avg_large_gaps": 2.22,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.2959,
+              "large_gaps": 1,
+              "text_preview": "净利息收入的影响 权益的影响"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.3568,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7972,
+              "large_gaps": 4,
+              "text_preview": "12月31日 12月31日 12月31日 12月31日 （人民币百万元）"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.5845,
+              "large_gaps": 3,
+              "text_preview": "(46,805) 上升100个基点 (51,907) 存放央行款项利率不变"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.155,
+              "large_gaps": 1,
+              "text_preview": "(108,445) (66,366)"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.4524,
+              "large_gaps": 2,
+              "text_preview": "92,363 89,293 存放央行款项利率和活期利率不变"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.5809,
+              "large_gaps": 3,
+              "text_preview": "46,805 下降100个基点 51,907 存放央行款项利率不变"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.1479,
+              "large_gaps": 1,
+              "text_preview": "119,288 72,013"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.4559,
+              "large_gaps": 2,
+              "text_preview": "(92,363) (89,293) 存放央行款项利率和活期利率不变"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 42.52,
+        "y0": 554.91,
+        "x1": 104.84,
+        "y1": 566.9,
+        "region_type": "paragraph",
+        "text": "汇率风险管理",
+        "item_count": 1,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            10
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1047,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.1047,
+              "large_gaps": 0,
+              "text_preview": "汇率风险管理"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,192 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 15,
+  "timestamp": "2026-06-25T11:31:19.939333",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 2,
+    "after_table_regions": 2,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 1,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "单区域被拆分为 2 个子区域（表段分离）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          484.72
+        ],
+        "item_count": 83,
+        "text_preview": "其他分部信息： 资本性支出 2,280 953 14,155 1,786 1,738 733 1,907 326 23,878 折旧及摊销费用 3,579 3,140 7,429 3,850 3,912 1,518 3,601 2,052"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 15,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 2,
+    "table_regions": 2,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.42,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 194.46,
+        "x1": 595.28,
+        "y1": 215.44,
+        "region_type": "table",
+        "text": "2,280 953 14,155 1,786 1,738 733 1,907 326 23,878 资本性支出\n3,579 3,140 7,429 3,850 3,912 1,518 3,601 2,052 29,081 折旧及摊销费用",
+        "item_count": 20,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            1,
+            2
+          ],
+          "table_rows": 2,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7143,
+          "avg_large_gaps": 9.0,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 9,
+              "text_preview": "2,280 953 14,155 1,786 1,738 733 1,907 326 23,878 资本性支出"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 9,
+              "text_preview": "3,579 3,140 7,429 3,850 3,912 1,518 3,601 2,052 29,081 折旧及摊销"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 252.07,
+        "x1": 595.28,
+        "y1": 468.89,
+        "region_type": "table",
+        "text": "6,590,228 5,176,740 8,265,540 5,390,160 5,627,618 1,979,268 13,140,146 1,731,630 47,901,330 分部资产\n2,375 1,276 8,939 4,151 – – 1,835 2,407 20,983 长期股权投资\n6,592,603 5,178,016 8,274,479 5,394,311 5,627,618...",
+        "item_count": 61,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 11,
+          "row_indices": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "table_rows": 11,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7004,
+          "avg_large_gaps": 4.55,
+          "row_details": [
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 9,
+              "text_preview": "6,590,228 5,176,740 8,265,540 5,390,160 5,627,618 1,979,268 "
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 9,
+              "text_preview": "2,375 1,276 8,939 4,151 – – 1,835 2,407 20,983 长期股权投资"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.5561,
+              "large_gaps": 8,
+              "text_preview": "6,592,603 5,178,016 8,274,479 5,394,311 5,627,618 1,979,268 "
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 1,
+              "text_preview": "121,227 递延所得税资产"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.7168,
+              "large_gaps": 1,
+              "text_preview": "(9,718,714) 抵销"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 1,
+              "text_preview": "38,324,826 资产总额"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 9,
+              "text_preview": "6,505,937 5,105,200 8,019,403 5,296,596 5,561,892 1,965,083 "
+            },
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 1,
+              "text_preview": "1,724 递延所得税负债"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.7168,
+              "large_gaps": 1,
+              "text_preview": "(9,718,714) 抵销"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 1,
+              "text_preview": "35,152,752 负债总额"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 9,
+              "text_preview": "739,350 658,310 706,638 697,850 573,809 183,964 – 270,318 3,"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

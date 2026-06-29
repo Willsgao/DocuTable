@@ -1,0 +1,126 @@
+
+============================================================
+Case 1: 延续型表格（table_011_P14）→ 应合成表头
+============================================================
+  原始: 5行 × 7列
+  前2行预览: [['\ufeff', '', '(136,774)', '(11.75)', '(154,535)', '(167,949)', '(193,491)'], ['其他资产减值损失', '(298)', '(463)', '(35.64)', '(479)', '(766)', '3,562']]
+INFO:   [header_synth] 表头缺失 -> 自动合成表头: ['项目', '列1', '列2', '列3', '列4', '列5', '列6']
+  [PASS] _synthesize_header_if_needed 返回 True
+  [PASS] 表头在 row[0] (row[0]=['项目', '列1', '列2', '列3', '列4', '列5', '列6'])
+  [PASS] 行数增加 1
+INFO:   [header_synth] 表头缺失 -> 自动合成表头: ['项目', '列1', '列2', '列3', '列4', '列5', '列6']
+INFO: 规则修复开始: 数据区域太靠前，可能无表头
+INFO:   Step 1: data region rows [1:6]
+INFO:   Step 2: found 1 header rows (indices [0])
+INFO:   Step 2: bottom header → 7 anchor cols at [0, 1, 2, 3, 4, 5, 6], label_offset=0
+INFO:   Step 3: data cleaned, 5 rows × 7 cols
+INFO:   Step 4: header repaired, 1 rows × 7 cols
+INFO: 规则修复完成: 5→6 rows, 7 cols, 1 header rows
+  repair_info: 强制修复
+  steps: ['0. 表头合成: 无表头→合成默认表头行', '1. 数据区域: 行 1-5', '2. 表头识别: 1 行（底层锚定 7 列→[0, 1, 2, 3, 4, 5, 6]，标签列 0 列）', '   层级恢复: 1 行表头', '6. 组装: 5→6 行']
+  [PASS] repair_info 记录 header_synthesized=True
+  [PASS] repair 有执行步骤 (steps > 1) (steps=['0. 表头合成: 无表头→合成默认表头行', '1. 数据区域: 行 1-5', '2. 表头识别: 1 行（底层锚定 7 列→[0, 1, 2, 3, 4, 5, 6]，标签列 0 列）', '   层级恢复: 1 行表头', '6. 组装: 5→6 行'])
+  [PASS] 修复后表头行存在 (header_rows_found=1)
+  [PASS] 修复后数据列数 > 0 (data_cols=7)
+  [PASS] 修复后表结构完整 (rows: 5 → 6)
+  修复后 row[0]: ['项目', '列1', '列2', '列3', '列4', '列5', '列6']
+  修复后 row[1]: ['', '', '(136,774)', '(11.75)', '(154,535)', '(167,949)', '(193,491)']
+
+============================================================
+Case 2: 大延续型表格（table_012_P14）→ 应合成表头
+============================================================
+  原始: 25行 × 7列
+INFO:   [header_synth] 表头缺失 -> 自动合成表头: ['项目', '列1', '列2', '列3', '列4', '列5', '列6']
+  [PASS] _synthesize_header_if_needed 返回 True
+  [PASS] 表头 col0 = 项目
+INFO:   [header_synth] 表头缺失 -> 自动合成表头: ['项目', '列1', '列2', '列3', '列4', '列5', '列6']
+INFO: 规则修复开始: 数据区域太靠前，可能无表头
+INFO:   Step 1: data region rows [1:26]
+INFO:   Step 2: found 1 header rows (indices [0])
+INFO:   Step 2: bottom header → 7 anchor cols at [0, 1, 2, 3, 4, 5, 6], label_offset=0
+INFO:   Step 3: data cleaned, 25 rows × 7 cols
+INFO:   Step 4: header repaired, 1 rows × 7 cols
+INFO: 规则修复完成: 25→26 rows, 7 cols, 1 header rows
+  [PASS] repair_info 记录 header_synthesized=True
+  [PASS] 修复后 header_rows_found > 0
+  [PASS] 修复后 data_cols > 0
+  修复后 row[0]: ['项目', '列1', '列2', '列3', '列4', '列5', '列6']
+  [PASS] 修复后 row[0] 含表头文本
+
+============================================================
+Case 3: 正常表格（table_010_P14）→ 不应合成表头
+============================================================
+  原始: 9行 × 7列
+  row[1] (表头): ['（除特别注明外，以人民币百万元列示）', '2024年', '2023年', '变化(%)', '2022年', '2021年', '2020年']
+  [PASS] _synthesize_header_if_needed 返回 False (正常表头的表不应合成)
+INFO: 规则修复开始: 表头之上有 1 行噪音（描述文本/标题），需要清理
+INFO:   Step 1: data region rows [2:9]
+INFO:   Step 2: found 1 header rows (indices [1])
+INFO:   Step 2: bottom header → 7 anchor cols at [0, 1, 2, 3, 4, 5, 6], label_offset=1
+INFO:   Step 3: data cleaned, 7 rows × 7 cols
+INFO:   Step 4: header repaired, 1 rows × 7 cols
+INFO: 规则修复完成: 9→8 rows, 7 cols, 1 header rows
+  [PASS] repair_info 无 header_synthesized
+  [PASS] 修复后 header_rows_found > 0
+
+============================================================
+Case 4: 极简 2 行表 → 不应合成
+============================================================
+  [PASS] _synthesize_header_if_needed 返回 False (2行表 text_in_col0 不足)
+
+============================================================
+Case 5: 纯数值矩阵 → 不应合成
+============================================================
+  [PASS] _synthesize_header_if_needed 返回 False (col0 全是数值)
+
+============================================================
+Case 6: KPI 混合表（table_006_P12）→ 不应合成
+============================================================
+  原始: 3行 × 6列
+  内容: [['\ufeff0', '.85%', '.51%', '', '', ''], ['', '拨备覆盖率', '', '资本充足率', '', '成本收入比'], ['233', '.60%', '19', '.69%', '29', '.44%']]
+  [PASS] _synthesize_header_if_needed 返回 False (col0 无文本标签 (0/.85%/.51% 是数值))
+
+============================================================
+Case 7: 构造标签-数值表 → 应合成表头
+============================================================
+INFO:   [header_synth] 表头缺失 -> 自动合成表头: ['项目', '列1', '列2', '列3']
+  [PASS] _synthesize_header_if_needed 返回 True
+  [PASS] row[0][0] = 项目
+  [PASS] row[0][1] = 列1
+  [PASS] row[1][0] = 营业收入
+INFO:   [header_synth] 表头缺失 -> 自动合成表头: ['项目', '列1', '列2', '列3']
+INFO: 规则修复开始: 数据区域太靠前，可能无表头
+INFO:   Step 1: data region rows [1:4]
+INFO:   Step 2: found 1 header rows (indices [0])
+INFO:   Step 2: bottom header → 4 anchor cols at [0, 1, 2, 3], label_offset=0
+INFO:   Step 3: data cleaned, 3 rows × 4 cols
+INFO:   Step 4: header repaired, 1 rows × 4 cols
+INFO: 规则修复完成: 3→4 rows, 4 cols, 1 header rows
+  [PASS] repair_info header_synthesized=True
+  [PASS] 修复后 header_rows_found > 0
+  [PASS] 修复后 data_cols=4 (data_cols=4)
+  修复结果: 4行
+    row[0]: ['项目', '列1', '列2', '列3']
+    row[1]: ['营业收入', '1,234', '5,678', '9,012']
+    row[2]: ['净利润', '234', '890', '1,234']
+    row[3]: ['每股收益', '1.5', '2.3', '3.1']
+
+============================================================
+Case 8: 边界情况
+============================================================
+  [PASS] 空表不合成 (空表)
+  [PASS] 单列表不合成 (单列)
+
+============================================================
+Case 9: 日期标签型（table_041_P34）→ 应合成
+============================================================
+  原始: 4行 × 5列
+    row[0]: ['\ufeff32', '中国建设银行股份有限公司', '2024年度报告', '', '']
+    row[1]: ['管理层讨论与分析', '', '', '', '']
+    row[2]: ['财务回顾', '', '', '', '']
+    row[3]: ['2024年12月31日', '328,369', '219,912', '254,613', '802,894']
+  合成结果: False
+
+============================================================
+测试结果: 29 PASS / 0 FAIL
+============================================================

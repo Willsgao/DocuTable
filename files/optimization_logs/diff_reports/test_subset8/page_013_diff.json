@@ -1,0 +1,357 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 13,
+  "timestamp": "2026-06-25T11:31:19.877072",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 6,
+    "after_table_regions": 4,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 5,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 6 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          646.3
+        ],
+        "item_count": 125,
+        "text_preview": "结算与清算手续费 36,705 37,637 36,614 37,556 银行卡手续费 21,074 21,071 20,957 20,936 托管及其他受托业务佣金 17,057 18,389 16,372 17,744 代理业务手续费 14,412 18,894 15,379 20,515"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 13,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 6,
+    "table_regions": 4,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.69,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 166.61,
+        "x1": 595.28,
+        "y1": 270.22,
+        "region_type": "table",
+        "text": "36,705 36,614 37,637 37,556 结算与清算手续费\n21,074 20,957 21,071 20,936 银行卡手续费\n17,057 16,372 18,389 17,744 托管及其他受托业务佣金\n14,412 15,379 18,894 20,515 代理业务手续费\n8,581 2,280 10,680 3,365 资产管理业务收入\n8,131 7,594 10,892...",
+        "item_count": 40,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "table_rows": 8,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7524,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "36,705 36,614 37,637 37,556 结算与清算手续费"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "21,074 20,957 21,071 20,936 银行卡手续费"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "17,057 16,372 18,389 17,744 托管及其他受托业务佣金"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "14,412 15,379 18,894 20,515 代理业务手续费"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "8,581 2,280 10,680 3,365 资产管理业务收入"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "8,131 7,594 10,892 11,081 顾问和咨询费"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "11,980 10,358 12,343 10,843 其他"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "117,940 109,554 129,906 122,040 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 296.5,
+        "x1": 595.28,
+        "y1": 378.79,
+        "region_type": "table",
+        "text": "(6,530) (6,492) (6,593) (6,587) 银行卡交易费\n(1,111) (1,095) (1,245) (1,232) 银行间交易费\n(5,371) (5,038) (6,322) (6,174) 其他\n(13,012) (12,625) (14,160) (13,993) 合计\n104,928 96,929 115,746 108,047 手续费及佣金净收入",
+        "item_count": 25,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "table_rows": 5,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7552,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7559,
+              "large_gaps": 4,
+              "text_preview": "(6,530) (6,492) (6,593) (6,587) 银行卡交易费"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.7559,
+              "large_gaps": 4,
+              "text_preview": "(1,111) (1,095) (1,245) (1,232) 银行间交易费"
+            },
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.7559,
+              "large_gaps": 4,
+              "text_preview": "(5,371) (5,038) (6,322) (6,174) 其他"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.756,
+              "large_gaps": 4,
+              "text_preview": "(13,012) (12,625) (14,160) (13,993) 合计"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "104,928 96,929 115,746 108,047 手续费及佣金净收入"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 42.52,
+        "y0": 396.17,
+        "x1": 111.68,
+        "y1": 410.41,
+        "region_type": "paragraph",
+        "text": "43 投资收益",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            14
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1162,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 14,
+              "type": "paragraph",
+              "x_coverage": 0.1162,
+              "large_gaps": 0,
+              "text_preview": "43 投资收益"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 418.12,
+        "x1": 595.28,
+        "y1": 456.63,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年 注释\n2,051 1,666 1,603 1,546 衍生金融工具",
+        "item_count": 12,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 3,
+          "row_indices": [
+            15,
+            16,
+            17
+          ],
+          "table_rows": 3,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4944,
+          "avg_large_gaps": 3.0,
+          "row_details": [
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.4779,
+              "large_gaps": 4,
+              "text_preview": "2024年 2024年 2023年 2023年 注释"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "2,051 1,666 1,603 1,546 衍生金融工具"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 538.69,
+        "x1": 595.28,
+        "y1": 596.32,
+        "region_type": "table",
+        "text": "3,991 3,708 (1) 946 946 生的收益\n6,576 1,209 5,712 1,141 股利收入\n1,193 839 1,261 52 其他\n21,417 11,827 16,887 5,682 合计",
+        "item_count": 21,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            25,
+            26,
+            27,
+            28
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.749,
+          "avg_large_gaps": 4.25,
+          "row_details": [
+            {
+              "idx": 25,
+              "type": "table",
+              "x_coverage": 0.7387,
+              "large_gaps": 5,
+              "text_preview": "3,991 3,708 (1) 946 946 生的收益"
+            },
+            {
+              "idx": 26,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "6,576 1,209 5,712 1,141 股利收入"
+            },
+            {
+              "idx": 27,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "1,193 839 1,261 52 其他"
+            },
+            {
+              "idx": 28,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "21,417 11,827 16,887 5,682 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 65.2,
+        "y0": 613.59,
+        "x1": 524.34,
+        "y1": 633.07,
+        "region_type": "paragraph",
+        "text": "(1) 于2024年度，本集团以摊余成本计量的金融资产终止确认产生的收益主要包括债券处置收益以及因资产支持证券化产品产生\n的收益（于2023年度，本集团以摊余成本计量的金融资产终止确认产生的收益主要包括因资产支持证券化产品产生的收益）。",
+        "item_count": 3,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            29,
+            30
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.7505,
+          "avg_large_gaps": 0.5,
+          "row_details": [
+            {
+              "idx": 29,
+              "type": "paragraph",
+              "x_coverage": 0.7713,
+              "large_gaps": 1,
+              "text_preview": "(1) 于2024年度，本集团以摊余成本计量的金融资产终止确认产生的收益主要包括债券处置收益以及因资产支持证券化产品产生"
+            },
+            {
+              "idx": 30,
+              "type": "paragraph",
+              "x_coverage": 0.7298,
+              "large_gaps": 0,
+              "text_preview": "的收益（于2023年度，本集团以摊余成本计量的金融资产终止确认产生的收益主要包括因资产支持证券化产品产生的收益）。"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

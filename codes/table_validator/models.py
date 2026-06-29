@@ -32,6 +32,11 @@ class ClassifyResult:
     #   "has_enough_cols": bool,
     # }
 
+    # V2 加权分类器新增
+    needs_review: bool = False                   # 置信度不足，需人工/LLM复核
+    weighted_score: float = 0.0                  # 加权总分 0~1
+    score_details: dict = field(default_factory=dict)  # 各项得分明细
+
     # 增强字段：表格质量分类（Phase 4 优化新增）
     is_complete: bool = True                     # 表格是否完整（有表头+数据+可能汇总行）
     table_category: str = ""                     # 分类标签："财务数据表"/"文本列表"/"目录"/"图表标签"/"混合表"

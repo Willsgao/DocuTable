@@ -1,0 +1,131 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 2,
+  "timestamp": "2026-06-25T11:31:19.589410",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 1,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 0,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "无变化（该页无段落混入表格区域）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          133.23,
+          465.87,
+          337.32,
+          583.81
+        ],
+        "item_count": 46,
+        "text_preview": "2024年12月31日 建信理财 本行 本集团 金额 占比(%) 金额 占比(%) 金额 占比(%) 1,008,220 60.80 20,512 34.60 1,028,732 59.90 440,983 26.60 5,052 8.52"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 2,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 1,
+    "table_regions": 1,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.41,
+    "regions": [
+      {
+        "x0": 133.23,
+        "y0": 481.22,
+        "x1": 337.32,
+        "y1": 580.41,
+        "region_type": "table",
+        "text": "建信理财 本行 本集团\n占比(%) 占比(%) 占比(%) 金额 金额 金额\n1,008,220 60.80 20,512 34.60 1,028,732 59.90\n440,983 26.60 5,052 8.52 446,035 25.97\n1,793 0.11 25,679 43.31 27,472 1.60\n5,171 0.31 8,042 13.57 13,213 0.77\n201,98...",
+        "item_count": 45,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 8,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "table_rows": 8,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.309,
+          "avg_large_gaps": 4.38,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.2635,
+              "large_gaps": 2,
+              "text_preview": "建信理财 本行 本集团"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.3057,
+              "large_gaps": 5,
+              "text_preview": "占比(%) 占比(%) 占比(%) 金额 金额 金额"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.3251,
+              "large_gaps": 4,
+              "text_preview": "1,008,220 60.80 20,512 34.60 1,028,732 59.90"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.3181,
+              "large_gaps": 5,
+              "text_preview": "440,983 26.60 5,052 8.52 446,035 25.97"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.308,
+              "large_gaps": 5,
+              "text_preview": "1,793 0.11 25,679 43.31 27,472 1.60"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.308,
+              "large_gaps": 5,
+              "text_preview": "5,171 0.31 8,042 13.57 13,213 0.77"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.3181,
+              "large_gaps": 5,
+              "text_preview": "201,987 12.18 201,987 11.76 － －"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.3251,
+              "large_gaps": 4,
+              "text_preview": "1,658,154 100.00 59,285 100.00 1,717,439 100.00"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

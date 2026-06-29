@@ -1,0 +1,344 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 9,
+  "timestamp": "2026-06-25T11:31:19.796774",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 5,
+    "after_table_regions": 3,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 4,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 5 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          565.51
+        ],
+        "item_count": 101,
+        "text_preview": "发行在外的金融工具 数量 （百万张） 账面价值 数量 （百万张） 账面价值 数量 （百万张） 账面价值 2019年无固定期限资本债券 400 39,991 (400) (39,991) – – 2022年无固定期限资本债券 400 40,000"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 9,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 5,
+    "table_regions": 3,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.7,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 172.99,
+        "x1": 595.28,
+        "y1": 267.94,
+        "region_type": "table",
+        "text": "数量 数量 数量\n（百万张） 账面价值 （百万张） 账面价值 （百万张） 账面价值 发行在外的金融工具\n400 39,991 (400) (39,991) – – 2019年无固定期限资本债券\n400 40,000 – – 400 40,000 2022年无固定期限资本债券\n300 30,000 – – 300 30,000 2023年无固定期限资本债券（第一期）\n300 30,000 – – 3...",
+        "item_count": 45,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 7,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "table_rows": 7,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.627,
+          "avg_large_gaps": 4.71,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.3319,
+              "large_gaps": 2,
+              "text_preview": "数量 数量 数量"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.6761,
+              "large_gaps": 1,
+              "text_preview": "（百万张） 账面价值 （百万张） 账面价值 （百万张） 账面价值 发行在外的金融工具"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "400 39,991 (400) (39,991) – – 2019年无固定期限资本债券"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "400 40,000 – – 400 40,000 2022年无固定期限资本债券"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "300 30,000 – – 300 30,000 2023年无固定期限资本债券（第一期）"
+            },
+            {
+              "idx": 5,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "300 30,000 – – 300 30,000 2023年无固定期限资本债券（第二期）"
+            },
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.6762,
+              "large_gaps": 6,
+              "text_preview": "1,400 139,991 (400) (39,991) 1,000 100,000 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 93.54,
+        "y0": 281.95,
+        "x1": 338.52,
+        "y1": 315.8,
+        "region_type": "paragraph",
+        "text": "2019年无固定期限资本债券已于2024年11月赎回。 注：\n(3) 归属于权益工具持有者的相关信息",
+        "item_count": 4,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            7,
+            8
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.3069,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 7,
+              "type": "paragraph",
+              "x_coverage": 0.3353,
+              "large_gaps": 0,
+              "text_preview": "2019年无固定期限资本债券已于2024年11月赎回。 注："
+            },
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.2784,
+              "large_gaps": 0,
+              "text_preview": "(3) 归属于权益工具持有者的相关信息"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 325.62,
+        "x1": 595.28,
+        "y1": 442.27,
+        "region_type": "table",
+        "text": "2024年 2023年\n12月31日 12月31日 项目\n3,322,127 1. 3,150,145 归属于本行股东的权益\n3,162,150 (1) 2,950,177 归属于本行普通股持有者的权益\n159,977 (2) 199,968 归属于本行其他权益持有者的权益\n7,108 5,110 其中：净利润\n7,108 5,110 当期已分配股利\n21,838 2. 21,929 归属于少数股...",
+        "item_count": 35,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 10,
+          "row_indices": [
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ],
+          "table_rows": 10,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6323,
+          "avg_large_gaps": 1.9,
+          "row_details": [
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.1539,
+              "large_gaps": 1,
+              "text_preview": "2024年 2023年"
+            },
+            {
+              "idx": 10,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 2,
+              "text_preview": "12月31日 12月31日 项目"
+            },
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 2,
+              "text_preview": "3,322,127 1. 3,150,145 归属于本行股东的权益"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.6905,
+              "large_gaps": 2,
+              "text_preview": "3,162,150 (1) 2,950,177 归属于本行普通股持有者的权益"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.6905,
+              "large_gaps": 2,
+              "text_preview": "159,977 (2) 199,968 归属于本行其他权益持有者的权益"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.6524,
+              "large_gaps": 2,
+              "text_preview": "7,108 5,110 其中：净利润"
+            },
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.6119,
+              "large_gaps": 2,
+              "text_preview": "7,108 5,110 当期已分配股利"
+            },
+            {
+              "idx": 16,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 2,
+              "text_preview": "21,838 2. 21,929 归属于少数股东的权益"
+            },
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.6905,
+              "large_gaps": 2,
+              "text_preview": "19,839 (1) 19,930 归属于普通股少数股东的权益"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.6905,
+              "large_gaps": 2,
+              "text_preview": "1,999 (2) 1,999 归属于少数股东其他权益工具持有者的权益"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 70.87,
+        "y0": 456.41,
+        "x1": 140.03,
+        "y1": 470.66,
+        "region_type": "paragraph",
+        "text": "36 资本公积",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 1,
+          "row_indices": [
+            19
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 1,
+          "avg_x_coverage": 0.1162,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 19,
+              "type": "paragraph",
+              "x_coverage": 0.1162,
+              "large_gaps": 0,
+              "text_preview": "36 资本公积"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 479.19,
+        "x1": 595.28,
+        "y1": 529.72,
+        "region_type": "table",
+        "text": "本集团 本行\n2024年 2024年 2023年 2023年\n12月31日 12月31日 12月31日 12月31日\n135,736 134,802 135,619 134,813 股本溢价及其他",
+        "item_count": 15,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            20,
+            21,
+            22,
+            23
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.4413,
+          "avg_large_gaps": 2.75,
+          "row_details": [
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.3867,
+              "large_gaps": 3,
+              "text_preview": "12月31日 12月31日 12月31日 12月31日"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "135,736 134,802 135,619 134,813 股本溢价及其他"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

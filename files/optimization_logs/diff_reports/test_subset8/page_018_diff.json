@@ -1,0 +1,318 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 18,
+  "timestamp": "2026-06-25T11:31:20.017217",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 3,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 2,
+    "region_count_delta": 2,
+    "paragraphs_newly_found": 2,
+    "changes": [
+      "单区域被拆分为 3 个子区域（表段分离）",
+      "新识别出 2 个段落区域"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          0.0,
+          595.28,
+          565.51
+        ],
+        "item_count": 38,
+        "text_preview": "313 中国建设银行股份有限公司 2024年度报告 财务报表附注 （除特别注明外，以人民币百万元列示） 59 关联方关系及其交易（续） (5) 关键管理人员 本集团的关键管理人员是指有权力及责任直接或间接地计划、指令和控制本集团的活动的人士，包括董事、 监事和高级管理人员。本集团于日常业务中与关键管理人员进行正常的银行业务交易。于2024年度及2023年 度，本集团与关键管理人员的交易及余额均不重大。于2024年12月31日，本集团对上海证券交易所相关规定项 下的关联自然人发放贷款和垫款及信用卡透支的余额为人民币741万元（2023年12月31日：人民币873万元）。 董事、监事和高级管理人员于2024年度的薪酬为人民币1,351万元。 根据国家有关部门的规定，部分关键管理人员的2024年薪酬总额尚未最终确定，但预计尚待调整的部分薪酬不 会对本集团及本行2024年度财务报表产生重大影响。该等薪酬总额待确认之后将再行披露。 根据国家有关部门的规定，部分关键管理人员的2023年度薪酬总额于2023年度年报公布之日尚未最终确定。董 事、监事和高级管理人员的2023年度薪酬总额确定为人民币2,807万元，已由董事会和股东大会审议通过。 (6) 董事、监事和高级管理人员贷款和垫款"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 18,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 3,
+    "table_regions": 1,
+    "paragraph_regions": 2,
+    "segment_time_ms": 0.39,
+    "regions": [
+      {
+        "x0": 70.87,
+        "y0": 54.43,
+        "x1": 557.24,
+        "y1": 386.07,
+        "region_type": "paragraph",
+        "text": "财务报表附注\n（除特别注明外，以人民币百万元列示）\n59 关联方关系及其交易（续）\n(5) 关键管理人员\n本集团的关键管理人员是指有权力及责任直接或间接地计划、指令和控制本集团的活动的人士，包括董事、\n监事和高级管理人员。本集团于日常业务中与关键管理人员进行正常的银行业务交易。于2024年度及2023年\n度，本集团与关键管理人员的交易及余额均不重大。于2024年12月31日，本集团对上海证券交易所...",
+        "item_count": 23,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 19,
+          "row_indices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 19,
+          "avg_x_coverage": 0.5098,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 1,
+              "type": "paragraph",
+              "x_coverage": 0.1022,
+              "large_gaps": 0,
+              "text_preview": "财务报表附注"
+            },
+            {
+              "idx": 2,
+              "type": "paragraph",
+              "x_coverage": 0.2774,
+              "large_gaps": 0,
+              "text_preview": "（除特别注明外，以人民币百万元列示）"
+            },
+            {
+              "idx": 3,
+              "type": "paragraph",
+              "x_coverage": 0.2632,
+              "large_gaps": 0,
+              "text_preview": "59 关联方关系及其交易（续）"
+            },
+            {
+              "idx": 4,
+              "type": "paragraph",
+              "x_coverage": 0.1342,
+              "large_gaps": 0,
+              "text_preview": "(5) 关键管理人员"
+            },
+            {
+              "idx": 5,
+              "type": "paragraph",
+              "x_coverage": 0.7334,
+              "large_gaps": 0,
+              "text_preview": "本集团的关键管理人员是指有权力及责任直接或间接地计划、指令和控制本集团的活动的人士，包括董事、"
+            },
+            {
+              "idx": 6,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "监事和高级管理人员。本集团于日常业务中与关键管理人员进行正常的银行业务交易。于2024年度及2023年"
+            },
+            {
+              "idx": 7,
+              "type": "paragraph",
+              "x_coverage": 0.7332,
+              "large_gaps": 0,
+              "text_preview": "度，本集团与关键管理人员的交易及余额均不重大。于2024年12月31日，本集团对上海证券交易所相关规定项"
+            },
+            {
+              "idx": 8,
+              "type": "paragraph",
+              "x_coverage": 0.7116,
+              "large_gaps": 0,
+              "text_preview": "下的关联自然人发放贷款和垫款及信用卡透支的余额为人民币741万元（2023年12月31日：人民币873万元）。"
+            },
+            {
+              "idx": 9,
+              "type": "paragraph",
+              "x_coverage": 0.4454,
+              "large_gaps": 0,
+              "text_preview": "董事、监事和高级管理人员于2024年度的薪酬为人民币1,351万元。"
+            },
+            {
+              "idx": 10,
+              "type": "paragraph",
+              "x_coverage": 0.7332,
+              "large_gaps": 0,
+              "text_preview": "根据国家有关部门的规定，部分关键管理人员的2024年薪酬总额尚未最终确定，但预计尚待调整的部分薪酬不"
+            },
+            {
+              "idx": 11,
+              "type": "paragraph",
+              "x_coverage": 0.6103,
+              "large_gaps": 0,
+              "text_preview": "会对本集团及本行2024年度财务报表产生重大影响。该等薪酬总额待确认之后将再行披露。"
+            },
+            {
+              "idx": 12,
+              "type": "paragraph",
+              "x_coverage": 0.7333,
+              "large_gaps": 0,
+              "text_preview": "根据国家有关部门的规定，部分关键管理人员的2023年度薪酬总额于2023年度年报公布之日尚未最终确定。董"
+            },
+            {
+              "idx": 13,
+              "type": "paragraph",
+              "x_coverage": 0.7054,
+              "large_gaps": 0,
+              "text_preview": "事、监事和高级管理人员的2023年度薪酬总额确定为人民币2,807万元，已由董事会和股东大会审议通过。"
+            },
+            {
+              "idx": 14,
+              "type": "paragraph",
+              "x_coverage": 0.3124,
+              "large_gaps": 0,
+              "text_preview": "(6) 董事、监事和高级管理人员贷款和垫款"
+            },
+            {
+              "idx": 15,
+              "type": "paragraph",
+              "x_coverage": 0.7331,
+              "large_gaps": 0,
+              "text_preview": "本集团于资产负债表日，向董事、监事和高级管理人员发放贷款和垫款的余额不重大。本集团向董事、监事"
+            },
+            {
+              "idx": 16,
+              "type": "paragraph",
+              "x_coverage": 0.7332,
+              "large_gaps": 0,
+              "text_preview": "和高级管理人员发放的贷款和垫款是在一般及日常业务过程中，并按正常的商业条款或授予其他员工的同等商"
+            },
+            {
+              "idx": 17,
+              "type": "paragraph",
+              "x_coverage": 0.7039,
+              "large_gaps": 0,
+              "text_preview": "业条款进行的。授予其他员工的商业条款以授予第三方的商业条款为基础，并考虑风险调减因素后确定。"
+            },
+            {
+              "idx": 18,
+              "type": "paragraph",
+              "x_coverage": 0.1162,
+              "large_gaps": 0,
+              "text_preview": "60 风险管理"
+            },
+            {
+              "idx": 19,
+              "type": "paragraph",
+              "x_coverage": 0.1707,
+              "large_gaps": 0,
+              "text_preview": "本集团面对的风险如下："
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 399.98,
+        "x1": 595.28,
+        "y1": 506.09,
+        "region_type": "table",
+        "text": "－ 信用风险\n－ 市场风险\n－ 流动性风险\n－ 操作风险\n－ 保险风险",
+        "item_count": 10,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            20,
+            21,
+            22,
+            23,
+            24
+          ],
+          "table_rows": 5,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.1018,
+          "avg_large_gaps": 1.0,
+          "row_details": [
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.0987,
+              "large_gaps": 1,
+              "text_preview": "－ 信用风险"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.0987,
+              "large_gaps": 1,
+              "text_preview": "－ 市场风险"
+            },
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.1139,
+              "large_gaps": 1,
+              "text_preview": "－ 流动性风险"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.0987,
+              "large_gaps": 1,
+              "text_preview": "－ 操作风险"
+            },
+            {
+              "idx": 24,
+              "type": "table",
+              "x_coverage": 0.0987,
+              "large_gaps": 1,
+              "text_preview": "－ 保险风险"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 93.5,
+        "y0": 519.99,
+        "x1": 552.79,
+        "y1": 542.09,
+        "region_type": "paragraph",
+        "text": "本附注包括本集团面临的以上风险的状况，本集团计量和管理风险的目标、政策和流程，以及本集团资本管理的情\n况。",
+        "item_count": 2,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 2,
+          "row_indices": [
+            25,
+            26
+          ],
+          "table_rows": 0,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.4019,
+          "avg_large_gaps": 0.0,
+          "row_details": [
+            {
+              "idx": 25,
+              "type": "paragraph",
+              "x_coverage": 0.7716,
+              "large_gaps": 0,
+              "text_preview": "本附注包括本集团面临的以上风险的状况，本集团计量和管理风险的目标、政策和流程，以及本集团资本管理的情"
+            },
+            {
+              "idx": 26,
+              "type": "paragraph",
+              "x_coverage": 0.0322,
+              "large_gaps": 0,
+              "text_preview": "况。"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

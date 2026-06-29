@@ -1,0 +1,314 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 12,
+  "timestamp": "2026-06-25T11:31:19.861445",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 4,
+    "after_table_regions": 4,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 3,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "单区域被拆分为 4 个子区域（表段分离）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          565.51
+        ],
+        "item_count": 111,
+        "text_preview": "存放中央银行款项 44,878 45,636 43,757 45,324 存放同业款项 5,063 5,907 3,999 4,893 拆出资金 20,165 19,771 20,259 20,088 买入返售金融资产 16,761 19,611 16,684 19,143"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 12,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 4,
+    "table_regions": 4,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.57,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 166.61,
+        "x1": 595.28,
+        "y1": 222.51,
+        "region_type": "table",
+        "text": "44,878 43,757 45,636 45,324 存放中央银行款项\n5,063 3,999 5,907 4,893 存放同业款项\n20,165 20,259 19,771 20,088 拆出资金\n16,761 16,684 19,611 19,143 买入返售金融资产\n289,788 279,386 278,524 268,440 金融投资",
+        "item_count": 25,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "table_rows": 5,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7524,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "44,878 43,757 45,636 45,324 存放中央银行款项"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "5,063 3,999 5,907 4,893 存放同业款项"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "20,165 20,259 19,771 20,088 拆出资金"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "16,761 16,684 19,611 19,143 买入返售金融资产"
+            },
+            {
+              "idx": 4,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "289,788 279,386 278,524 268,440 金融投资"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 235.59,
+        "x1": 595.28,
+        "y1": 293.22,
+        "region_type": "table",
+        "text": "509,093 491,636 492,292 473,216 －公司类\n342,270 338,229 373,291 370,096 －个人类\n13,539 13,539 12,334 12,334 －票据贴现\n1,241,557 1,207,489 1,247,366 1,213,534 合计",
+        "item_count": 20,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            6,
+            7,
+            8,
+            9
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.7421,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 6,
+              "type": "table",
+              "x_coverage": 0.7386,
+              "large_gaps": 4,
+              "text_preview": "509,093 491,636 492,292 473,216 －公司类"
+            },
+            {
+              "idx": 7,
+              "type": "table",
+              "x_coverage": 0.7386,
+              "large_gaps": 4,
+              "text_preview": "342,270 338,229 373,291 370,096 －个人类"
+            },
+            {
+              "idx": 8,
+              "type": "table",
+              "x_coverage": 0.7387,
+              "large_gaps": 4,
+              "text_preview": "13,539 13,539 12,334 12,334 －票据贴现"
+            },
+            {
+              "idx": 9,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "1,241,557 1,207,489 1,247,366 1,213,534 合计"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 319.5,
+        "x1": 595.28,
+        "y1": 375.39,
+        "region_type": "table",
+        "text": "(27,137) (27,128) (23,785) (23,775) 向中央银行借款\n(78,229) (76,859) (63,187) (61,487) 同业及其他金融机构存放款项\n(19,502) (16,197) (17,692) (14,191) 拆入资金\n(4,119) (3,493) (2,962) (1,418) 卖出回购金融资产款\n(63,860) (62,053) (54,5...",
+        "item_count": 25,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 5,
+          "row_indices": [
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "table_rows": 5,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.756,
+          "avg_large_gaps": 4.0,
+          "row_details": [
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.756,
+              "large_gaps": 4,
+              "text_preview": "(27,137) (27,128) (23,785) (23,775) 向中央银行借款"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.756,
+              "large_gaps": 4,
+              "text_preview": "(78,229) (76,859) (63,187) (61,487) 同业及其他金融机构存放款项"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.756,
+              "large_gaps": 4,
+              "text_preview": "(19,502) (16,197) (17,692) (14,191) 拆入资金"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.7559,
+              "large_gaps": 4,
+              "text_preview": "(4,119) (3,493) (2,962) (1,418) 卖出回购金融资产款"
+            },
+            {
+              "idx": 15,
+              "type": "table",
+              "x_coverage": 0.756,
+              "large_gaps": 4,
+              "text_preview": "(63,860) (62,053) (54,504) (52,095) 已发行债务证券"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 388.47,
+        "x1": 595.28,
+        "y1": 555.41,
+        "region_type": "table",
+        "text": "(205,143) (198,931) (215,040) (208,713) －公司类\n(253,685) (246,765) (252,963) (247,312) －个人类\n(651,675) (631,426) (630,133) (608,991) 合计\n589,882 576,063 617,233 604,543 利息净收入\n(1) 于利息收入中已减值金融资产利息收入列示如下：\n本集...",
+        "item_count": 38,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 9,
+          "row_indices": [
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
+          ],
+          "table_rows": 9,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6026,
+          "avg_large_gaps": 3.22,
+          "row_details": [
+            {
+              "idx": 17,
+              "type": "table",
+              "x_coverage": 0.7422,
+              "large_gaps": 4,
+              "text_preview": "(205,143) (198,931) (215,040) (208,713) －公司类"
+            },
+            {
+              "idx": 18,
+              "type": "table",
+              "x_coverage": 0.7422,
+              "large_gaps": 4,
+              "text_preview": "(253,685) (246,765) (252,963) (247,312) －个人类"
+            },
+            {
+              "idx": 19,
+              "type": "table",
+              "x_coverage": 0.756,
+              "large_gaps": 4,
+              "text_preview": "(651,675) (631,426) (630,133) (608,991) 合计"
+            },
+            {
+              "idx": 20,
+              "type": "table",
+              "x_coverage": 0.7524,
+              "large_gaps": 4,
+              "text_preview": "589,882 576,063 617,233 604,543 利息净收入"
+            },
+            {
+              "idx": 21,
+              "type": "table",
+              "x_coverage": 0.3758,
+              "large_gaps": 1,
+              "text_preview": "(1) 于利息收入中已减值金融资产利息收入列示如下："
+            },
+            {
+              "idx": 22,
+              "type": "table",
+              "x_coverage": 0.253,
+              "large_gaps": 1,
+              "text_preview": "本集团 本行"
+            },
+            {
+              "idx": 23,
+              "type": "table",
+              "x_coverage": 0.3729,
+              "large_gaps": 3,
+              "text_preview": "2024年 2024年 2023年 2023年"
+            },
+            {
+              "idx": 24,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "3,309 3,309 5,058 5,058 已减值贷款"
+            },
+            {
+              "idx": 25,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "108 77 433 209 其他已减值金融资产"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

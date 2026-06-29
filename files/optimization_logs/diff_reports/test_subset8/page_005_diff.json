@@ -1,0 +1,152 @@
+{
+  "pdf_name": "test_subset8",
+  "page_number": 5,
+  "timestamp": "2026-06-25T11:31:19.668800",
+  "page_size": {
+    "width": 595.28,
+    "height": 807.87
+  },
+  "summary": {
+    "before_regions": 1,
+    "after_total_regions": 2,
+    "after_table_regions": 2,
+    "after_paragraph_regions": 0,
+    "region_count_delta": 1,
+    "paragraphs_newly_found": 0,
+    "changes": [
+      "单区域被拆分为 2 个子区域（表段分离）"
+    ]
+  },
+  "before": {
+    "region_count": 1,
+    "regions": [
+      {
+        "bbox": [
+          0,
+          161.57,
+          595.28,
+          565.51
+        ],
+        "item_count": 75,
+        "text_preview": "阶段一 阶段二 阶段三 合计 以摊余成本计量的发放贷款和垫款总额 22,622,128 765,651 332,781 23,720,560 减：贷款损失准备 (324,832) (215,700) (246,101) (786,633) 以摊余成本计量的发放贷款和垫款账面价值 22,297,296 549,951 86,680 22,933,927 以摊余成本计量的发放贷款和垫款准备金计提"
+      }
+    ]
+  },
+  "after": {
+    "page_number": 5,
+    "page_width": 595.28,
+    "page_height": 807.87,
+    "total_regions": 2,
+    "table_regions": 2,
+    "paragraph_regions": 0,
+    "segment_time_ms": 0.45,
+    "regions": [
+      {
+        "x0": 0,
+        "y0": 172.98,
+        "x1": 595.28,
+        "y1": 233.44,
+        "region_type": "table",
+        "text": "阶段一 阶段二 阶段三 合计\n22,622,128 765,651 332,781 23,720,560 以摊余成本计量的发放贷款和垫款总额\n(324,832) (215,700) (246,101) (786,633) 减：贷款损失准备\n22,297,296 549,951 86,680 22,933,927 以摊余成本计量的发放贷款和垫款账面价值",
+        "item_count": 19,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.6291,
+          "avg_large_gaps": 3.75,
+          "row_details": [
+            {
+              "idx": 0,
+              "type": "table",
+              "x_coverage": 0.3694,
+              "large_gaps": 3,
+              "text_preview": "阶段一 阶段二 阶段三 合计"
+            },
+            {
+              "idx": 1,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "22,622,128 765,651 332,781 23,720,560 以摊余成本计量的发放贷款和垫款总额"
+            },
+            {
+              "idx": 2,
+              "type": "table",
+              "x_coverage": 0.7185,
+              "large_gaps": 4,
+              "text_preview": "(324,832) (215,700) (246,101) (786,633) 减：贷款损失准备"
+            },
+            {
+              "idx": 3,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "22,297,296 549,951 86,680 22,933,927 以摊余成本计量的发放贷款和垫款账面价值"
+            }
+          ]
+        }
+      },
+      {
+        "x0": 0,
+        "y0": 379.86,
+        "x1": 595.28,
+        "y1": 440.05,
+        "region_type": "table",
+        "text": "阶段一 阶段二 阶段三 合计\n21,228,857 752,654 311,749 22,293,260 以摊余成本计量的发放贷款和垫款总额\n(360,033) (186,070) (213,720) (759,823) 减：贷款损失准备\n20,868,824 566,584 98,029 21,533,437 以摊余成本计量的发放贷款和垫款账面价值",
+        "item_count": 19,
+        "confidence": 1.0,
+        "diagnosis": {
+          "row_count": 4,
+          "row_indices": [
+            11,
+            12,
+            13,
+            14
+          ],
+          "table_rows": 4,
+          "paragraph_rows": 0,
+          "avg_x_coverage": 0.629,
+          "avg_large_gaps": 3.75,
+          "row_details": [
+            {
+              "idx": 11,
+              "type": "table",
+              "x_coverage": 0.3695,
+              "large_gaps": 3,
+              "text_preview": "阶段一 阶段二 阶段三 合计"
+            },
+            {
+              "idx": 12,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "21,228,857 752,654 311,749 22,293,260 以摊余成本计量的发放贷款和垫款总额"
+            },
+            {
+              "idx": 13,
+              "type": "table",
+              "x_coverage": 0.7179,
+              "large_gaps": 4,
+              "text_preview": "(360,033) (186,070) (213,720) (759,823) 减：贷款损失准备"
+            },
+            {
+              "idx": 14,
+              "type": "table",
+              "x_coverage": 0.7143,
+              "large_gaps": 4,
+              "text_preview": "20,868,824 566,584 98,029 21,533,437 以摊余成本计量的发放贷款和垫款账面价值"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
