@@ -1,0 +1,80 @@
+
+--- Case 1: 无重叠 ---
+  [PASS] 返回 2 个表
+  [PASS] 表1 不变
+  [PASS] 表2 不变
+  [PASS] info1 无 overlap_removed
+  [PASS] info2 无 overlap_removed
+
+--- Case 2: 表头重叠 + 碎片T1 → 从上方删除 ---
+  [PASS] 返回 2 个表
+  [PASS] 表1 删除 2 行重叠
+  [PASS] 表1 只保留前置说明
+  [PASS] 表2 保持完整 4 行
+  [PASS] info1 overlap_removed count=2
+  [PASS] info1 direction=removed_from_upper
+  [PASS] info2 无 overlap_removed
+
+--- Case 2b: 表头重叠 + 非碎片T1 → V5 保护（不删除）---
+  [PASS] 返回 2 个表
+  [PASS] 表1 保持完整 4 行（V5保护）
+  [PASS] 表1 首行货币资金
+  [PASS] 表1 末行资产
+  [PASS] 表2 保持完整 4 行
+  [PASS] info1 无 overlap_removed（被V5保护）
+  [PASS] info2 无 overlap_removed
+
+--- Case 3: 数据重叠（T2后方+高数值）→ 从下方删除 ---
+  [PASS] 返回 2 个表
+  [PASS] 表1 保持完整 5 行
+  [PASS] 表2 删除数据重叠行
+  [PASS] 表2 剩余: 描述+描述+无形资产
+  [PASS] info1 无 overlap_removed
+  [PASS] info2 overlap_removed count=1
+  [PASS] info2 direction=removed_from_lower
+
+--- Case 4: 混合重叠 + 碎片T1 → 综合判定 ---
+  [PASS] 返回 2 个表
+  [PASS] 表1 删除 2 行重叠
+  [PASS] 表1 保留前言文字
+  [PASS] 表2 保持完整 3 行
+  [PASS] info1 overlap_removed count=2
+  [PASS] info2 无 overlap_removed
+
+--- Case 5: 三表连续重叠 + 碎片T1/T2 ---
+  [PASS] 返回 3 个表
+  [PASS] 表1 只有前置说明
+  [PASS] 表2: 科目+货币资金（类别被删）
+  [PASS] 表2 首行科目
+  [PASS] 表3 保持完整 3 行
+  [PASS] info1 有 overlap_removed
+  [PASS] info2 有 overlap_removed
+
+--- Case 6: 空表格 & 单表 ---
+  [PASS] 空列表返回空
+  [PASS] 单表返回原样
+  [PASS] 空表+正常表不报错
+  [PASS] 表2 不受影响
+
+--- Case 7: 元数据内容验证 + 碎片T1 ---
+  [PASS] overlap 有 count
+  [PASS] overlap 有 rows
+  [PASS] overlap 有 duplicate_with
+  [PASS] overlap 有 direction
+  [PASS] rows 是列表
+  [PASS] row 有 index
+  [PASS] row 有 cells
+  [PASS] row 有 numeric_ratio
+  [PASS] row 有 reason
+
+--- Case 8: 内容指纹容错 ---
+  [PASS] 空格差异不应匹配
+  [PASS] 大小写忽略匹配 (2行全去重)
+
+--- Case 9: repaired_rows 更新 ---
+  [PASS] info1 repaired_rows 更新为 1
+
+==================================================
+  总计: 55 项, 通过=55, 失败=0
+  ALL PASS!
+==================================================

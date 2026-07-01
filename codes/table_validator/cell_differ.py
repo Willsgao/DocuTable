@@ -120,16 +120,21 @@ def _merge_split_decimals(items: List[dict]) -> List[dict]:
                 best_int_item = int_item
 
         if best_int_item is not None:
-            # 合并：生成新 item
-            merged_text = best_int_item["text"] + ds_item["text"]
-            merged_items.append({
-                "text": merged_text,
+            # 合并：生成新 item，保留整数部分的 item_index
+            merged_item = {
+                "text": best_int_item["text"] + ds_item["text"],
                 "x0": best_int_item["x0"],
                 "x1": ds_x1,  # 延伸到小数后缀的右边界
                 "y0": min(best_int_item.get("y0", ds_y0), ds_y0),
                 "y1": max(best_int_item.get("y1", ds_y1), ds_y1),
                 "y_mid": (best_int_item.get("y_mid", ds_y_mid) + ds_y_mid) / 2,
-            })
+            }
+            # 保留第一项的 item_index，记录被吞并的索引
+            if "item_index" in best_int_item:
+                merged_item["item_index"] = best_int_item["item_index"]
+            if "item_index" in ds_item:
+                merged_item.setdefault("_merged_from", []).append(ds_item["item_index"])
+            merged_items.append(merged_item)
             merged_indices.add(best_int_idx)
             merged_indices.add(ds_idx)
 

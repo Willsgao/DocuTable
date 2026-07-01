@@ -281,6 +281,17 @@ class TableCompareManager(QObject):
         self.table_list_widget.itemClicked.connect(self.on_table_selected)
         self.table_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table_list_widget.customContextMenuRequested.connect(self._show_table_list_menu)
+        # 固定选中高亮色，失去焦点时不褪色
+        self.table_list_widget.setStyleSheet("""
+            QListWidget::item:selected {
+                background-color: #2980B9;
+                color: white;
+            }
+            QListWidget::item:selected:!active {
+                background-color: #2980B9;
+                color: white;
+            }
+        """)
         header_layout.addWidget(self.table_list_widget)
         
         # 操作按钮行
@@ -1150,7 +1161,7 @@ class TableCompareManager(QObject):
             table = tables[idx]
             page = table.get('page', 0)
             page_seq[page] = page_seq.get(page, 0) + 1
-            is_text = table.get('type') == 'text'
+            is_text = table.get('type') in ('text', 'paragraph')
             status_icon = "📝" if is_text else ("✔" if table.get('parse_status') == 'success' else "✘")
             ext = table.get('extractor', '')
             if ext == "auto_scan":
@@ -1173,13 +1184,19 @@ class TableCompareManager(QObject):
                     title = ctx.split('\n')[0].strip()[:12]
             if not title:
                 data = table.get('data', [])
-                for row in data:
-                    for cell in row:
-                        if cell and str(cell).strip():
-                            title = str(cell).strip()[:8]
+                if isinstance(data, str):
+                    # 段落类型：data 是纯文本字符串
+                    title = data.strip()[:30]
+                elif isinstance(data, list) and data:
+                    for row in data:
+                        if not isinstance(row, list):
+                            continue
+                        for cell in row:
+                            if cell and str(cell).strip():
+                                title = str(cell).strip()[:8]
+                                break
+                        if title:
                             break
-                    if title:
-                        break
             if not title:
                 ctx = table.get('context_text', '')
                 if ctx:
@@ -1452,7 +1469,7 @@ class TableCompareManager(QObject):
         parse_status = table.get('parse_status', '')
         category = table.get('table_category', '')
         manual_mark = table.get('manual_mark', '')
-        if table.get('type') == 'text' or parse_status == 'text':
+        if table.get('type') in ('text', 'paragraph') or parse_status == 'text':
             status_text = "📝 文本"
         else:
             status_text = "✅ 表格" if parse_status == 'success' else "❌ 非表格"
@@ -1498,7 +1515,7 @@ class TableCompareManager(QObject):
                 QLabel { color: #B7950B; font-weight: bold; padding: 2px 8px;
                          background-color: #FEF9E7; border-radius: 4px; border: 1px solid #F39C12; }
             """)
-        elif table.get('type') == 'text' or parse_status == 'text':
+        elif table.get('type') in ('text', 'paragraph') or parse_status == 'text':
             self.table_type_label.setStyleSheet("""
                 QLabel { color: #8E44AD; font-weight: bold; padding: 2px 8px;
                          background-color: #F4ECF7; border-radius: 4px; border: 1px solid #8E44AD; }
@@ -1589,10 +1606,30 @@ class TableCompareManager(QObject):
         """显示表格数据"""
         if not hasattr(self, 'table_widget'):
             return
-        
+
         self.table_widget.blockSignals(True)
         self.table_widget.clear()
-        
+
+        # 段落类型：在单列中显示纯文本
+        if table.get('type') == 'paragraph':
+            para_text = table.get('data', '')
+            if isinstance(para_text, str):
+                lines = para_text.split('\n') if para_text else ['（无文本内容）']
+                self.table_widget.setRowCount(len(lines))
+                self.table_widget.setColumnCount(1)
+                self.table_widget.setHorizontalHeaderLabels(["文本内容"])
+                for i, line in enumerate(lines):
+                    item = QTableWidgetItem(line)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.table_widget.setItem(i, 0, item)
+                self.table_widget.resizeColumnsToContents()
+                self.table_widget.blockSignals(False)
+                tip = f"📄 文本段落，共 {len(lines)} 行"
+                if self.table_locked:
+                    tip = "🔒 已锁定 | " + tip
+                self.stats_label.setText(tip)
+                return
+
         # 根据状态选择数据源：0=清洗后data, 1=original_data, 2=raw_data
         data_key = self._get_current_data_key()
         # 降级策略：优先使用当前层，没有则降级到下一层
@@ -1604,10 +1641,29 @@ class TableCompareManager(QObject):
                 data = table.get('data', [])
         parse_type = table.get('type', '')
         parse_message = table.get('parse_message', '')
+
+        # 文本/段落：data 常为整段字符串；若按 list 遍历会变成逐字一行
+        if parse_type in ('text', 'paragraph') and isinstance(data, str):
+            text = data.strip() or table.get('context_text', '')
+            lines = text.split('\n') if text else ['（无文本内容）']
+            self.table_widget.setRowCount(len(lines))
+            self.table_widget.setColumnCount(1)
+            self.table_widget.setHorizontalHeaderLabels(["文本内容"])
+            for i, line in enumerate(lines):
+                item = QTableWidgetItem(line)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table_widget.setItem(i, 0, item)
+            self.table_widget.resizeColumnsToContents()
+            self.table_widget.blockSignals(False)
+            tip = f"📝 文本段落，共 {len(lines)} 行"
+            if self.table_locked:
+                tip = "🔒 已锁定 | " + tip
+            self.stats_label.setText(tip)
+            return
         
         if not data:
             # 文本条目：直接显示上下文文本
-            if parse_type == 'text':
+            if parse_type in ('text', 'paragraph'):
                 ctx = table.get('context_text', '')
                 lines = ctx.split('\n') if ctx else ['（无文本内容）']
                 self.table_widget.setRowCount(len(lines))

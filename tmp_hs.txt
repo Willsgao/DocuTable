@@ -1,0 +1,36 @@
+  [PASS] Case0: token extraction
+  [PASS] Case1: same table continuation
+  [PASS] Case2: different tables MUST split
+  [PASS] Case3: unit change in context
+  [PASS] Case4: same unit, no data
+  [PASS] Case5: merge_regions splits
+  [PASS] Case6: merge_regions merges continuation
+  [PASS] Case7: Jaccard=0 edge
+  [PASS] Case8: Jaccard high (same headers)
+  [PASS] Case9: structure break at row with '百分比'
+  [PASS] Case9: structure break detection
+  [PASS] Case10: no break in single table
+  [PASS] Case11: no break when caption has kw
+  [结构分裂] P1: 行 7 处检测到新表格结构, 拆分为 7+3 行 [y0: 100/100]
+  [结构分裂] 共从 1 个融合表中分离出内部不同表格
+  [PASS] Case12: fused table split into 7+3 rows
+  [PASS] Case12: split fused table integration
+  [PASS] Case13: short table no split
+  [结构分裂] P1: 行 7 处检测到新表格结构, 拆分为 7+5 行 [y0: 378/161]
+  [结构分裂] 共从 1 个融合表中分离出内部不同表格
+  [PASS] Case14: deposit(y0=161) < equity(y0=378)
+  [PASS] Case14: Y reestimate after split
+  [PASS] Case15: Y reestimate single table passthrough
+  [PASS] Case16: unit change no items in merge_regions
+  [结构分裂] P1: 行 6 处检测到新表格结构, 拆分为 6+10 行 [y0: 162/390]
+  [结构分裂] 共从 1 个融合表中分离出内部不同表格
+  [PASS] deposit(6r,y0=162) < equity(10r,y0=390)
+  [PASS] Case17: real scenario deposit then equity (year pattern)
+  [PASS] Column width jump 9->19 detected at row 4
+  [PASS] Case18: column width jump 9->19 detects split
+  [PASS] Footnote year pattern correctly skipped (no split)
+  [PASS] Case19: footnote year pattern is skipped
+
+==================================================
+ALL PASS: 20/20
+==================================================

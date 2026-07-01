@@ -1,7 +1,7 @@
 {
   "pdf_name": "test_subset8",
   "page_number": 6,
-  "timestamp": "2026-06-25T11:31:19.704826",
+  "timestamp": "2026-06-30T14:15:55.853681",
   "page_size": {
     "width": 595.28,
     "height": 807.87
@@ -40,7 +40,7 @@
     "total_regions": 3,
     "table_regions": 2,
     "paragraph_regions": 1,
-    "segment_time_ms": 0.28,
+    "segment_time_ms": 0.27,
     "regions": [
       {
         "x0": 0,

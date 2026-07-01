@@ -355,10 +355,10 @@ class ContentSegmenter:
 
         # 分类逻辑:
         # 1. 有 >= 2 个大 gap → 明确表格行（3+列）
-        # 2. 1 个大 gap + 中等 x 覆盖率 (< 0.75) → 双列表格
+        # 2. 1 个大 gap + x 覆盖率 < 0.75 → 双列表格
         # 3. 0 gap → 段落行（单一块）
-        # 4. x 覆盖率超阈值且 gap 少（≤1）→ 段落行
-        # 5. 兜底 → 表格
+        # 4. x 覆盖率超阈值 (>= 0.85) → 段落行（全宽标题/说明文字）
+        # 5. 其余 → 表格（兜底：单 gap 中等覆盖率的行如"本集团/本行"列头）
         if large_gaps >= 2:
             row.row_type = "table"
         elif large_gaps == 1 and row.x_coverage < 0.75:
@@ -367,10 +367,8 @@ class ContentSegmenter:
             row.row_type = "paragraph"  # 单一文本块，倾向于段落
         elif row.x_coverage >= self.cfg.X_COVERAGE_SNAP_THRESHOLD:
             row.row_type = "paragraph"
-        elif large_gaps <= 1 and row.x_coverage >= 0.5:
-            row.row_type = "paragraph"
         else:
-            row.row_type = "table"  # 保守：可能是有大空格的表格
+            row.row_type = "table"  # 兜底：可能是有大空格的表格 or 双列表头
 
     # ================================================================
     # 子区域合并
@@ -412,14 +410,24 @@ class ContentSegmenter:
             "region_type": current_type,
         })
 
-        # 第二遍：修正孤立的 paragraph 行
-        # 如果某 paragraph group 只有 1 行，检查是否被 table 夹在中间
-        # 如果是 → 保持 paragraph（它可能就是表格间的描述文字）
-        # 如果 paragraph group 行数 <= MAX_PARAGRAPH_INTRUSION_IN_TABLE
-        # 且上下都是 table → 保持 paragraph（不合并到 table 中）
+        # 第二遍：修正 table→paragraph→table 三明治结构
+        # 如果某个 paragraph/unknown 组被两个 table 组夹在中间，
+        # 且它的 x 列结构与前后表格共享（item x 中心点重叠比例高），
+        # 则该组很可能是被误分类的表格数据行（text 密集导致分类为 paragraph）
+        # → 重归类为 table 并与相邻组合并
+        # 典型 case：page 5 两段财务表之间 7 行数据丢失
+        _reclassify_table_sandwich(raw_groups, rows)
 
-        # 不再合并小段落进表格 —— 保留独立的短段落作为中间描述文字
-        return raw_groups
+        merged = _merge_adjacent_same_type(raw_groups)
+
+        # 第三遍：检测表头重复，将大表格组拆分为独立表格
+        # 当一行被分类为 table 且 gap≥3，文本与组内第一个 table 行
+        # 的前几个词高度重合时，判定为新表格的开始 → 在此拆分
+        # 典型 case：page 5 行 0 "阶段一 阶段二 阶段三 合计"
+        #          行 11 同样为 "阶段一 阶段二 阶段三 合计" → 拆分成两个表
+        merged = _split_at_table_headers(merged, rows)
+
+        return merged
 
     def _build_segment_region(
         self,
@@ -590,3 +598,197 @@ class ContentSegmenter:
             x0 = min(it.get('x0', 0) for it in text_items)
             x1 = max(it.get('x1', 0) for it in text_items)
         return x0, x1
+
+
+# ============================================================
+# 模块级辅助函数
+# ============================================================
+
+def _reclassify_table_sandwich(
+    groups: List[Dict[str, Any]],
+    rows: list,
+) -> None:
+    """重分类被表格夹在中间的非表格组。
+
+    当 paragraph/unknown 组被两组 table 组夹在中间，
+    且中间组的 x 坐标与表格共享列结构时，重归类为 table。
+
+    典型场景：page 5 两段财务表之间，rows 4-10 的 text 密集行
+    被 _classify_row 误判为 paragraph → 形成 table→paragraph→table 三明治结构。
+
+    反例防护（v2 新增）：
+    - 段落组 ≥3 行且 avg_x_coverage ≥ 0.85 → 真实段落文本（如脚注、说明文字），不合并
+    - 段落组 ≥3 行且 paragraph 行占比 ≥ 60% → 偏向真实段落，不合并
+      （避免 page 6 等场景的段落脚注被误吸入表格）
+    - 1-2 行的小规模组跳过上述两个检查：单行组 para_ratio 恒为 1.0，
+      误拦会导致子表标签行无法合并回表格（page 5 典型案例）
+    """
+    for gi in range(1, len(groups) - 1):
+        g_prev = groups[gi - 1]
+        g_curr = groups[gi]
+        g_next = groups[gi + 1]
+
+        if g_prev["region_type"] != "table":
+            continue
+        if g_next["region_type"] != "table":
+            continue
+        if g_curr["region_type"] not in ("paragraph", "unknown"):
+            continue
+
+        # ---- 反例防护：检查段落组的"真实性" ----
+        indices = g_curr["row_indices"]
+        if indices:
+            avg_cov = sum(rows[i].x_coverage for i in indices) / len(indices)
+            # 高 x 覆盖率 → 全宽段落文本（脚注、说明），非表格数据
+            # 但对 1-2 行小规模组放宽：子表标签行可能覆盖较宽但仍属表格
+            _small_group = len(indices) <= 2
+            if avg_cov >= 0.85 and not _small_group:
+                continue
+            # paragraph 行占比高 → 确实是段落，非误分类的表格行
+            # 仅对 ≥3 行组启用此检查：1-2 行组大概率是子表标签行
+            # （单行组 para_ratio 恒为 1.0，必然触发误拦）
+            if len(indices) >= 3:
+                para_ratio = sum(1 for i in indices if rows[i].row_type == "paragraph") / len(indices)
+                if para_ratio >= 0.60:
+                    continue
+
+        if _share_x_with_tables(g_curr, g_prev, g_next, rows):
+            g_curr["region_type"] = "table"
+
+
+def _share_x_with_tables(
+    para_group: Dict[str, Any],
+    table_group_a: Dict[str, Any],
+    table_group_b: Dict[str, Any],
+    rows: list,
+) -> bool:
+    """检查段落组的 x 中心点是否落在前后表格组的 x 范围内。
+
+    如果 ≥ 70% 的段落 item 的 x 中心点与表格 item 的 x 范围重叠，
+    则认为该段落组与表格共享列结构，应属于同一表格。
+    """
+    para_xc = _collect_x_centers(para_group["row_indices"], rows)
+    if not para_xc:
+        return False
+
+    table_xc = _collect_x_centers(table_group_a["row_indices"], rows)
+    table_xc += _collect_x_centers(table_group_b["row_indices"], rows)
+    if not table_xc:
+        return False
+
+    tx_min, tx_max = min(table_xc) - 25, max(table_xc) + 25
+    if tx_max <= tx_min:
+        return False
+
+    in_range = sum(1 for xc in para_xc if tx_min <= xc <= tx_max)
+    return in_range / len(para_xc) >= 0.70
+
+
+def _collect_x_centers(indices, rows: list) -> List[float]:
+    """收集指定行索引中所有 item 的 x 中心点。"""
+    xc_list = []
+    for idx in indices:
+        row = rows[idx]
+        for ex in row._extracted:
+            xc = (ex[0] + ex[1]) / 2
+            xc_list.append(xc)
+    return xc_list
+
+
+def _split_at_table_headers(
+    groups: List[Dict[str, Any]],
+    rows: list,
+) -> List[Dict[str, Any]]:
+    """在合并后的表格组中检测表头重复并拆分。
+
+    大表格组可能包含多个独立表格（由表头重复标识），
+    拆分为独立子表格可避免下游 Step1ColumnSplit 的行检测混乱。
+
+    典型 case：page 5 财务表，行 0 和行 11 都是
+    "阶段一 阶段二 阶段三 合计" → 在行 11 拆分。
+    """
+    result = []
+    for group in groups:
+        if group["region_type"] != "table":
+            result.append(group)
+            continue
+
+        indices = list(group["row_indices"])
+        if len(indices) <= 5:  # 太小的组无需拆分
+            result.append(group)
+            continue
+
+        # 找组内第一个有 ≥2 gaps 的 table row 作为参考表头
+        # 阈值从 ≥3 降为 ≥2：3列表格（如"折现率 | 1.75% | 2.50%"）只有 2 个 gap，
+        # 原有 ≥3 阈值会漏掉这类表格 → 无法拆分合并的多表格
+        first_header_idx = None
+        for i in indices:
+            r = rows[i]
+            if r.row_type == "table" and r._large_gap_count >= 2:
+                first_header_idx = i
+                break
+
+        if first_header_idx is None:
+            result.append(group)
+            continue
+
+        first_header_words = _normalize_header_words(rows[first_header_idx].text)
+
+        # 从参考表头之后找匹配的重复表头位置
+        split_at = None
+        header_pos_in_indices = indices.index(first_header_idx)
+        for j in range(header_pos_in_indices + 2, len(indices)):  # +2 跳过至少 2 行
+            idx = indices[j]
+            r = rows[idx]
+            if r.row_type != "table" or r._large_gap_count < 2:
+                continue
+            candidate_words = _normalize_header_words(r.text)
+            if _header_match(first_header_words, candidate_words):
+                split_at = j
+                break
+
+        if split_at is None:
+            result.append(group)
+            continue
+
+        # 拆分
+        result.append({
+            "row_indices": indices[:split_at],
+            "region_type": "table",
+        })
+        result.append({
+            "row_indices": indices[split_at:],
+            "region_type": "table",
+        })
+
+    return result
+
+
+def _normalize_header_words(text: str) -> List[str]:
+    """提取表头文本中长度 ≥2 的词（过滤纯数字和符号）。"""
+    words = text.split()
+    return [w for w in words if len(w) >= 2]
+
+
+def _header_match(a: List[str], b: List[str]) -> bool:
+    """检查两个表头词列表是否匹配（≥2 个词相同）。"""
+    if len(a) < 2 or len(b) < 2:
+        return False
+    common = sum(1 for wa in a for wb in b if wa == wb)
+    return common >= 2
+
+
+def _merge_adjacent_same_type(
+    groups: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """合并相邻的同类型组。"""
+    if not groups:
+        return []
+    merged = [groups[0]]
+    for g in groups[1:]:
+        last = merged[-1]
+        if last["region_type"] == g["region_type"]:
+            last["row_indices"].extend(g["row_indices"])
+        else:
+            merged.append(g)
+    return merged

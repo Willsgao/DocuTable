@@ -223,12 +223,13 @@ class V2Pipeline:
         if self._enabled.get("step2", True) and page_results:
             self._run_step2(ctx, page_results)
         else:
-            # Step2 禁用时也需规范化（补齐列 + 剔除首尾空行）
+            # Step2 禁用时也需规范化（补齐列 + 剔除首尾空行）—— 仅表格，跳过段落
             for r in page_results:
-                if r.get("type") == "table":
-                    r["data"] = Step1ColumnSplit._normalize_table_columns(r["data"])
-                    r["rows"] = len(r["data"])
-                    r["cols"] = len(r["data"][0]) if r["data"] and r["data"][0] else 0
+                if r.get("type") != "table":
+                    continue
+                r["data"] = Step1ColumnSplit._normalize_table_columns(r["data"])
+                r["rows"] = len(r["data"])
+                r["cols"] = len(r["data"][0]) if r["data"] and r["data"][0] else 0
 
         # ---- Step 3: 加权分类器 + needs_review ----
         if self._enabled.get("step3", True) and page_results:
@@ -252,6 +253,12 @@ class V2Pipeline:
         # 此步骤在 Pipeline 层面提供额外保护，对 page_results["data"] 列表进行去重。
         if self._enabled.get("step_dedup", True) and len(page_results) >= 2:
             self._run_step_dedup(page_results)
+
+        # ---- 页面类型标记：Pipeline 层仅产出表格，base 默认为纯表格 ----
+        # 下游 processor 会基于实际段落存在情况覆写为 "mixed"
+        for r in page_results:
+            if "page_type" not in r:
+                r["page_type"] = "pure_table"
 
         return page_results
 

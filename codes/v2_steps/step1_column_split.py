@@ -356,9 +356,16 @@ class Step1ColumnSplit:
             row_bounds = []
             for i in range(len(h_lines) - 1):
                 row_bounds.append((h_lines[i], h_lines[i + 1]))
-            return row_bounds
+            # 验证绘图横线产生的行区间是否合理：
+            # 如果平均行高超过 50pt，横线很可能是区域边框而非表格行线
+            # → 回退到动态阈值分组
+            total_height = h_lines[-1] - h_lines[0]
+            avg_row_h = total_height / len(row_bounds) if row_bounds else 0
+            if avg_row_h <= 50:
+                return row_bounds
+            # else: fall through to dynamic threshold
 
-        # 无水平线 → 动态阈值分组
+        # 无水平线或绘图横线不合理 → 动态阈值分组
         y_threshold = Step1ColumnSplit._compute_dynamic_y_threshold(words, config)
         rows = Step1ColumnSplit._group_words_into_rows(words, y_threshold)
 

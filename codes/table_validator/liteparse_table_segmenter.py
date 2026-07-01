@@ -62,6 +62,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from codes.liteparse_extractor.config import LITEPARSE_CONFIG
+
 # 复用 cell_differ 的核心工具（Y 聚类、文本归一化、列签名、小数合并）
 from codes.table_validator.cell_differ import (
     _cluster_items_by_y,
@@ -71,6 +73,12 @@ from codes.table_validator.cell_differ import (
     _score_table_row,
     _merge_split_decimals,
     _build_row_dict,
+)
+from codes.table_validator.header_boundary import (
+    is_date_only_header_row_items,
+    is_new_table_header_row_items,
+    compute_body_fingerprint,
+    row_body_mismatch_with_fingerprint,
 )
 
 
@@ -248,7 +256,7 @@ def segment_tables_from_liteparse(
             continue
 
         # 标准化 items
-        items = _build_items(text_items_raw)
+        items = _build_items(text_items_raw, page_num)
 
         regions = lp_page.get("table_regions", [])
         is_table_page = lp_page.get("is_table_page", False)
@@ -313,7 +321,8 @@ def segment_tables_from_liteparse(
     # (5) 完整表格识别 + 分类标记
     tables = _classify_table_quality(tables)
     # (6) 表格边界精细化处理（去尾、去头、跨页检测）
-    tables = _refine_table_boundaries(tables)
+    # V2：返回 (清理后的表格, 提取的独立文本条目)
+    tables, extracted_texts = _refine_table_boundaries(tables)
     # (6.5) 表头完整性检查与恢复
     tables = _recover_missing_headers(tables)
     # (7) 财务表格置信度评分
@@ -324,6 +333,9 @@ def segment_tables_from_liteparse(
         t["table_id"] = i
 
     report = _generate_report(tables, liteparse_data, cross_page_merges)
+    # 将提取的独立文本条目附到报告中，供上层消费
+    if extracted_texts:
+        report["extracted_text_entries"] = extracted_texts
 
     LOG.info(
         "[流程] segment_tables_from_liteparse 完成: final_tables=%d, "
@@ -338,6 +350,143 @@ def segment_tables_from_liteparse(
 # 2. 逐页 Region 切分
 # ================================================================
 
+
+def _group_adjacent_regions(
+    regions: List[dict],
+    items: List[dict],
+) -> List[List[dict]]:
+    """将属于同一张逻辑表格的相邻 liteparse region 合并为组。
+
+    判定规则（简洁三原则）：
+    1. 中间没有文本 → 候选合并
+    2. 后面区域没有表头 → 合并
+    3. 否则 → 独立新表
+
+    Returns:
+        [[region, region], [region], ...] — 每组对应一个逻辑表格
+    """
+    if not regions:
+        return []
+
+    groups = [[regions[0]]]
+
+    for i in range(1, len(regions)):
+        prev_group = groups[-1]
+        prev = prev_group[-1]
+        curr = regions[i]
+
+        # 规则1: 间隙中有段落文本 → 拆分为新表
+        if _has_paragraph_between(items, prev["y1"], curr["y0"]):
+            groups.append([curr])
+            continue
+
+        # 规则2: 后 region 无独立表头 → 合并到前组
+        if not _region_has_own_header(curr, items):
+            prev_group.append(curr)
+            continue
+
+        # 规则3: 有独立表头 → 新表
+        groups.append([curr])
+
+    return groups
+
+
+def _has_paragraph_between(
+    items: List[dict],
+    y_above: float,
+    y_below: float,
+) -> bool:
+    """检测两个 Y 坐标之间的间隙中是否有段落文本。"""
+    gap_items = [
+        it for it in items
+        if it.get("y0", 0) >= y_above and it.get("y1", 0) <= y_below
+    ]
+    if not gap_items:
+        return False
+
+    all_text = "".join(it.get("text", "") for it in gap_items)
+    # 有中文标点 → 段落
+    if re.search(r'[。，；：！？、]', all_text):
+        return True
+
+    cn = len(re.findall(r'[\u4e00-\u9fff]', all_text))
+    total = len(all_text.strip())
+    if total > 0 and cn / total > 0.5 and cn >= 10:
+        return True
+
+    return False
+
+
+def _region_has_own_header(
+    region: dict,
+    all_page_items: List[dict],
+    lookahead_rows: int = 3,
+) -> bool:
+    """检测 liteparse region 是否有独立表头行。
+
+    Detection signals（任一满足即视为有表头）：
+    1. 首行 > 50% 数值 → 纯数据 continuation，无表头
+    2. 包含 ≥2 个年份/日期单元格（如 "2024年""12月31日"）
+    3. 包含实体标签（本集团/本行/本公司等）
+    4. 包含章节号前缀（如 "6 " "一、""(1)"）
+    """
+    ry0, ry1 = region.get("y0", 0), region.get("y1", 0)
+
+    scoped = [
+        it for it in all_page_items
+        if ry0 - 8 <= it.get("y_mid", (it["y0"] + it["y1"]) / 2) <= ry1 + 8
+    ]
+    if len(scoped) < 3:
+        return True  # item 太少，保守起见不强制合并
+
+    scoped.sort(key=lambda it: it.get("y0", 0))
+
+    # Y-mid 聚类为行（8pt 容差）
+    rows: List[List[str]] = []
+    for it in scoped:
+        ym = it.get("y_mid", (it["y0"] + it["y1"]) / 2)
+        if not rows or abs(ym - rows[-1][0]) > 8:
+            rows.append([ym, it.get("text", "").strip()])
+        else:
+            rows[-1].append(it.get("text", "").strip())
+
+    if not rows:
+        return True
+
+    text_rows = [r[1:] for r in rows]
+
+    # 信号0: 首行 > 50% 数值 → 无表头
+    first_row = text_rows[0]
+    if first_row:
+        num_count = sum(
+            1 for c in first_row
+            if _is_numeric_cell(c) or re.fullmatch(r'[\d,.\s\-%‰（）()]+', c)
+        )
+        if num_count / len(first_row) > 0.5:
+            return False
+
+    # 扫描前 N 行
+    year_count = 0
+    for ri in range(min(lookahead_rows, len(text_rows))):
+        row_texts = text_rows[ri]
+        flat = "".join(row_texts)
+
+        # 信号1: 章节号前缀
+        if re.search(r'^\d+[\s\.、）\)]', flat):
+            return True
+
+        # 信号2: 年份/日期
+        year_count += sum(1 for t in row_texts if YEAR_PATTERN.search(t))
+        if year_count >= 2:
+            return True
+
+        # 信号3: 实体标签
+        if any(t in ENTITY_KW for t in row_texts):
+            return True
+
+    return False
+
+
 def _segment_by_regions(
     page_num: int,
     items: List[dict],
@@ -346,43 +495,67 @@ def _segment_by_regions(
 ) -> List[dict]:
     """用 table_regions 的 bbox 将一页的 items 切分为多个表格。
 
+    先按邻近规则将属于同一逻辑表格的 region 合并为组，
+    再对每组收集所有 items 构建表格。
+
     P1 优化：检测混合 region（图表标签 + 真实表格上下排列），按 Y 大间隙拆分。
     """
     tables = []
-    assigned_ids = set()  # 已归属 item 的 id()
+    assigned_indices = set()  # 已归属 item 的 item_index
 
-    for ri, region in enumerate(regions):
-        conf = region.get("confidence", 0.5)
-        if conf < confidence_threshold:
-            continue
+    # ── Region 邻近合并：将碎片 region 按逻辑表格分组 ──
+    region_groups = _group_adjacent_regions(
+        [r for r in regions if r.get("confidence", 0) >= confidence_threshold],
+        items,
+    )
 
-        rx0 = region.get("x0", 0)
-        ry0 = region.get("y0", 0)
-        rx1 = region.get("x1", float("inf"))
-        ry1 = region.get("y1", float("inf"))
+    for group in region_groups:
+        # 取组的首 region 作为锚点
+        anchor = group[0]
+
+        # 合并组的 bbox
+        ry0 = min(r.get("y0", float("inf")) for r in group)
+        ry1 = max(r.get("y1", 0) for r in group)
+        rx0 = min(r.get("x0", float("inf")) for r in group)
+        rx1 = max(r.get("x1", 0) for r in group)
+
         if rx1 <= rx0 or ry1 <= ry0:
             continue
 
-        # 收集区域内 items（中心点判断）
+        # 收集组内所有 items（中心点判断）
         scoped = []
         for it in items:
             cx = (it["x0"] + it["x1"]) / 2
             cy = it["y_mid"]
             if rx0 <= cx <= rx1 and ry0 <= cy <= ry1:
                 scoped.append(it)
-                assigned_ids.add(id(it))
+                assigned_indices.add(it.get("item_index", 0))
 
-        # 扩展：收集 region 下方的脚注延续文本（y 超出 ry1 但在合理 margin 内）
-        fn_margin = 80.0  # region 下方 80pt 范围内
+        # 扩展：收集组下方的脚注延续文本（y 超出 ry1 但在合理 margin 内）
+        fn_margin = 80.0
+        fn_ceiling = ry1 + fn_margin
+        # 查找下一个组的 y0，作为脚注扩展的上限
+        anchor_idx = regions.index(anchor) if anchor in regions else -1
+        if anchor_idx >= 0:
+            for rj in range(anchor_idx + len(group), len(regions)):
+                nr = regions[rj]
+                n_conf = nr.get("confidence", 0.5)
+                if n_conf < confidence_threshold:
+                    continue
+                ny0 = nr.get("y0", float("inf"))
+                if ny0 > ry1:
+                    fn_ceiling = min(fn_ceiling, ny0 - 5)
+                    break
+
         fn_items = []
         for it in items:
-            if id(it) in assigned_ids:
+            if it.get("item_index", 0) in assigned_indices:
                 continue
             cx = (it["x0"] + it["x1"]) / 2
             cy = it["y_mid"]
-            if rx0 <= cx <= rx1 and ry1 < cy <= ry1 + fn_margin:
+            if rx0 <= cx <= rx1 and ry1 < cy <= fn_ceiling:
                 fn_items.append(it)
-                assigned_ids.add(id(it))
+                assigned_indices.add(it.get("item_index", 0))
 
         if fn_items:
             scoped.extend(fn_items)
@@ -394,21 +567,20 @@ def _segment_by_regions(
         sub_segments = _split_by_y_gaps(scoped)
 
         if len(sub_segments) > 1:
-            # 有 Y 大间隙 → 逐段处理
             for seg_idx, seg_items in enumerate(sub_segments):
                 _build_table_from_items(
-                    page_num, seg_items, region, ri, conf,
-                    seg_idx, tables, items, assigned_ids
+                    page_num, seg_items, anchor, anchor_idx if anchor_idx >= 0 else 0,
+                    anchor.get("confidence", 0.5),
+                    seg_idx, tables, items, assigned_indices
                 )
         else:
-            # 单段 → 按原逻辑处理
             _build_table_from_items(
-                page_num, scoped, region, ri, conf,
-                0, tables, items, assigned_ids
+                page_num, scoped, anchor, anchor_idx if anchor_idx >= 0 else 0,
+                anchor.get("confidence", 0.5),
+                0, tables, items, assigned_indices
             )
-
     # 处理孤儿 items（不在任何 region 内的）
-    orphans = [it for it in items if id(it) not in assigned_ids]
+    orphans = [it for it in items if it.get("item_index", 0) not in assigned_indices]
 
     if orphans and _is_likely_table_content(orphans):
         # 如果孤儿 items 看起来像表格内容（有数值+标签），创建补充表
@@ -560,7 +732,7 @@ def _build_table_from_items(
     seg_idx: int,
     tables: List[dict],
     all_page_items: List[dict],
-    assigned_ids: set,
+    assigned_indices: set,
 ):
     """从一组 items 构建单张表格并加入 tables 列表。
 
@@ -570,7 +742,7 @@ def _build_table_from_items(
     """
     # 首次段才尝试捕获标题
     if seg_idx == 0:
-        caption_items = _capture_caption(all_page_items, region, scoped, assigned_ids)
+        caption_items = _capture_caption(all_page_items, region, scoped, assigned_indices)
     else:
         caption_items = []
 
@@ -579,6 +751,34 @@ def _build_table_from_items(
     rows = _normalize_rows_to_columns(rows)
     col_ranges = _estimate_column_x_ranges(rows)
     col_schema = infer_column_schema(rows)
+
+    # V2: 向上扩展表格上边界 — 用列对齐指纹找回密度网格漏掉的表格行
+    if LITEPARSE_CONFIG.get("boundary_refine_enabled", True):
+        upper_items = _refine_upper_boundary(
+            all_page_items, col_ranges, all_items, assigned_indices,
+            max_gap_ratio=LITEPARSE_CONFIG.get("boundary_max_gap_ratio", 3.0),
+            max_consecutive_miss=LITEPARSE_CONFIG.get("boundary_max_consecutive_miss", 2),
+            col_tolerance=LITEPARSE_CONFIG.get("boundary_col_tolerance", 15.0),
+        )
+        if upper_items:
+            all_items = _merge_and_sort_items(upper_items, all_items)
+            rows = _cluster_items_by_y(all_items)
+            rows = _normalize_rows_to_columns(rows)
+
+    # V2: 向下扩展表格下边界 — 用列对齐指纹 + 表头检测找回被裁剪的数据行
+    #  核心判定：向下扫描时遇到新表格的表头行（纯标签无数值）即停止
+    #  解决 liteparse 表格区域 bbox 过窄（仅覆盖表头~前几行数据）的问题
+    if LITEPARSE_CONFIG.get("boundary_refine_enabled", True):
+        lower_items = _refine_lower_boundary(
+            all_page_items, col_ranges, all_items, assigned_indices,
+            max_gap_ratio=LITEPARSE_CONFIG.get("boundary_max_gap_ratio", 3.0),
+            max_consecutive_miss=LITEPARSE_CONFIG.get("boundary_max_consecutive_miss", 2),
+            col_tolerance=LITEPARSE_CONFIG.get("boundary_col_tolerance", 15.0),
+        )
+        if lower_items:
+            all_items = _merge_and_sort_items(all_items, lower_items)
+            rows = _cluster_items_by_y(all_items)
+            rows = _normalize_rows_to_columns(rows)
 
     y0_val = min(it["y0"] for it in all_items)
     y1_val = max(it["y1"] for it in all_items)
@@ -614,7 +814,7 @@ def _capture_caption(
     items: List[dict],
     region: dict,
     scoped_items: List[dict],
-    assigned_ids: set,
+    assigned_indices: set,
 ) -> List[dict]:
     """捕获 region 上方的表格标题文本。
 
@@ -635,7 +835,7 @@ def _capture_caption(
 
     caption_items = []
     for it in items:
-        if id(it) in assigned_ids:
+        if it.get("item_index", 0) in assigned_indices:
             continue
         if it["y1"] < ry0 - margin or it["y0"] > ry0:
             continue  # 不在上方 margin 范围内
@@ -644,7 +844,7 @@ def _capture_caption(
         for kw in keywords:
             if kw and (kw in it_text or it_text in kw):
                 caption_items.append(it)
-                assigned_ids.add(id(it))
+                assigned_indices.add(it.get("item_index", 0))
                 break
 
     return caption_items
@@ -664,6 +864,339 @@ def _extract_caption(region: dict, caption_items: List[dict]) -> str:
         caption_items_sorted = sorted(caption_items, key=lambda it: it["x0"])
         return " ".join(it["text"] for it in caption_items_sorted)
     return region.get("context_text", "")
+
+
+def _item_in_column_ranges(
+    cx: float,
+    col_ranges: List[Tuple[float, float]],
+    tolerance: float = 15.0,
+) -> bool:
+    """判断 X 中心点是否落在任一列范围内（含容差）。"""
+    for x0, x1 in col_ranges:
+        if x0 - tolerance <= cx <= x1 + tolerance:
+            return True
+    return False
+
+
+def _refine_upper_boundary(
+    all_page_items: List[dict],
+    col_ranges: List[Tuple[float, float]],
+    current_items: List[dict],
+    assigned_indices: set,
+    max_gap_ratio: float = 3.0,
+    max_consecutive_miss: int = 2,
+    col_tolerance: float = 15.0,
+) -> List[dict]:
+    """向上扩展表格上边界，找回被密度网格漏掉的表格行。
+
+    策略：
+    1. 以 col_ranges 为列对齐参考（表格的"指纹"）
+    2. 从 current_items 的 y0 向上扫描 all_page_items
+    3. 纳入 X 中心落在任一列范围内的 item
+    4. 停止条件：
+       - Y 大间隙（> max_gap_ratio × 表格行平均高度）
+       - 连续 max_consecutive_miss 行无列对齐
+       - 全宽文本行（X 跨度 > 0.8×页宽，如章节标题）
+
+    Returns:
+        新纳入的 items 列表（已标记 assigned_indices）
+    """
+    if not col_ranges or not current_items:
+        return []
+
+    # 当前表格 y0（含标题 items）
+    table_y0 = min(it["y0"] for it in current_items)
+
+    # 计算表格行平均高度（用于 Y 间隙容忍度）
+    y_heights = [
+        it["y1"] - it["y0"]
+        for it in current_items
+        if it["y1"] > it["y0"]
+    ]
+    avg_row_height = sum(y_heights) / len(y_heights) if y_heights else 15.0
+    max_gap = max_gap_ratio * avg_row_height
+
+    # 收集上方未分配的 items（在 table_y0 之上）
+    above_items = [
+        it for it in all_page_items
+        if it.get("item_index", 0) not in assigned_indices and it["y1"] <= table_y0
+    ]
+    if not above_items:
+        return []
+
+    # 按 Y 从下到上排序（从表格最近处开始向上扫描）
+    above_items.sort(key=lambda it: it["y1"], reverse=True)
+
+    # 页宽（用于全宽文本行检测）
+    page_width = max(
+        it.get("x1", 0) for it in all_page_items
+    ) if all_page_items else 600.0
+
+    refined_items = []
+    consecutive_miss = 0
+    prev_y_bottom = table_y0  # 下邻 item 的 y 顶部
+
+    # 按行聚类后自下而上扫描（便于整行纳入日期表头）
+    above_items.sort(key=lambda it: it["y1"], reverse=True)
+    row_tolerance = max(avg_row_height * 0.6, 3.0)
+    grouped_rows: List[List[dict]] = []
+    current_row = [above_items[0]]
+    for it in above_items[1:]:
+        if current_row[-1]["y0"] - it["y1"] < row_tolerance:
+            current_row.append(it)
+        else:
+            grouped_rows.append(current_row)
+            current_row = [it]
+    if current_row:
+        grouped_rows.append(current_row)
+
+    for row_items in grouped_rows:
+        row_y1 = max(it["y1"] for it in row_items)
+        row_y0 = min(it["y0"] for it in row_items)
+
+        y_gap = prev_y_bottom - row_y1
+        if y_gap > max_gap:
+            break
+
+        row_width = max(it["x1"] for it in row_items) - min(it["x0"] for it in row_items)
+        if row_width > 0.8 * page_width and any(
+            len(it.get("text", "")) > 30 for it in row_items
+        ):
+            consecutive_miss += 1
+            if consecutive_miss >= max_consecutive_miss:
+                break
+            continue
+
+        # 日期/年份多级表头：整行纳入，不要求列对齐
+        if is_date_only_header_row_items(row_items):
+            for it in row_items:
+                refined_items.append(it)
+                assigned_indices.add(it.get("item_index", 0))
+            consecutive_miss = 0
+            prev_y_bottom = row_y0
+            continue
+
+        in_col = []
+        for it in row_items:
+            cx = (it["x0"] + it["x1"]) / 2
+            if _item_in_column_ranges(cx, col_ranges, tolerance=col_tolerance):
+                in_col.append(it)
+
+        if in_col:
+            for it in in_col:
+                refined_items.append(it)
+                assigned_indices.add(it.get("item_index", 0))
+            consecutive_miss = 0
+            prev_y_bottom = row_y0
+        else:
+            consecutive_miss += 1
+            if consecutive_miss >= max_consecutive_miss:
+                break
+
+    if refined_items:
+        LOG = _get_log()
+        LOG.info(
+            "  [上边界] 恢复 %d 个上方表格 items (y 范围 %.1f~%.1f → 扩展了 %.1fpt)",
+            len(refined_items),
+            min(it["y0"] for it in refined_items),
+            max(it["y1"] for it in refined_items),
+            table_y0 - min(it["y0"] for it in refined_items),
+        )
+
+    return refined_items
+
+
+def _is_header_row(
+    row_items: List[dict],
+    col_ranges: List[Tuple[float, float]],
+    col_tolerance: float = 15.0,
+) -> bool:
+    """判断一行 items 是否为新表格的表头行（遇到即停止向下扩展）。
+
+    判定条件（全部满足）：
+    1. 至少 2 个 item 落在列范围内
+    2. 绝大多数落在列范围内的 item 不含数值特征（纯标签）
+    3. 这些标签 item 分布在多个列中（> 1 列）
+
+    典型表头行："阶段一 阶段二 阶段三 合计"
+    """
+    if len(row_items) < 2:
+        return False
+
+    # 统计落在列范围内的 items
+    in_col = []
+    for it in row_items:
+        cx = (it["x0"] + it["x1"]) / 2
+        if _item_in_column_ranges(cx, col_ranges, tolerance=col_tolerance):
+            in_col.append(it)
+
+    if len(in_col) < 2:
+        return False
+
+    # 检查这些在列范围内的 items 是否都是非数值标签
+    numeric_count = sum(
+        1 for it in in_col
+        if re.search(r'[\d.,()%]', it.get("text", ""))
+    )
+    total = len(in_col)
+
+    # 如果超过一半是纯标签（无数值特征）→ 表头行
+    label_count = total - numeric_count
+    if label_count >= max(2, total // 2):
+        # 额外检查：这些标签是否分布在至少 2 个不同的列中
+        cols_hit = set()
+        for it in in_col:
+            cx = (it["x0"] + it["x1"]) / 2
+            for ci, (rx0, rx1) in enumerate(col_ranges):
+                if rx0 - col_tolerance <= cx <= rx1 + col_tolerance:
+                    cols_hit.add(ci)
+                    break
+        if len(cols_hit) >= 2:
+            return True
+
+    return False
+
+
+def _refine_lower_boundary(
+    all_page_items: List[dict],
+    col_ranges: List[Tuple[float, float]],
+    current_items: List[dict],
+    assigned_indices: set,
+    max_gap_ratio: float = 3.0,
+    max_consecutive_miss: int = 2,
+    col_tolerance: float = 15.0,
+) -> List[dict]:
+    """向下扩展表格下边界，用列对齐指纹找回被区域裁剪漏掉的数据行。
+
+    策略：
+    1. 以 col_ranges 为列对齐参考（表格的"指纹"）
+    2. 从 current_items 的 y1 向下扫描 all_page_items
+    3. 按 Y 聚类为虚拟行，逐行判定
+    4. 纳入 X 中心落在任一列范围内的 item
+    5. 停止条件：
+       - Y 大间隙（> max_gap_ratio × 表格行平均高度）
+       - 连续 max_consecutive_miss 行无列对齐
+       - 全宽文本行（X 跨度 > 0.8×页宽，如脚注段落）
+       - **遇到新表格的表头行**（行内多个纯标签 item 分布在多列）
+         → 核心判定：后面的表格没有表头，遇到表头说明是新表开始，停止扩展
+
+    Returns:
+        新纳入的 items 列表（已标记 assigned_indices）
+    """
+    if not col_ranges or not current_items:
+        return []
+
+    # 当前表格 y1
+    table_y1 = max(it["y1"] for it in current_items)
+
+    # 计算表格行平均高度
+    y_heights = [
+        it["y1"] - it["y0"]
+        for it in current_items
+        if it["y1"] > it["y0"]
+    ]
+    avg_row_height = sum(y_heights) / len(y_heights) if y_heights else 15.0
+    max_gap = max_gap_ratio * avg_row_height
+
+    # 收集下方未分配的 items（在 table_y1 之下）
+    below_items = [
+        it for it in all_page_items
+        if it.get("item_index", 0) not in assigned_indices
+        and it["y0"] >= table_y1 - 2.0  # 小容差避免浮点边界漏掉
+    ]
+    if not below_items:
+        return []
+
+    # 按 Y 从上到下排序
+    below_items.sort(key=lambda it: it["y_mid"])
+
+    # 页宽
+    page_width = max(
+        it.get("x1", 0) for it in all_page_items
+    ) if all_page_items else 600.0
+
+    # 将 below_items 按 Y 聚类为虚拟行（Y 间距 < avg_row_height 视为同行）
+    row_tolerance = max(avg_row_height * 0.6, 3.0)
+    grouped_rows = []  # List[List[dict]]
+    current_row = [below_items[0]]
+    for it in below_items[1:]:
+        if it["y_mid"] - current_row[-1]["y_mid"] < row_tolerance:
+            current_row.append(it)
+        else:
+            grouped_rows.append(current_row)
+            current_row = [it]
+    if current_row:
+        grouped_rows.append(current_row)
+
+    refined_items = []
+    consecutive_miss = 0
+    prev_y_bottom = table_y1
+    stop_reason = None
+
+    body_fp = compute_body_fingerprint(current_items)
+
+    for row_items in grouped_rows:
+        # Y 间隙检查
+        row_y_mid = sum(it["y_mid"] for it in row_items) / len(row_items)
+        y_gap = row_y_mid - prev_y_bottom
+        if y_gap > max_gap:
+            stop_reason = f"Y间隙过大({y_gap:.0f}pt > {max_gap:.0f}pt)"
+            break
+
+        # 全宽文本行检查
+        row_width = max(it["x1"] for it in row_items) - min(it["x0"] for it in row_items)
+        if row_width > 0.8 * page_width and any(
+            len(it.get("text", "")) > 30 for it in row_items
+        ):
+            consecutive_miss += 1
+            if consecutive_miss >= max_consecutive_miss:
+                stop_reason = "全宽文本段落（脚注）"
+                break
+            continue
+
+        # 表尾数据区列指纹偏离 → 停止（不把另一张表/脚注区吸入）
+        if body_fp and row_body_mismatch_with_fingerprint(row_items, body_fp):
+            stop_reason = "数据区列指纹不一致"
+            break
+
+        # 新表表头行（日期子表头除外）→ 停止向下扩展
+        if is_new_table_header_row_items(
+            row_items, col_ranges, col_tolerance=col_tolerance
+        ):
+            stop_reason = "遇到新表格表头行"
+            break
+
+        # 列对齐检查
+        in_col_items = []
+        for it in row_items:
+            cx = (it["x0"] + it["x1"]) / 2
+            if _item_in_column_ranges(cx, col_ranges, tolerance=col_tolerance):
+                in_col_items.append(it)
+
+        if in_col_items:
+            refined_items.extend(in_col_items)
+            for it in in_col_items:
+                assigned_indices.add(it.get("item_index", 0))
+            consecutive_miss = 0
+            prev_y_bottom = max(it["y1"] for it in row_items)
+        else:
+            consecutive_miss += 1
+            if consecutive_miss >= max_consecutive_miss:
+                stop_reason = f"连续{consecutive_miss}行无列对齐"
+                break
+
+    if refined_items:
+        LOG = _get_log()
+        LOG.info(
+            "  [下边界] 恢复 %d 个下方表格 items (y 范围 %.1f~%.1f → 扩展了 %.1fpt)%s",
+            len(refined_items),
+            min(it["y0"] for it in refined_items),
+            max(it["y1"] for it in refined_items),
+            max(it["y1"] for it in refined_items) - table_y1,
+            f" [停止原因: {stop_reason}]" if stop_reason else "",
+        )
+
+    return refined_items
 
 
 def _merge_and_sort_items(
@@ -1696,14 +2229,30 @@ def _normalize_rows_to_columns(
 def _detect_column_ranges_from_rows(rows: List[dict]) -> List[Tuple[float, float]]:
     """从最宽行的 items X 坐标推断列结构。
 
-    用 item 最多的行作为模板，取其 items 的 (x0, x1) 即列范围。
-    这比从所有行聚类更精确，因为最宽行天然代表完整的列集合。
+    优先使用**非日期表头行**（数据行）作为列模板，避免 12/月/31/日 碎片
+    把列网格撑成 4+ 列，导致年份/月日与数据区错位。
     """
     if not rows:
         return []
 
+    try:
+        from codes.table_validator.table_content_splitter import (
+            is_date_only_header_row_cells,
+        )
+    except ImportError:
+        is_date_only_header_row_cells = None  # type: ignore
+
+    def _is_date_header_row(row: dict) -> bool:
+        if not is_date_only_header_row_cells:
+            return False
+        texts = row.get("texts", [])
+        return bool(texts) and is_date_only_header_row_cells(texts)
+
+    body_rows = [r for r in rows if not _is_date_header_row(r)]
+    pool = body_rows if body_rows else rows
+
     # 找 item 最多的行
-    best_row = max(rows, key=lambda r: len(r.get("items", [])))
+    best_row = max(pool, key=lambda r: len(r.get("items", [])))
     items = best_row.get("items", [])
 
     if not items:
@@ -2033,8 +2582,110 @@ def _generate_report(
 # 6. 工具函数
 # ================================================================
 
-def _build_items(text_items: List[dict]) -> List[dict]:
-    """从 liteparse text_items 字典列表构建标准化 items，并合并被拆开的小数。"""
+# ---- 全局 item 索引：用于精确去重 ----
+# 使用确定性哈希，确保同一原始 item 在不同调用中产生相同 index
+
+def _compute_item_index(page_num: int, text: str, x0: float, y0: float) -> int:
+    """计算 item 的确定性唯一索引。
+
+    基于 (page_num, text, round(x0,1), round(y0,1)) 做哈希，
+    确保 _build_items 被多次调用时同一 item 始终得到相同索引。
+    Python hash() 的碰撞概率约 1/2^64，远低于原 triple-key 方案。
+    """
+    return hash((page_num, text, round(x0, 1), round(y0, 1)))
+
+
+def _merge_chinese_chars(items: List[dict]) -> List[dict]:
+    """合并同一行内连续相邻的单个中文字符。
+
+    当 liteparse 以单字粒度返回中文文本时（每个汉字一个 text_item），
+    本函数将 X 坐标紧密相邻、Y 在同一行的连续 CJK 单字拼接为一个 item，
+    防止后续 Y 聚类因阈值过紧将同行单字拆成竖排。
+
+    合并后保留第一项的 item_index，被吞并项的索引记录到 _merged_from。
+    """
+    if len(items) < 2:
+        return items
+
+    # 按 (y_mid, x0) 排序，确保同行内从左到右扫描
+    sorted_items = sorted(items, key=lambda it: (round(it["y_mid"], 2), it["x0"]))
+
+    merged = []
+    i = 0
+    n = len(sorted_items)
+
+    while i < n:
+        item = sorted_items[i]
+        text = item.get("text", "")
+
+        # 判断是否为单个 CJK 字符（含中文汉字和全角标点）
+        is_single_cjk = (
+            len(text) == 1
+            and ('\u4e00' <= text <= '\u9fff'   # 中文汉字
+                 or '\u3000' <= text <= '\u303f'  # CJK 标点
+                 or '\uff00' <= text <= '\uffef') # 全角符号
+        )
+
+        if not is_single_cjk:
+            merged.append(item)
+            i += 1
+            continue
+
+        # 向后收集连续的同 Y 单字
+        group = [item]
+        y_mid = item["y_mid"]
+        prev_x1 = item["x1"]
+
+        j = i + 1
+        while j < n:
+            nxt = sorted_items[j]
+            nxt_text = nxt.get("text", "")
+            is_nxt_cjk = (
+                len(nxt_text) == 1
+                and ('\u4e00' <= nxt_text <= '\u9fff'
+                     or '\u3000' <= nxt_text <= '\u303f'
+                     or '\uff00' <= nxt_text <= '\uffef')
+            )
+
+            if not is_nxt_cjk:
+                break
+
+            y_diff = abs(nxt["y_mid"] - y_mid)
+            x_gap = nxt["x0"] - prev_x1
+
+            # 同行（Y差≤2pt）+ X紧密相邻（间距≤5pt 且 ≥-1pt 容忍微小重叠）
+            if y_diff <= 2.0 and -1.0 <= x_gap <= 5.0:
+                group.append(nxt)
+                prev_x1 = nxt["x1"]
+                j += 1
+            else:
+                break
+
+        if len(group) == 1:
+            merged.append(item)
+        else:
+            # 合并：拼接 text，X 范围扩展到最后一个 item
+            merged_text = "".join(g["text"] for g in group)
+            merged_item = dict(group[0])
+            merged_item["text"] = merged_text
+            merged_item["x1"] = group[-1]["x1"]
+            merged_item["_merged_from"] = [
+                g["item_index"] for g in group[1:]
+            ]
+            merged.append(merged_item)
+
+        i = j
+
+    # 保持按 y_mid 排序
+    merged.sort(key=lambda it: it["y_mid"])
+    return merged
+
+
+def _build_items(text_items: List[dict], page_num: int = 0) -> List[dict]:
+    """从 liteparse text_items 字典列表构建标准化 items，并合并被拆开的小数和中文字符。
+
+    每个 item 会被赋予确定性 item_index（基于内容哈希），用于后续精确去重。
+    """
     items = []
     for ti in text_items:
         if isinstance(ti, dict):
@@ -2049,9 +2700,13 @@ def _build_items(text_items: List[dict]) -> List[dict]:
                     "y0": y0,
                     "y1": y1,
                     "y_mid": (y0 + y1) / 2,
+                    "item_index": _compute_item_index(page_num, t, ti.get("x0", 0), y0),
                 })
     # 合并被 PDF 引擎拆开的小数后缀（如 "239" + ".85" → "239.85"）
-    return _merge_split_decimals(items)
+    items = _merge_split_decimals(items)
+    # 合并同一行内被拆分的单个中文字符（如 "本"+"集"+"团" → "本集团"）
+    items = _merge_chinese_chars(items)
+    return items
 
 
 def _is_likely_table_content(items: List[dict]) -> bool:
@@ -3389,28 +4044,24 @@ def _classify_table_quality(tables: List[dict]) -> List[dict]:
 
 # ---- (6) 表格边界精细化处理（去尾/去头/跨页检测） ----
 
-def _refine_table_boundaries(tables: List[dict]) -> List[dict]:
-    """精细化表格边界处理（纯规则驱动）。
+def _refine_table_boundaries(tables: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """精细化表格边界处理：分离非表格文本，返回 (清理后的表格, 提取的文本条目)。
 
-    仅针对"财务数据表"和"数据表(缺表头)"两类进一步判断并处理：
+    仅针对"财务数据表"和"数据表(缺表头)"两类进一步处理：
 
-    规则1：底部尾巴行清理
-      - 从表格底部向上扫描，检测连续的非数据行
-      - 若倒数连续 ≥2 行没有任何数值单元格 → 全部移除
-      - 汇总行（含"合计""总计"等关键词）不会被移除
-      - 无论如何不会删到只剩 2 行（至少保留表头+1行数据）
+    规则1：底部尾巴行分离
+      - 从表格底部向上扫描，分离连续的非数据行为注解/文本条目
+      - 汇总行（含"合计""总计"等关键词）保留在表格中
 
     规则2：跨页续表检测
       - 对于"数据表(缺表头)"，检查与前一张表的列数是否匹配
-      - 若列数相近（差异 ≤2）→ 标记 _cross_page_candidate = True
 
-    规则3：表前非数据文本行清理
-      - 从表格顶部向下扫描，移除表格数据行之前的多余文本行
-      - 保留表头行（多列、年份关键词、短标签）不删除
-      - 单位信息行（如"单位：万元"）会被移除，单位信息补充到 caption 中
-      - 检测到表头特征行（多列+年份/变化关键词）时停止清理
+    规则3：表前非数据文本行分离
+      - 从表格顶部向下扫描，分离表格数据行之前的文本为独立条目
+      - 单位信息提取到 caption 中
 
-    重新分类：行数变化后按需重新评估表格类型。
+    V2 优化：分离的非表格行转为独立的段落/注解条目，表格只保留真正的表格数据。
+    不会丢弃任何数据，只是重新归类。
     """
     for idx, table in enumerate(tables):
         rows = table.get("rows", [])
@@ -3425,7 +4076,7 @@ def _refine_table_boundaries(tables: List[dict]) -> List[dict]:
 
         modified = False
 
-        # ---- 规则3：表前非数据文本行清理（先做，因为可能影响判定） ----
+        # ---- 规则3：表前非数据文本行分离（先做） ----
         header_start_idx = _find_first_table_header_or_data_row(rows)
         if header_start_idx > 0:
             removed = _strip_leading_text_rows(table, rows, header_start_idx)
@@ -3436,7 +4087,7 @@ def _refine_table_boundaries(tables: List[dict]) -> List[dict]:
         if len(rows) < 3:
             continue
 
-        # ---- 规则1a：尾部脚注/注释行清理（需要先于列签名清理执行） ----
+        # ---- 规则1a：尾部脚注/注释行分离 ----
         removed = _strip_tail_annotation_rows(table, rows)
         if removed:
             rows = table["rows"]
@@ -3445,14 +4096,23 @@ def _refine_table_boundaries(tables: List[dict]) -> List[dict]:
         if len(rows) < 3:
             continue
 
-        # ---- 规则1b：底部尾巴行清理（列签名匹配） ----
+        # ---- 规则1b：底部非数据行分离 ----
         removed = _strip_tail_non_data_rows(table, rows)
         if removed:
             rows = table["rows"]
             modified = True
 
-        if len(rows) < 2:
+        if len(rows) < 3:
             continue
+
+        # ---- 规则4：数值锚点重新核验边界 ----
+        # V6：先锁定数值密集区（表格核心），向上追溯表头，向下验证尾部
+        # 解决段落文本横跨表格列范围时被误判为数据行的问题
+        if len(rows) >= 4:
+            re_verified = _verify_by_numeric_anchor(table, rows)
+            if re_verified:
+                rows = table["rows"]
+                modified = True
 
         # ---- 重新分类（若有行变动） ----
         if modified:
@@ -3462,7 +4122,253 @@ def _refine_table_boundaries(tables: List[dict]) -> List[dict]:
         if table.get("table_category", "") == "数据表(缺表头)" and idx > 0:
             _mark_cross_page_candidate_if_match(tables, idx - 1, idx)
 
-    return tables
+    # ---- 收集所有被分离的行，转为独立的段落/注解条目 ----
+    extracted_entries = _collect_extracted_entries(tables)
+
+    return tables, extracted_entries
+
+
+def _verify_by_numeric_anchor(table: dict, rows: List[dict]) -> bool:
+    """通过数值锚点重新核验表格边界（自底向上策略）。
+
+    传统自顶向下扫描容易把视觉上横跨表格列范围的段落文本误判为数据行。
+    本函数先锁定"数值核心"——连续高数值密度行段——作为锚点，
+    再向上追溯表头、向下验证尾部，从而更精确地确定表格边界。
+
+    策略：
+    1. 计算每行非首列的数值密度（>=0.5 视为数值行）
+    2. 找到最长的连续数值行段作为锚点
+    3. 从锚点向上追溯到表头第一行
+    4. 从锚点向下验证数据最后一行的位置
+    5. 将边界外的行分离到 _extracted_xxx 中供后续收集
+
+    Returns:
+        True 如果有行被分离调整
+    """
+    if len(rows) < 4:
+        return False
+
+    # ── Step 1: 计算每行的数值密度（排除首列标签列）──
+    def _score(row):
+        texts = row.get("texts", [])
+        non_empty = [t.strip() for t in texts if t.strip()]
+        non_first = non_empty[1:] if len(non_empty) > 1 else []
+        if not non_first:
+            return 0.0
+        return sum(1 for t in non_first if _is_cell_numeric_like(t)) / len(non_first)
+
+    scores = [_score(r) for r in rows]
+
+    # ── Step 2: 找最长连续高数值段（>=0.5）──
+    best_start, best_end, best_len = 0, 0, 0
+    cur_start = None
+    for i, s in enumerate(scores):
+        if s >= 0.5:
+            if cur_start is None:
+                cur_start = i
+        else:
+            if cur_start is not None:
+                stretch_len = i - cur_start
+                if stretch_len > best_len:
+                    best_start, best_end, best_len = cur_start, i, stretch_len
+                cur_start = None
+    if cur_start is not None:
+        stretch_len = len(scores) - cur_start
+        if stretch_len > best_len:
+            best_start, best_end, best_len = cur_start, len(scores), stretch_len
+
+    if best_len < 2:
+        return False  # 无连续数值核心，不需要校核
+
+    # ── Step 3: 从数值核心向上追溯表头 ──
+    # 表头行特征：低数值密度 + 有内容 + 非段落 + 与下方行结构连续
+    header_start = best_start
+
+    for i in range(best_start - 1, -1, -1):
+        row = rows[i]
+        nr = scores[i]
+        texts = row.get("texts", [])
+        non_empty = [t.strip() for t in texts if t.strip()]
+
+        if not non_empty:
+            break
+        if _row_looks_like_chinese_paragraph(row):
+            break
+        if nr >= 0.6:
+            # 高数值行也是数据行，扩展核心
+            header_start = i
+            best_start = i
+            best_len += 1
+            continue
+        if nr >= 0.5:
+            header_start = i
+            best_start = i
+            best_len += 1
+            continue
+
+        # 低数值 + 有内容 + 列结构连续 → 表头
+        row_items = len(row.get("items", []))
+        below_items = len(rows[i + 1].get("items", []))
+        if abs(row_items - below_items) <= 3:
+            header_start = i
+        elif row_items >= 2 and nr < 0.3:
+            header_start = i
+        else:
+            break
+
+    # ── Step 4: 从数值核心向下验证数据尾部 ──
+    data_end = best_end  # exclusive
+
+    for i in range(best_end, len(rows)):
+        row = rows[i]
+        nr = scores[i]
+        texts = row.get("texts", [])
+        non_empty = [t.strip() for t in texts if t.strip()]
+
+        if not non_empty:
+            continue
+
+        if _row_looks_like_chinese_paragraph(row):
+            break
+
+        if nr >= 0.5:
+            data_end = i + 1
+            continue
+
+        all_text = "".join(non_empty)
+        if nr >= 0.3 and any(kw in all_text for kw in SUMMARY_KW):
+            data_end = i + 1
+            continue
+
+        if nr >= 0.4:
+            data_end = i + 1
+            continue
+
+        break
+
+    # ── Step 5: 分离边界外的行 ──
+    changed = False
+
+    # 顶部
+    if header_start > 0:
+        leading_items = []
+        for r in rows[:header_start]:
+            items = r.get("items", [])
+            if items:
+                leading_items.append(list(items))
+        if leading_items:
+            table.setdefault("_extracted_leading_items", [])
+            table["_extracted_leading_items"].extend(leading_items)
+            changed = True
+
+    # 尾部
+    if data_end < len(rows):
+        tail_items = []
+        for r in rows[data_end:]:
+            items = r.get("items", [])
+            if items:
+                tail_items.append(list(items))
+        if tail_items:
+            table.setdefault("_extracted_tail_items", [])
+            table["_extracted_tail_items"].extend(tail_items)
+            changed = True
+
+    # ── Step 6: 重建表格 ──
+    if changed:
+        new_rows = rows[header_start:data_end]
+        _rebuild_table_from_rows(table, new_rows)
+
+    return changed
+
+
+def _collect_extracted_entries(tables: List[dict]) -> List[dict]:
+    """收集所有表格中被分离的前导文本和尾部注解，转为标准格式的独立条目。
+
+    Returns:
+        独立条目列表，格式与 liteparse_tables_to_standard 的段落输出一致：
+        [{"page", "type": "paragraph"/"annotation", "data": str, "bbox": [x0,y0,x1,y1], ...}, ...]
+    """
+    entries = []
+    for table in tables:
+        page = table.get("page", 0)
+
+        # 前导文本 → paragraph 条目
+        leading = table.pop("_extracted_leading_items", None)
+        if leading:
+            for items_list in leading:
+                text, bbox = _items_to_text_and_bbox(items_list)
+                if text:
+                    entries.append({
+                        "page": page,
+                        "type": "paragraph",
+                        "data": text,
+                        "bbox": bbox,
+                        "extractor": "liteparse_segmenter",
+                        "source": "table_leading_text",
+                        "parent_table_id": table.get("table_id", -1),
+                    })
+
+        # 尾部注解 → annotation 条目
+        ann = table.pop("_extracted_annotation_items", None)
+        if ann:
+            for items_list in ann:
+                text, bbox = _items_to_text_and_bbox(items_list)
+                if text:
+                    entries.append({
+                        "page": page,
+                        "type": "annotation",
+                        "data": text,
+                        "bbox": bbox,
+                        "extractor": "liteparse_segmenter",
+                        "source": "table_annotation",
+                        "parent_table_id": table.get("table_id", -1),
+                    })
+
+        # 尾部非数据行 → paragraph 条目（如果还未被注解覆盖）
+        tail = table.pop("_extracted_tail_items", None)
+        if tail:
+            for items_list in tail:
+                text, bbox = _items_to_text_and_bbox(items_list)
+                if text:
+                    entries.append({
+                        "page": page,
+                        "type": "paragraph",
+                        "data": text,
+                        "bbox": bbox,
+                        "extractor": "liteparse_segmenter",
+                        "source": "table_tail_text",
+                        "parent_table_id": table.get("table_id", -1),
+                    })
+
+    return entries
+
+
+def _items_to_text_and_bbox(items: List[dict]) -> Tuple[str, list]:
+    """将一组 items 转为文本字符串和包围盒 bbox。
+
+    items 按 x0 排序拼接文本，bbox 为所有 item 的最小外接矩形。
+    """
+    if not items:
+        return "", [0, 0, 0, 0]
+
+    sorted_items = sorted(items, key=lambda it: it.get("x0", 0))
+    text = " ".join(it.get("text", "") for it in sorted_items if it.get("text", ""))
+
+    x0 = min(it.get("x0", float("inf")) for it in items)
+    y0 = min(it.get("y0", float("inf")) for it in items)
+    x1 = max(it.get("x1", 0) for it in items)
+    y1 = max(it.get("y1", 0) for it in items)
+
+    return text.strip(), [x0, y0, x1, y1]
+
+
+def _get_effective_table_rows(table: dict) -> List[dict]:
+    """获取表格的有效行范围。
+
+    V2 优化：rows 已在 strip 阶段被物理分离，直接返回 table["rows"] 即可。
+    保留此函数以兼容无需更新的调用方。
+    """
+    return table.get("rows", [])
 
 
 # ================================================================
@@ -3596,9 +4502,13 @@ def _find_missing_headers_in_previous(
 ) -> List[List[dict]]:
     """在之前的表格中搜索缺失的主表头 items。
 
+    V2 优化：_refine_table_boundaries 已将非表格行物理分离，
+    表头候选行记录在 _stripped_tail_row_items 中。
+
     搜索优先级：
     1. 同页前一表的 _stripped_tail_row_items
     2. 跨页：向前一页最后若干个表回溯
+
 
     返回：找到的主表头 items 列表（按从近到远排列），或空列表。
     """
@@ -3635,45 +4545,44 @@ def _find_missing_headers_in_previous(
 
     # 在候选表中搜索
     found = []
+
+    def _check_header_items(sitems, src_table):
+        """检查一组 items 是否匹配缺失的表头类型。"""
+        if not sitems or sitems in found:
+            return False
+        texts = [it.get("text", "") for it in sitems]
+        if need_year and _row_has_year_header(texts, data_cols):
+            found.append(sitems)
+            _remove_header_from_source(src_table, sitems)
+            return True
+        elif need_entity and _row_has_entity_header(texts, data_cols):
+            found.append(sitems)
+            _remove_header_from_source(src_table, sitems)
+            return True
+        return False
+
+    def _all_needed_found():
+        """检查是否所有需要的表头类型都已找到。"""
+        found_year = any(
+            _row_has_year_header([it.get("text", "") for it in fi], data_cols)
+            for fi in found
+        )
+        found_entity = any(
+            _row_has_entity_header([it.get("text", "") for it in fi], data_cols)
+            for fi in found
+        )
+        return (not need_year or found_year) and (not need_entity or found_entity)
+
     for src_table in candidates:
+        # 方式1：检查 _stripped_tail_row_items（历史兼容）
         stripped_items_list = src_table.get("_stripped_tail_row_items", [])
-        if not stripped_items_list:
-            continue
-
-        # 从尾部往前（最近的先匹配）
-        for sitems in reversed(stripped_items_list):
-            if not sitems or sitems in found:
-                continue
-
-            texts = [it.get("text", "") for it in sitems]
-
-            # 检查是否匹配缺失的类型
-            matches = False
-            if need_year and _row_has_year_header(texts, data_cols):
-                matches = True
-            elif need_entity and _row_has_entity_header(texts, data_cols):
-                matches = True
-
-            if matches:
-                found.append(sitems)
-                # 清理源表记录
-                _remove_header_from_source(src_table, sitems)
-
-                # 如果两种类型都找到了 → 停止搜索
-                found_year = any(
-                    _row_has_year_header(
-                        [it.get("text", "") for it in fi], data_cols
-                    )
-                    for fi in found
-                )
-                found_entity = any(
-                    _row_has_entity_header(
-                        [it.get("text", "") for it in fi], data_cols
-                    )
-                    for fi in found
-                )
-                if (not need_year or found_year) and (not need_entity or found_entity):
+        if stripped_items_list:
+            for sitems in reversed(stripped_items_list):
+                if _check_header_items(sitems, src_table) and _all_needed_found():
                     return found
+
+        if _all_needed_found():
+            return found
 
     return found
 
@@ -3866,15 +4775,18 @@ def _extract_unit_info_from_row(non_empty_texts: List[str]) -> str:
 def _strip_leading_text_rows(
     table: dict, rows: List[dict], header_start: int
 ) -> bool:
-    """移除表头行之前的多余文本行，单位信息补充到 caption。
+    """将表头行之前的多余文本行分离为独立的前导文本条目，单位信息补充到 caption。
+
+    分离后的前导文本不再属于表格行，表格只保留表头+数据行。
+    前导文本行的 items 存入 _extracted_leading_items 供后续转为独立段落输出。
 
     Args:
-        table: 表格字典（会被原地修改）
+        table: 表格字典（会被原地修改：rows 缩减，合并前导行 items 到 _extracted_leading_items）
         rows: 当前行列表
         header_start: 第一个表头/数据行的索引
 
     Returns:
-        True 如果有行被移除
+        True 如果有前导文本行被分离
     """
     if header_start <= 0 or header_start >= len(rows):
         return False
@@ -3905,7 +4817,17 @@ def _strip_leading_text_rows(
             else:
                 table["caption"] = f"单位：{unit_info}"
 
-    # 记录移除详情
+    # 保存被分离行的全部 items，供后续转为独立段落/注解条目
+    leading_items = []
+    for r in removed_rows:
+        items = r.get("items", [])
+        if items:
+            leading_items.append(list(items))  # 浅拷贝 items 列表
+    if leading_items:
+        table.setdefault("_extracted_leading_items", [])
+        table["_extracted_leading_items"].extend(leading_items)
+
+    # 记录前导行文本摘要
     removed_texts = []
     for r in removed_rows:
         t = " ".join(t.strip() for t in r.get("texts", []) if t.strip())
@@ -3913,7 +4835,7 @@ def _strip_leading_text_rows(
             removed_texts.append(t)
     table["_stripped_leading_rows"] = removed_texts
 
-    # 重建表格
+    # 从表格中分离：rows 缩减为仅表头+数据行
     _rebuild_table_from_rows(table, kept_rows)
     return True
 
@@ -4173,6 +5095,31 @@ def _count_chinese_chars(text: str) -> int:
     return len(re.findall(r'[\u4e00-\u9fff]', text))
 
 
+def _row_looks_like_chinese_paragraph(row: dict) -> bool:
+    """检查一行是否实际上是中文段落（冒充表格数据行）。
+
+    当表格尾部出现中文叙述文本时，即使视觉上横跨了表格列范围
+    （被 PDF 引擎拆成多列），也不应保留为表格行。判断标准：
+    1. 拼合后总长 >= 40 字符
+    2. 中文占比 >= 60%
+    3. 包含句子标点（。，；等）
+    """
+    texts = row.get("texts", [])
+    non_empty = [t.strip() for t in texts if t.strip()]
+    if not non_empty:
+        return False
+    all_text = "".join(non_empty)
+    total_len = len(all_text)
+    if total_len < 40:
+        return False
+    chinese = _count_chinese_chars(all_text)
+    if total_len == 0 or chinese / total_len < 0.6:
+        return False
+    if re.search(r'[。，；！？、]', all_text):
+        return True
+    return False
+
+
 def _is_annotation_row(row: dict) -> bool:
     """判断一行是否为脚注/注释行。
 
@@ -4284,15 +5231,17 @@ def _is_annotation_row(row: dict) -> bool:
 
 
 def _strip_tail_annotation_rows(table: dict, rows: List[dict]) -> bool:
-    """从表格底部移除脚注/注释行。
+    """将表格底部脚注/注释行分离为独立的注解条目。
 
     与 _strip_tail_non_data_rows 的区别：
     - 专门针对编号脚注行（如"1. 净利润除以..."）
-    - 触发阈值：≥1 行脚注即可移除
+    - 触发阈值：≥1 行脚注即可分离
     - 遇到汇总行或数据主体行 → 停止扫描
     - 至少保留 3 行安全底线
 
-    返回：是否有行被移除
+    分离后的脚注行 items 存入 _extracted_annotation_items 供后续转为独立注解条目。
+
+    返回：是否有脚注行被分离
     """
     if len(rows) < 4:
         return False
@@ -4320,12 +5269,11 @@ def _strip_tail_annotation_rows(table: dict, rows: List[dict]) -> bool:
             break
 
         # 文本换行续行检测：极短文本（≤20字符）+ 无数字 → 视为注释文本换行延续
-        # 典型场景：PDF 提取中长句被误拆为多行，如 "不含应计利" + "息。"
         if len(all_text) <= 20 and not any(c.isdigit() for c in all_text):
             annotation_count += 1
             continue
 
-        # 遇到非脚注、非汇总、非续行的行 → 停止（说明已经是表格主体数据行）
+        # 遇到非脚注、非汇总、非续行的行 → 停止
         break
 
     if annotation_count < 1:
@@ -4339,8 +5287,18 @@ def _strip_tail_annotation_rows(table: dict, rows: List[dict]) -> bool:
     if actual_remove <= 0:
         return False
 
-    # 记录移除详情
+    # 保存被分离行的全部 items
     removed_rows = rows[-actual_remove:]
+    ann_items = []
+    for r in removed_rows:
+        items = r.get("items", [])
+        if items:
+            ann_items.append(list(items))
+    if ann_items:
+        table.setdefault("_extracted_annotation_items", [])
+        table["_extracted_annotation_items"].extend(ann_items)
+
+    # 记录文本摘要
     removed_texts = []
     for r in removed_rows:
         t = " ".join(t.strip() for t in r.get("texts", []) if t.strip())
@@ -4348,11 +5306,12 @@ def _strip_tail_annotation_rows(table: dict, rows: List[dict]) -> bool:
             removed_texts.append(t)
     table["_stripped_annotation_rows"] = removed_texts
 
-    # 同时追加到 _stripped_tail_rows（与现有逻辑兼容）
+    # 追加到 _stripped_tail_rows（与现有逻辑兼容）
     if "_stripped_tail_rows" not in table:
         table["_stripped_tail_rows"] = []
     table["_stripped_tail_rows"].extend(removed_texts)
 
+    # 从表格中分离
     kept_rows = rows[:-actual_remove]
     _rebuild_table_from_rows(table, kept_rows)
     return True
@@ -4361,14 +5320,17 @@ def _strip_tail_annotation_rows(table: dict, rows: List[dict]) -> bool:
 # --- 规则1b：底部尾巴行清理 ---
 
 def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
-    """从表格底部移除不属于表格的行。
+    """将表格底部非数据行分离为独立的尾部文本条目。
 
     策略：
     1. 从表格主体行提取列结构签名（列数 + 每列数值/文本类型）
     2. 从底部向上扫描，非首列无数据数值的行直接判定为非数据行
     3. 汇总行（"合计""总计"等）→ 保留并停止
-    4. 底部存在非数据行即触发移除
+    4. 底部存在非数据行即触发分离
     5. 至少保留 3 行
+
+    分离后的非数据行 items 存入 _extracted_tail_items 供后续转为独立条目，
+    同时保留 _stripped_tail_row_items 用于 _recover_missing_headers 表头恢复。
     """
     if len(rows) < 4:
         return False
@@ -4395,7 +5357,7 @@ def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
         if any(kw in all_text for kw in SUMMARY_KW):
             break
 
-        # 非首列无数据数值 → 肯定不是数据行，直接计入
+        # 非首列无数据数值 → 肯定不是数据行
         non_first = non_empty[1:] if len(non_empty) > 1 else []
         if not any(_is_cell_numeric_like(t) for t in non_first):
             consecutive_non_match += 1
@@ -4404,6 +5366,12 @@ def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
         # 用签名匹配判断
         is_match, _ = _row_matches_body_signature(row, signature)
         if is_match:
+            # V6 修复：即使列签名匹配，若整行像是中文叙述段落
+            # （如"2024年末，本集团股东权益3.34万亿元..."），
+            # 应判定为非数据行，继续向上扫描而非在此停止
+            if _row_looks_like_chinese_paragraph(row):
+                consecutive_non_match += 1
+                continue
             break
         else:
             consecutive_non_match += 1
@@ -4411,7 +5379,7 @@ def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
     if consecutive_non_match < 1:
         return False
 
-    # 计算实际要移除的行数
+    # 计算实际要分离的行数
     actual_remove = 0
     for ri in range(len(rows) - 1, -1, -1):
         row = rows[ri]
@@ -4426,7 +5394,6 @@ def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
         if any(kw in all_text for kw in SUMMARY_KW):
             break
 
-        # 非首列无数据数值 → 移除
         non_first = non_empty[1:] if len(non_empty) > 1 else []
         if not any(_is_cell_numeric_like(t) for t in non_first):
             actual_remove += 1
@@ -4434,6 +5401,10 @@ def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
 
         is_match, _ = _row_matches_body_signature(row, signature)
         if is_match:
+            # V6 修复：同第一遍扫描，中文叙述段落不应保留为表格行
+            if _row_looks_like_chinese_paragraph(row):
+                actual_remove += 1
+                continue
             break
 
         actual_remove += 1
@@ -4448,17 +5419,30 @@ def _strip_tail_non_data_rows(table: dict, rows: List[dict]) -> bool:
     if actual_remove <= 0:
         return False
 
-    # 记录移除详情
     removed_rows = rows[-actual_remove:]
+
+    # 保存被分离行的全部 items（用于后续转独立条目）
+    tail_items = []
+    for r in removed_rows:
+        items = r.get("items", [])
+        if items:
+            tail_items.append(list(items))
+    if tail_items:
+        table.setdefault("_extracted_tail_items", [])
+        table["_extracted_tail_items"].extend(tail_items)
+
+    # 同时保存 _stripped_tail_row_items（用于表头恢复检测，兼容旧逻辑）
+    table["_stripped_tail_row_items"] = tail_items[:]
+
+    # 记录文本摘要
     removed_texts = []
     for r in removed_rows:
         t = " ".join(t.strip() for t in r.get("texts", []) if t.strip())
         if t:
             removed_texts.append(t)
     table["_stripped_tail_rows"] = removed_texts
-    # 同时保存原始 items，用于后续表头恢复检测
-    table["_stripped_tail_row_items"] = [list(r.get("items", [])) for r in removed_rows]
 
+    # 从表格中分离
     kept_rows = rows[:-actual_remove]
     _rebuild_table_from_rows(table, kept_rows)
     return True
@@ -4541,6 +5525,9 @@ def _reclassify_single_table(table: dict):
 
     仅更新 table_category, is_real_table, is_complete, has_header, has_numeric_data
     等分类字段，不覆盖原有的 quality_reason 等。
+
+    V2 优化：优先使用 _get_effective_table_rows() 进行重新分类，
+    以排除已标记的前导文本和尾部注解行对分类结果的影响。
     """
     rows = table.get("rows", [])
     if not rows:
@@ -5044,6 +6031,9 @@ def liteparse_tables_to_standard(
             "title": caption or f"表格-P{page}",
             "parse_status": parse_status,
             "parse_message": parse_message,
+            # 表格位置（用于与段落按阅读顺序排序）
+            "y0": st.get("y0", 0),
+            "y1": st.get("y1", 0),
             # 质量决策（Phase 1 新增 — 统一判定入口）
             "quality_decision": decision,
             "quality_decision_reason": reason,
@@ -5161,3 +6151,182 @@ def print_verification_report(tables: List[dict], report: dict):
     lines.append("═" * 60)
 
     return "\n".join(lines)
+
+
+# ================================================================
+# 段落提取：从 liteparse 数据中提取未被表格覆盖的文本段落
+# ================================================================
+
+def extract_paragraphs_from_liteparse(
+    liteparse_data: dict,
+    tables: List[dict],
+) -> List[dict]:
+    """从未被表格覆盖的 text_items 中提取文本段落。
+
+    使用 item_index 精确去重：先将原始 text_items 通过 _build_items
+    转为带索引的 items，再用表格已占用的 item_index 做差集，
+    避免了过去 (text, round(x0,1), round(y0,1)) 三元组方案的碰撞风险。
+
+    Args:
+        liteparse_data: ParseResult.to_dict()
+        tables: segment_tables_from_liteparse 输出的表格列表
+
+    Returns:
+        段落条目列表：[{"page", "type": "paragraph", "data": str,
+                       "bbox": [x0,y0,x1,y1], "_source_item_indices": [...], ...}, ...]
+    """
+    pages = liteparse_data.get("pages", [])
+    if not pages:
+        return []
+
+    paragraphs = []
+
+    for lp_page in pages:
+        page_num = lp_page.get("page_number", 0)
+        text_items_raw = lp_page.get("text_items", [])
+        if not text_items_raw:
+            continue
+
+        # 构建带 item_index 的标准 items（与分割阶段同源，索引一致）
+        page_items = _build_items(text_items_raw, page_num)
+
+        # 收集该页表格中已归属的 item_index（精确 int 集合）
+        assigned_indices = _collect_assigned_indices(tables, page_num)
+
+        # 筛选孤儿 items：item_index 不在任何表格中
+        orphan_items = [
+            it for it in page_items
+            if it.get("item_index", 0) not in assigned_indices
+        ]
+
+        if not orphan_items:
+            continue
+
+        # 按 Y 聚类为段落块
+        orphan_items.sort(key=lambda it: it["y_mid"])
+        para_blocks = _cluster_orphans_to_paragraphs(orphan_items)
+
+        for block in para_blocks:
+            if not block["text"].strip():
+                continue
+            # 最小段落长度过滤（至少 5 个有效字符）
+            if len(block["text"].strip()) < 5:
+                continue
+
+            paragraphs.append({
+                "page": page_num,
+                "type": "paragraph",
+                "data": block["text"],
+                "text": block["text"],
+                "extractor": "liteparse_segmenter",
+                "confidence": 0.5,
+                "rows": block.get("line_count", 1),
+                "cols": 1,
+                "bbox": [
+                    round(block["x0"], 2),
+                    round(block["y0"], 2),
+                    round(block["x1"], 2),
+                    round(block["y1"], 2),
+                ],
+                # 精确去重标记：此段落由哪些原始 item 组成
+                "_source_item_indices": block.get("_source_item_indices", []),
+            })
+
+    return paragraphs
+
+
+def _collect_assigned_indices(tables: List[dict], page_num: int) -> set:
+    """收集指定页中所有表格已归属的 item_index 集合。
+
+    使用 item_index（确定性哈希 int）替代原来的
+    (text, round(x0,1), round(y0,1)) 三元组，避免四舍五入碰撞风险。
+    """
+    indices = set()
+    for table in tables:
+        # 检查表格是否包含该页
+        pages_in_table = table.get("pages", [table.get("page", 0)])
+        if page_num not in pages_in_table:
+            continue
+        for it in table.get("text_items", []):
+            idx = it.get("item_index", 0)
+            if idx:
+                indices.add(idx)
+    return indices
+
+
+def _cluster_orphans_to_paragraphs(
+    orphan_items: List[dict],
+    y_gap_threshold: float = 20.0,
+) -> List[dict]:
+    """将孤儿 items 按 Y 坐标聚类为段落块。
+
+    连续 items 之间 Y 间距 < y_gap_threshold 则属于同一段落；
+    间距 >= y_gap_threshold 则拆分为新段落。
+
+    Returns:
+        段落块列表：[{"text", "x0", "y0", "x1", "y1", "line_count"}, ...]
+    """
+    if not orphan_items:
+        return []
+
+    blocks = []
+    current_lines = [orphan_items[0]]
+    prev_item = orphan_items[0]
+
+    for it in orphan_items[1:]:
+        y_gap = it["y_mid"] - prev_item["y_mid"]
+        if y_gap < y_gap_threshold:
+            # 同一段落，继续合并
+            current_lines.append(it)
+        else:
+            # 新段落开始
+            blocks.append(_build_paragraph_block(current_lines))
+            current_lines = [it]
+        prev_item = it
+
+    # 最后一个段落
+    if current_lines:
+        blocks.append(_build_paragraph_block(current_lines))
+
+    return blocks
+
+
+def _build_paragraph_block(lines: List[dict]) -> dict:
+    """从同一段落的 lines 构建段落块字典。"""
+    # 每行内的 words 按 x 排序，用空格拼接
+    line_texts = []
+    current_line_y = None
+    current_line_words = []
+
+    # 先将 items 按 y 排序，然后按行分组
+    sorted_items = sorted(lines, key=lambda it: (it["y_mid"], it["x0"]))
+
+    for it in sorted_items:
+        if current_line_y is None or abs(it["y_mid"] - current_line_y) < 5.0:
+            current_line_words.append(it)
+            if current_line_y is None:
+                current_line_y = it["y_mid"]
+        else:
+            # 新行
+            current_line_words.sort(key=lambda w: w["x0"])
+            line_texts.append(" ".join(w["text"] for w in current_line_words))
+            current_line_words = [it]
+            current_line_y = it["y_mid"]
+
+    # 最后一行
+    if current_line_words:
+        current_line_words.sort(key=lambda w: w["x0"])
+        line_texts.append(" ".join(w["text"] for w in current_line_words))
+
+    return {
+        "text": "\n".join(line_texts),
+        "x0": min(it["x0"] for it in sorted_items),
+        "y0": min(it["y0"] for it in sorted_items),
+        "x1": max(it["x1"] for it in sorted_items),
+        "y1": max(it["y1"] for it in sorted_items),
+        "line_count": len(line_texts),
+        "_source_item_indices": [
+            it["item_index"] for it in sorted_items
+            if it.get("item_index")
+        ],
+    }

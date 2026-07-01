@@ -1,21 +1,21 @@
 {
   "pdf_name": "test_subset8",
   "page_number": 1,
-  "timestamp": "2026-06-25T11:31:19.560867",
+  "timestamp": "2026-06-30T15:18:54.715544",
   "page_size": {
     "width": 595.28,
     "height": 807.87
   },
   "summary": {
     "before_regions": 1,
-    "after_total_regions": 4,
-    "after_table_regions": 2,
-    "after_paragraph_regions": 2,
-    "region_count_delta": 3,
-    "paragraphs_newly_found": 2,
+    "after_total_regions": 2,
+    "after_table_regions": 1,
+    "after_paragraph_regions": 1,
+    "region_count_delta": 1,
+    "paragraphs_newly_found": 1,
     "changes": [
-      "单区域被拆分为 4 个子区域（表段分离）",
-      "新识别出 2 个段落区域"
+      "单区域被拆分为 2 个子区域（表段分离）",
+      "新识别出 1 个段落区域"
     ]
   },
   "before": {
@@ -37,22 +37,22 @@
     "page_number": 1,
     "page_width": 595.28,
     "page_height": 807.87,
-    "total_regions": 4,
-    "table_regions": 2,
-    "paragraph_regions": 2,
-    "segment_time_ms": 0.51,
+    "total_regions": 2,
+    "table_regions": 1,
+    "paragraph_regions": 1,
+    "segment_time_ms": 1.1,
     "regions": [
       {
         "x0": 0,
         "y0": 176.43,
         "x1": 595.28,
-        "y1": 299.06,
+        "y1": 535.86,
         "region_type": "table",
         "text": "5,239,658 18.25 5,402,635 19.54 长江三角洲\n4,139,205 14.41 4,132,280 14.94 珠江三角洲\n5,387,852 18.76 5,030,828 18.19 环渤海地区\n5,357,116 18.66 5,059,057 18.30 中部地区\n5,601,417 19.51 5,266,200 19.04 西部地区\n1,977,185 6....",
-        "item_count": 50,
-        "confidence": 1.0,
+        "item_count": 93,
+        "confidence": 0.9231,
         "diagnosis": {
-          "row_count": 10,
+          "row_count": 26,
           "row_indices": [
             0,
             1,
@@ -63,12 +63,28 @@
             6,
             7,
             8,
-            9
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
           ],
-          "table_rows": 10,
-          "paragraph_rows": 0,
-          "avg_x_coverage": 0.7905,
-          "avg_large_gaps": 4.0,
+          "table_rows": 24,
+          "paragraph_rows": 2,
+          "avg_x_coverage": 0.723,
+          "avg_large_gaps": 2.58,
           "row_details": [
             {
               "idx": 0,
@@ -139,30 +155,7 @@
               "x_coverage": 0.7905,
               "large_gaps": 4,
               "text_preview": "28,713,870 100.00 27,654,011 100.00 吸收存款"
-            }
-          ]
-        }
-      },
-      {
-        "x0": 70.87,
-        "y0": 313.96,
-        "x1": 299.48,
-        "y1": 351.48,
-        "region_type": "paragraph",
-        "text": "股东权益\n下表列出所示日期本集团股东权益总额及构成情况。",
-        "item_count": 2,
-        "confidence": 1.0,
-        "diagnosis": {
-          "row_count": 2,
-          "row_indices": [
-            10,
-            11
-          ],
-          "table_rows": 0,
-          "paragraph_rows": 2,
-          "avg_x_coverage": 0.227,
-          "avg_large_gaps": 0.0,
-          "row_details": [
+            },
             {
               "idx": 10,
               "type": "paragraph",
@@ -176,42 +169,7 @@
               "x_coverage": 0.384,
               "large_gaps": 0,
               "text_preview": "下表列出所示日期本集团股东权益总额及构成情况。"
-            }
-          ]
-        }
-      },
-      {
-        "x0": 0,
-        "y0": 362.27,
-        "x1": 595.28,
-        "y1": 535.86,
-        "region_type": "table",
-        "text": "2024年 2023年\n12月31日 12月31日 （人民币百万元）\n250,011 250,011 股本\n159,977 199,968 其他权益工具\n59,977 59,977 优先股\n100,000 139,991 永续债\n135,736 135,619 资本公积\n57,901 23,981 其他综合收益\n402,196 369,906 盈余公积\n534,591 496,255 一般风险准备...",
-        "item_count": 41,
-        "confidence": 1.0,
-        "diagnosis": {
-          "row_count": 14,
-          "row_indices": [
-            12,
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            25
-          ],
-          "table_rows": 14,
-          "paragraph_rows": 0,
-          "avg_x_coverage": 0.7457,
-          "avg_large_gaps": 1.93,
-          "row_details": [
+            },
             {
               "idx": 12,
               "type": "table",

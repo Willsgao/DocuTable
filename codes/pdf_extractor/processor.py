@@ -22,17 +22,532 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
+# V3 架构修复：统一去重引擎
+from codes.table_validator.dedup_engine import DeduplicationEngine, DedupPolicy
+from codes.table_validator.page_layout_model import PageLayoutModel
+from codes.table_validator.table_block_decider import TableBlockDecider, decide_table_blocks
+
+
+# ============================================================
+# 混合分割辅助函数
+# ============================================================
+
+
+def _extract_paragraphs_for_hybrid(
+    liteparse_data: dict,
+    hybrid_tables: list,
+) -> list:
+    """为混合表格提取未被覆盖的 liteparse text_items 段落。
+
+    混合表格使用 pdf2docx cell 数据（不含 text_items），因此用表格的
+    Y 范围 + X 范围判断覆盖。同时利用 item_index 为段落打标，供后续精确去重。
+
+    Args:
+        liteparse_data: ParseResult.to_dict()
+        hybrid_tables: hybrid_segment_tables 输出的表格列表
+
+    Returns:
+        段落条目列表（含 _source_item_indices 用于精确去重）
+    """
+    pages = liteparse_data.get("pages", [])
+    if not pages:
+        return []
+
+    # 按页组织表格的 Y+X 覆盖范围
+    # V3: 使用 PageLayoutModel 自适应推导 Y_MARGIN，替代硬编码 25pt
+    # 从所有 hybrid_tables 的 text_items 推导每页的行高中位数
+    _layout_cache: dict = {}
+    _Y_MARGIN = 25.0  # 默认值，将被逐页覆盖
+    for t in hybrid_tables:
+        p = t.get("page", 0)
+        if p not in _layout_cache:
+            items = t.get("text_items", [])
+            if items:
+                _layout_cache[p] = PageLayoutModel.from_text_items(items, page_num=p)
+    # 用所有页的中位数作为默认 margin
+    if _layout_cache:
+        _Y_MARGIN = sum(m.table_y_margin for m in _layout_cache.values()) / len(_layout_cache)
+    coverage_by_page = {}  # {page_num: [(y0, y1, x0, x1), ...]}
+    for t in hybrid_tables:
+        p = t.get("page", 0)
+        y0 = t.get("y0", 0)
+        y1 = t.get("y1", 0)
+        if y0 <= 0 and y1 <= 0:
+            continue  # 无坐标，跳过
+        coverage_by_page.setdefault(p, []).append(
+            (y0 - _Y_MARGIN, y1 + _Y_MARGIN, 0, 9999)
+        )
+
+    def _is_covered(ity0, ity1, p):
+        """检查 text_item 是否被表格覆盖（Y 重叠超过 50%）。"""
+        if p not in coverage_by_page:
+            return False
+        item_h = ity1 - ity0
+        if item_h <= 0:
+            return False
+        for cy0, cy1, cx0, cx1 in coverage_by_page[p]:
+            overlap = min(ity1, cy1) - max(ity0, cy0)
+            if overlap > item_h * 0.5:
+                return True
+        return False
+
+    # 导入 _build_items 用于 item_index
+    from codes.table_validator.liteparse_table_segmenter import _build_items
+
+    paragraphs = []
+    for lp_page in pages:
+        page_num = lp_page.get("page_number", 0)
+        text_items_raw = lp_page.get("text_items", [])
+        if not text_items_raw:
+            continue
+
+        # 构建带 item_index 的标准 items（与分割阶段同源）
+        indexed_items = _build_items(text_items_raw, page_num)
+
+        # 收集未被覆盖的 items（hybrid 表格无 text_items，仍用 bbox 判断）
+        orphan_items = []
+        for it in indexed_items:
+            text = it.get("text", "").strip()
+            if not text or len(text) < 2:
+                continue
+            y0 = it.get("y0", 0)
+            y1 = it.get("y1", 0)
+            if _is_covered(y0, y1, page_num):
+                continue
+            orphan_items.append(it)
+
+        if not orphan_items:
+            continue
+
+        # 按 Y 聚类为段落块
+        orphan_items.sort(key=lambda it: it["y_mid"])
+        blocks = _cluster_orphans_to_text_blocks(orphan_items)
+
+        for block in blocks:
+            text = block["text"].strip()
+            if len(text) < 5:
+                continue
+            paragraphs.append({
+                "page": page_num,
+                "type": "paragraph",
+                "data": text,
+                "text": text,
+                "extractor": "liteparse_hybrid",
+                "confidence": 0.5,
+                "rows": block.get("line_count", 1),
+                "cols": 1,
+                "bbox": [
+                    round(block["x0"], 2),
+                    round(block["y0"], 2),
+                    round(block["x1"], 2),
+                    round(block["y1"], 2),
+                ],
+                "_source_item_indices": block.get("_source_item_indices", []),
+            })
+
+    return paragraphs
+
+
+def _mark_page_types(results: list) -> None:
+    """为每个结果项添加 page_type 标记：纯表格 or 半表格。
+
+    按页分析 results 中的 type 字段，判定每页的文档类型：
+    - "pure_table"：此页仅有表格，无段落/注解
+    - "mixed"：此页同时包含表格和段落/注解
+
+    标记直接写入每个结果 dict 的 page_type 字段。
+    """
+    if not results:
+        return
+
+    # 按页分组统计
+    from collections import defaultdict
+    page_stats: dict = defaultdict(lambda: {"has_table": False, "has_paragraph": False})
+
+    for r in results:
+        p = r.get("page", 0)
+        t = r.get("type", "")
+        stats = page_stats[p]
+        if t == "table":
+            stats["has_table"] = True
+        elif t in ("paragraph", "annotation"):
+            stats["has_paragraph"] = True
+
+    # 计算每页类型
+    for p, stats in page_stats.items():
+        if stats["has_table"] and not stats["has_paragraph"]:
+            page_type = "pure_table"
+        elif stats["has_paragraph"] and not stats["has_table"]:
+            page_type = "pure_text"
+        else:
+            page_type = "mixed"
+
+        # 写回该页所有结果项
+        for r in results:
+            if r.get("page") == p:
+                r["page_type"] = page_type
+
+
+def _cluster_orphans_to_text_blocks(orphan_items):
+    """将孤儿 text_items 按 Y 间距聚类为文本块。"""
+    if not orphan_items:
+        return []
+
+    import re
+    # 使用与 liteparse_table_segmenter 相同的聚类逻辑
+    Y_GAP_THRESHOLD = 15.0
+
+    blocks = []
+    current = [orphan_items[0]]
+    prev = orphan_items[0]
+
+    for it in orphan_items[1:]:
+        gap = it["y_mid"] - prev["y_mid"]
+        if gap < Y_GAP_THRESHOLD:
+            current.append(it)
+        else:
+            blocks.append(_build_text_block(current))
+            current = [it]
+        prev = it
+
+    if current:
+        blocks.append(_build_text_block(current))
+
+    return blocks
+
+
+def _build_text_block(items):
+    """构建文本块 dict（含 _source_item_indices 用于精确去重）。"""
+    if not items:
+        return {"text": "", "x0": 0, "y0": 0, "x1": 0, "y1": 0, "line_count": 0}
+
+    items_sorted = sorted(items, key=lambda it: (it["y_mid"], it["x0"]))
+    x0 = min(it["x0"] for it in items)
+    y0 = min(it["y0"] for it in items)
+    x1 = max(it["x1"] for it in items)
+    y1 = max(it["y1"] for it in items)
+
+    # 按行去重
+    lines = {}
+    for it in items:
+        y_key = round(it["y_mid"], 1)
+        if y_key not in lines:
+            lines[y_key] = []
+        lines[y_key].append(it)
+
+    # 每行按 X 排序拼接
+    line_texts = []
+    for y_key in sorted(lines.keys()):
+        line_items = sorted(lines[y_key], key=lambda it: it["x0"])
+        line_text = " ".join(it["text"] for it in line_items)
+        line_texts.append(line_text)
+
+    # 用换行连接各行（保持原文格式）
+    text_block = "\n".join(line_texts)
+
+    return {
+        "text": text_block,
+        "x0": x0, "y0": y0,
+        "x1": x1, "y1": y1,
+        "line_count": len(lines),
+        "_source_item_indices": [
+            it["item_index"] for it in items_sorted
+            if it.get("item_index")
+        ],
+    }
+
 
 # ============================================================
 # 跨表去重（自动流水线用）
 # ============================================================
 
+
+def _sort_y_for_page_order(item: dict) -> float:
+    """提取条目的页内 Y 坐标用于排序，保证表格和段落的正确数据顺序。
+
+    表格使用 y0 字段，段落/注解使用 bbox[1]（top 坐标）。
+    failed 类型的条目（无坐标）排在最后（返回大值）。
+    """
+    if item.get("type") in ("paragraph", "annotation"):
+        bbox = item.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) >= 2:
+            return float(bbox[1])
+        return float(item.get("y0", 0))
+    # 表格：优先 y0，降级到 bbox
+    y = item.get("y0")
+    if y is not None and y > 0:
+        return float(y)
+    bbox = item.get("bbox")
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 2:
+        return float(bbox[1])
+    return 0.0
+
+
+def _verify_results_ordering(results: list) -> None:
+    """验证 results 列表按页码+页内 Y 坐标严格升序排列。
+
+    发现乱序时打印警告但不断言失败（不阻断主流程）。
+    """
+    if len(results) < 2:
+        return
+
+    violations = []
+    for i in range(len(results) - 1):
+        curr, nxt = results[i], results[i + 1]
+        curr_page = curr.get("page", 0)
+        nxt_page = nxt.get("page", 0)
+
+        if curr_page > nxt_page:
+            violations.append(
+                f"  页码倒退: #{i}(P{curr_page}) → #{i+1}(P{nxt_page})"
+            )
+        elif curr_page == nxt_page:
+            curr_y = _sort_y_for_page_order(curr)
+            nxt_y = _sort_y_for_page_order(nxt)
+            if curr_y > nxt_y + 0.1:  # 允许微小浮点误差
+                violations.append(
+                    f"  P{curr_page} 同页 Y 倒退: #{i}(y={curr_y:.1f} type={curr.get('type','?')})"
+                    f" → #{i+1}(y={nxt_y:.1f} type={nxt.get('type','?')})"
+                )
+
+    if violations:
+        print(f"  [顺序警告] 发现 {len(violations)} 处顺序异常:")
+        for v in violations:
+            print(v)
+    else:
+        passed = sum(1 for r in results if r.get("type") not in ("failed",))
+        print(f"  [顺序验证] {len(results)} 个条目顺序正确（{passed} 个有效条目）")
+
+
+def _deduplicate_text_against_tables(results: list) -> list:
+    """表格→文本去重：已被表格内容覆盖的段落/注解不应重复出现在结果中。
+
+    三层策略（按优先级）：
+    - Tier 1（精确）：段落有 _source_item_indices 且表格有 text_items →
+      直接用 item_index 集合差集判定。零误杀。
+    - Tier 2（回退1）：段落无 _source_item_indices 但表格有 text_items →
+      收集所有已占用 item_index，用 bbox 辅助判定。
+    - Tier 3（回退2）：表格无 text_items（hybrid）→ bbox 空间重叠 + token
+      内容重叠（保留原逻辑，阈值保守）。
+    """
+    tables = [r for r in results if r.get("type") not in ("paragraph", "annotation", "failed")]
+    text_entries = [r for r in results if r.get("type") in ("paragraph", "annotation")]
+
+    if not text_entries:
+        return results
+
+    # ===== Tier 1 & 2 准备：按页收集表格已占用的 item_index =====
+    table_assigned_indices = {}  # {page: set of item_index}
+    table_y_ranges = {}          # {page: [(y0, y1, x0, x1), ...]} (Tier 3 fallback)
+    table_tokens = {}            # {page: set of normalized tokens} (Tier 3 fallback)
+
+    tables_with_text_items = 0
+    tables_without_text_items = 0
+
+    for t in tables:
+        pg = t.get("page", 0)
+        data = t.get("data", [])
+
+        # 尝试收集 item_index（Tier 1/2）
+        text_items = t.get("text_items", [])
+        if text_items:
+            tables_with_text_items += 1
+            indices = set()
+            for it in text_items:
+                idx = it.get("item_index", 0)
+                if idx:
+                    indices.add(idx)
+            table_assigned_indices.setdefault(pg, set()).update(indices)
+        else:
+            tables_without_text_items += 1
+
+        # Tier 3 fallback: 构建 token 和 bbox 索引
+        if data:
+            tokens = set()
+            for row in data:
+                if isinstance(row, list):
+                    for cell in row:
+                        if cell:
+                            tokens.update(_tokenize_cell(str(cell)))
+                elif isinstance(row, str):
+                    tokens.update(_tokenize_cell(str(row)))
+            table_tokens.setdefault(pg, set()).update(tokens)
+
+            y0 = t.get("y0")
+            y1 = t.get("y1")
+            bbox = t.get("bbox")
+            if (y0 is None or y0 <= 0) and bbox:
+                y0 = bbox[1] if len(bbox) >= 2 else 0
+                y1 = bbox[3] if len(bbox) >= 4 else 0
+            if y0 and y1 and y0 > 0 and y1 > 0:
+                x0 = t.get("x0", 0) or (bbox[0] if bbox else 0)
+                x1_pad = t.get("x1", 9999) or 9999
+                table_y_ranges.setdefault(pg, []).append((y0, y1, x0, x1_pad))
+
+    # ===== 逐条检查 =====
+    keep_results = []
+    removed_count = 0
+    index_removed = 0
+    fallback_removed = 0
+
+    for r in results:
+        typ = r.get("type")
+        if typ not in ("paragraph", "annotation", "text"):
+            keep_results.append(r)
+            continue
+
+        pg = r.get("page", 0)
+        should_remove = False
+
+        # ── Tier 1: 精确 item_index 去重 ──
+        source_indices = r.get("_source_item_indices")
+        if source_indices and pg in table_assigned_indices:
+            assigned = table_assigned_indices[pg]
+            if any(idx in assigned for idx in source_indices):
+                should_remove = True
+                index_removed += 1
+
+        # ── Tier 2 & 3: 回退到 bbox / token 去重 ──
+        if not should_remove:
+            text_data = r.get("data", "")
+            if isinstance(text_data, list):
+                text_data = " ".join(str(c) for c in text_data if c)
+            text_data = str(text_data).strip()
+            if not text_data:
+                keep_results.append(r)
+                continue
+
+            # --- 空间重叠（paragraph Y >70% 被 table 覆盖）---
+            spatial_overlap = False
+            para_bbox = r.get("bbox")
+            if para_bbox and len(para_bbox) >= 4:
+                para_y0 = para_bbox[1]
+                para_y1 = para_bbox[3]
+                para_x0 = para_bbox[0]
+                para_x1 = para_bbox[2]
+            else:
+                para_y0 = r.get("y0", 0)
+                para_y1 = r.get("y1", 0)
+                para_x0 = r.get("x0", 0)
+                para_x1 = r.get("x1", 9999)
+
+            para_h = para_y1 - para_y0
+            if para_h > 0 and pg in table_y_ranges:
+                for ty0, ty1, tx0, tx1 in table_y_ranges[pg]:
+                    y_overlap = min(para_y1, ty1) - max(para_y0, ty0)
+                    if y_overlap > para_h * 0.7:
+                        x_overlap = min(para_x1, tx1) - max(para_x0, tx0)
+                        if x_overlap > (para_x1 - para_x0) * 0.5 if para_x1 > para_x0 else True:
+                            spatial_overlap = True
+                            break
+
+            # --- 内容重叠（paragraph token >50% 在 table 中）---
+            content_overlap = False
+            para_tokens = _tokenize_cell(text_data)
+            if para_tokens and pg in table_tokens and table_tokens[pg]:
+                t_tokens = table_tokens[pg]
+                common = len(para_tokens & t_tokens)
+                ratio = common / len(para_tokens) if para_tokens else 0
+                if ratio >= 0.5:
+                    content_overlap = True
+
+            if spatial_overlap or content_overlap:
+                should_remove = True
+                fallback_removed += 1
+
+        if should_remove:
+            removed_count += 1
+            continue
+
+        keep_results.append(r)
+
+    if removed_count > 0:
+        detail = ""
+        if index_removed > 0:
+            detail += f"{index_removed} 个精确(index)"
+        if fallback_removed > 0:
+            if detail:
+                detail += " + "
+            detail += f"{fallback_removed} 个回退(bbox)"
+        print(f"  [表格→文本去重] 移除了 {removed_count} 个段落/注解条目（{detail}）")
+
+    return keep_results
+
+
+def _tokenize_cell(text: str) -> frozenset:
+    """将单元格文本规范化为可用于去重比较的 token 集合。
+
+    策略：
+    1. 去除空白 → 小写
+    2. 移除数字中的千分位逗号（1,200 → 1200），避免逗号切割破坏数值完整性
+    3. 移除中英文标点（保留字母数字和中文）
+    4. findall 提取 ≥2 字中文片段 + ≥2 位数字/字母，单次遍历
+
+    这样表格 cell "1,200" 和段落 "营业收入1,200万元"
+    都能产生 token "1200"，实现跨提取源的数值匹配。
+    """
+    import re
+    cleaned = re.sub(r'\s+', '', str(text)).lower()
+    # 移除数字中的千分位逗号：1,200 → 1200
+    cleaned = re.sub(r'(\d),(\d)', r'\1\2', cleaned)
+    # 移除中英文标点（保留字母数字+中文）
+    cleaned = re.sub(r'[，。；：、！？—…·,.;:!?()\[\]{}（）、\s/\\"\'%%＃＋－]+',
+                     '', cleaned, flags=re.UNICODE)
+
+    # findall：每次从上次结束位置继续，非重叠，逐词交替提取
+    tokens = set(re.findall(
+        r'[\u4e00-\u9fff]{2,}|\d{2,}|[a-z]{2,}',
+        cleaned,
+        flags=re.UNICODE,
+    ))
+
+    return frozenset(tokens)
+
+
+def _is_table_data_subset(data_a: list, data_b: list, _row_fp_fn, _num_ratio_fn) -> bool:
+    """检测表A的全部非空行是否完全是表B的前缀子集。
+
+    用于整表去重：当表A的所有行恰好等于表B的前N行，且表B有更多内容时，
+    表A是冗余碎片，应整体移除。
+
+    判定条件（全部满足）：
+    1. 表A有 >= 2 个非空行
+    2. 表B非空行严格多于表A
+    3. 表A的每一行都与表B同位置的行的指纹精确匹配
+    """
+    non_empty_a = [r for r in data_a if any(str(c).strip() for c in r)]
+    non_empty_b = [r for r in data_b if any(str(c).strip() for c in r)]
+
+    if len(non_empty_a) < 2:
+        return False
+    if len(non_empty_b) <= len(non_empty_a):
+        return False
+
+    # 表A所有行必须精确匹配表B的前面行（同位同指纹）
+    for i, row_a in enumerate(non_empty_a):
+        if i >= len(non_empty_b):
+            return False
+        fp_a = _row_fp_fn(row_a)
+        fp_b = _row_fp_fn(non_empty_b[i])
+        if not fp_a or not fp_b or fp_a != fp_b:
+            return False
+
+    # 额外校验：表A不能有表B没有的独特行（集合级子集检查兜底）
+    fps_a = {_row_fp_fn(r) for r in non_empty_a if _row_fp_fn(r)}
+    fps_b = {_row_fp_fn(r) for r in non_empty_b if _row_fp_fn(r)}
+    if not fps_a.issubset(fps_b):
+        return False
+
+    return True
+
+
 def _dedup_adjacent_tables_in_pipeline(results: list) -> list:
     """对同页相邻表进行跨表去重：前表尾/头部 ↔ 后表头部 方向性去重。
 
     检测同页内相邻表对 (Table_i, Table_{i+1})：
-    - 表i头部 ↔ 表i+1头部（表头行重叠）
-    - 表i尾部 ↔ 表i+1头部（数据行重叠）
+    - A0: 整表子集检测 — 表A全部行=表B前缀 → 移除表A
+    - A1: 表i头部 ↔ 表i+1头部（表头行重叠）
+    - A2: 表i尾部 ↔ 表i+1头部（数据行重叠）
     若表i+1结构完整 → 从表i删除重叠行。
 
     Args:
@@ -105,13 +620,16 @@ def _dedup_adjacent_tables_in_pipeline(results: list) -> list:
                 return True
         return False
 
-    # 按页分组
+    # 按页分组（仅表格，跳过段落）
     page_groups = {}
     for i, tbl in enumerate(results):
+        if tbl.get("type") == "paragraph":
+            continue
         p = tbl.get("page", 0)
         page_groups.setdefault(p, []).append(i)
 
     total_removed = 0
+    entries_to_remove = set()  # 整表子集 → 完全移除的条目索引
 
     for page, indices in page_groups.items():
         if len(indices) < 2:
@@ -131,11 +649,41 @@ def _dedup_adjacent_tables_in_pipeline(results: list) -> list:
 
             rows_to_remove = set()
 
+            # A0: 整表子集检测 — 表A全部非空行=表B前缀 → 整表移除
+            # 场景：表A仅有表头行，表B有相同表头+数据行，表A是冗余碎片
+            if _is_table_data_subset(data_a, data_b, _row_fp, _num_ratio):
+                saved_rows = []
+                for ri, row in enumerate(data_a):
+                    if any(str(c).strip() for c in row):
+                        saved_rows.append({
+                            "index": ri,
+                            "cells": [str(c) for c in row],
+                            "numeric_ratio": round(_num_ratio(row), 2),
+                            "reason": "entire_table_subset_of_next",
+                        })
+                tbl_a.setdefault("_dedup_moved_rows", [])
+                tbl_a["_dedup_moved_rows"].extend(saved_rows)
+                tbl_a["_dedup_entire_table_moved"] = True
+                tbl_a["_dedup_moved_to_id"] = tbl_b.get("table_id", idx_b)
+                tbl_a["data"] = []
+                tbl_a["rows"] = 0
+                entries_to_remove.add(idx_a)
+                total_removed += len(saved_rows)
+                print(f"  [整表去重] P{page} 表#{j + 1}→表#{j + 2}: "
+                      f"整表({len(saved_rows)}行)是下一表前缀子集，移除")
+                continue
+
             # A1: 前表头部 ↔ 后表头部
             # 仅当表A是"表头碎片"（几乎无数据行）时才删除其表头
             # 防止从有数据内容的表中错误删除正常表头（如连续财务表共享列名）
+            # V5 修复：有2+行表头 + ≥1行数据的表是完整迷你表，不是碎片
+            # 例如：1行数据 + 2行表头的 mini 表不应被去重吞掉表头
             data_rows_a = sum(1 for r in data_a if _num_ratio(r) >= 0.3)
-            is_header_fragment = (len(data_a) <= 5 and data_rows_a <= 1) or data_rows_a == 0
+            header_rows_a = len(_detect_header_indices(data_a))
+            is_header_fragment = (
+                data_rows_a == 0 or
+                (len(data_a) <= 5 and data_rows_a <= 1 and header_rows_a <= 1)
+            )
 
             if is_header_fragment:
                 head_a = _detect_header_indices(data_a)
@@ -147,16 +695,23 @@ def _dedup_adjacent_tables_in_pipeline(results: list) -> list:
                             rows_to_remove.add(hi)
                             break
 
-            # A2: 前表尾部 ↔ 后表头部
+            # A2: 前表尾部 ↔ 后表头部（排除表头行）
+            # V6 修复：小型表（行数 < MAX_CHECK）时 tail_start=0 会把表头行
+            # 误当尾部数据行来匹配，导致连续同类表格的表头被反复删除。
+            # 表头行的去重只应由 A1 处理（且仅限碎片表），A2 应仅处理数据行重叠。
+            head_a_indices = set(_detect_header_indices(data_a))
             tail_start = max(0, len(data_a) - MAX_CHECK)
             tail = data_a[tail_start:]
             head = data_b[:MAX_CHECK]
             for offset, row in enumerate(tail):
+                actual_idx = tail_start + offset
+                if actual_idx in head_a_indices:
+                    continue
                 if not _row_fp(row):
                     continue
                 for h_row in head:
                     if _row_matches(row, h_row):
-                        rows_to_remove.add(tail_start + offset)
+                        rows_to_remove.add(actual_idx)
                         break
 
             # A2+: 处理孤立章节标题行
@@ -176,18 +731,35 @@ def _dedup_adjacent_tables_in_pipeline(results: list) -> list:
                     if nr < 0.3 and 1 <= non_empty_count <= 2:
                         rows_to_remove.add(tail_idx)
 
-            # 执行删除
+            # 执行重新分割（V2优化：保留完整行数据到元数据，而非简单删除）
             if rows_to_remove:
+                # 先保存被移除的完整行数据，以便恢复
+                saved_rows = []
+                for row_idx in sorted(rows_to_remove):
+                    saved_rows.append({
+                        "index": row_idx,
+                        "cells": [str(c) for c in data_a[row_idx]],
+                        "numeric_ratio": round(_num_ratio(data_a[row_idx]), 2),
+                        "reason": "moved_to_table_below",
+                    })
+                # 记录到表A的元数据
+                tbl_a.setdefault("_dedup_moved_rows", [])
+                tbl_a["_dedup_moved_rows"].extend(saved_rows)
+
+                # 从尾部移除（这些行归属于下一张表，保留完整副本在元数据中）
                 sorted_indices = sorted(rows_to_remove, reverse=True)
                 for row_idx in sorted_indices:
                     del data_a[row_idx]
                 removed = len(sorted_indices)
                 total_removed += removed
                 print(f"  [跨表去重] P{page} 表#{j + 1}→表#{j + 2}: "
-                      f"从表#{j + 1}尾部删除 {removed} 行重叠数据（后表结构完整）")
+                      f"从表#{j + 1}尾部重新分割 {removed} 行到下一表（后表结构完整）")
 
     if total_removed > 0:
         print(f"  [跨表去重] 总计删除 {total_removed} 行重叠数据")
+    if entries_to_remove:
+        results = [r for i, r in enumerate(results) if i not in entries_to_remove]
+        print(f"  [整表去重] 移除 {len(entries_to_remove)} 张冗余子集表")
     return results
 
 
@@ -1123,6 +1695,12 @@ class PDFProcessor:
 
         if close_doc:
             doc.close()
+        _mark_page_types(results)
+        # V3: 使用统一去重引擎替代分散的 _deduplicate_text_against_tables
+        dedup_engine = DeduplicationEngine()
+        results = dedup_engine.dedup_text_against_tables(results)
+        if dedup_engine._debug_log:
+            print(f"  [V2去重] {len(dedup_engine._debug_log)} 项文本去重")
         return results
 
     @staticmethod
@@ -1749,17 +2327,26 @@ class PDFProcessor:
 
         规则：
         1. docx 所有表格无条件保留(主力通道)，保持原始阅读顺序不动
-        2. 增强指纹匹配：行结构必须一致 + 公共词 >=3 + 公共词占比 >=40%
-        3. 搜索范围扩展到 ±1 页容忍（同一张表可能被 docx 和 V2 分配到相邻页）
-        4. V2 独有的表格(docx 漏掉的无框表/小表)按页码插入到 docx 序列的正确位置
+        2. V2 段落(type="paragraph")不参与指纹匹配，直接按页码插入
+        3. 增强指纹匹配：行结构必须一致 + 公共词 >=3 + 公共词占比 >=40%
+        4. 搜索范围扩展到 ±1 页容忍（同一张表可能被 docx 和 V2 分配到相邻页）
+        5. V2 独有的表格(docx 漏掉的无框表/小表)按页码插入到 docx 序列的正确位置
         """
+        # 分离 V2 中的表格和段落
+        v2_paragraphs = [vt for vt in v2_tables if vt.get("type") == "paragraph"]
+        v2_real_tables = [vt for vt in v2_tables if vt.get("type") != "paragraph"]
+
         if not docx_tables:
-            return list(v2_tables)
+            merged = list(v2_real_tables)
+            # 按页码插入段落
+            for para in v2_paragraphs:
+                _insert_by_page(merged, para, prefer_before=True)
+            return merged
 
         merged = list(docx_tables)  # docx 保持原顺序，绝不动
         matched_v2_ids = set()
 
-        # 对每个 docx 表格，在 ±1 页范围内找 V2 匹配项
+        # 对每个 docx 表格，在 ±1 页范围内找 V2 匹配项（仅匹配 V2 表格，跳过段落）
         for di, dt in enumerate(docx_tables):
             dt_page = dt.get("page", 0)
             dt_data = dt.get("data", [])
@@ -1770,7 +2357,7 @@ class PDFProcessor:
 
             dt_fp_set, dt_structure = dt_fp
 
-            for vi, vt in enumerate(v2_tables):
+            for vi, vt in enumerate(v2_real_tables):
                 if vi in matched_v2_ids:
                     continue
                 vt_page = vt.get("page", 0)
@@ -1800,7 +2387,7 @@ class PDFProcessor:
 
         # 收集未匹配的 V2 表格，按页码排序后插入到 docx 序列
         unmatched_v2 = []
-        for vi, vt in enumerate(v2_tables):
+        for vi, vt in enumerate(v2_real_tables):
             if vi not in matched_v2_ids:
                 unmatched_v2.append(vt)
 
@@ -1815,9 +2402,51 @@ class PDFProcessor:
                         break
                 merged.insert(insert_pos, vt)
 
-        v2_supplement = len(v2_tables) - len(matched_v2_ids)
-        print(f"  [去重] 汇总: docx主力={len(docx_tables)}个 + V2补漏={v2_supplement}个 = 共{len(merged)}个表格")
+        # V2 段落按页码插入到合并序列中
+        for para in v2_paragraphs:
+            PDFProcessor._insert_by_page(merged, para, prefer_before=False)
+
+        v2_table_supplement = len(v2_real_tables) - len(matched_v2_ids)
+        v2_para_count = len(v2_paragraphs)
+        parts = [f"docx主力={len(docx_tables)}个"]
+        if v2_table_supplement:
+            parts.append(f"V2补漏表={v2_table_supplement}个")
+        if v2_para_count:
+            parts.append(f"V2段落={v2_para_count}个")
+        print(f"  [去重] 汇总: {' + '.join(parts)} = 共{len(merged)}个条目")
         return merged
+
+    @staticmethod
+    def _insert_by_page(merged: list, item: dict, prefer_before: bool = False) -> None:
+        """将 item 按页码插入到 merged 列表的正确位置。
+
+        Args:
+            merged: 已排序的条目列表
+            item: 要插入的条目（含 "page" 和可选 "bbox" 字段）
+            prefer_before: True=插入到同页已有条目前面, False=插入到后面
+        """
+        item_page = item.get("page", 0)
+        item_y0 = (item.get("bbox") or [0, 0])[1] if item.get("bbox") else 0
+
+        insert_pos = len(merged)
+        for i, existing in enumerate(merged):
+            existing_page = existing.get("page", 0)
+            if existing_page > item_page:
+                insert_pos = i
+                break
+            elif existing_page == item_page:
+                if prefer_before:
+                    insert_pos = i
+                    break
+                else:
+                    # 在同页中，按 bbox Y 坐标排序
+                    existing_y0 = (existing.get("bbox") or [0, 0])[1] if existing.get("bbox") else 0
+                    if item_y0 < existing_y0:
+                        insert_pos = i
+                        break
+                    insert_pos = i + 1
+
+        merged.insert(insert_pos, item)
 
     @staticmethod
     def _filter_table_quality(tables):
@@ -1827,6 +2456,7 @@ class PDFProcessor:
         1. 只有 1 行数据的跳过，除非是该页第一个表且含 >= 2 个数值
         2. 没有数值类型数据的跳过（纯文本块，不是表格）
         3. 图表误判过滤：坐标轴刻度、孤立单字图例、饼图标签
+        4. 段落项（type="paragraph"）始终保留，不参与表格质量过滤
         """
         import re
 
@@ -1912,6 +2542,11 @@ class PDFProcessor:
         last_page = None
 
         for t in tables:
+            if t.get("type") == "paragraph":
+                # 段落项始终保留，不参与表格质量过滤
+                filtered.append(t)
+                continue
+        
             data = t.get("data", [])
             page = t.get("page", 0)
             is_first_on_page = (page != last_page)
@@ -4593,7 +5228,7 @@ def _auto_merge_split_tables(results, liteparse_data=None):
         return results
 
     is_docx_per_page = results[0].get("extractor") == "docx_per_page"
-    results.sort(key=lambda x: x.get("page", 0))
+    results.sort(key=lambda x: (x.get("page", 0), _sort_y_for_page_order(x)))
 
     # ---- liteparse 辅助的相邻拆分检测 ----
     confident_merges = []
@@ -5026,9 +5661,26 @@ class ProcessingWorker(QThread):
                 for t in merged_tables:
                     ext = t.get("extractor", "v2")
                     data = t.get("data", [])
+                    item_type = t.get("type", "text")
 
-                    # 自动纠错：修复无框表格的行列错位
-                    if data and len(data) >= 2:
+                    # 段落条目：跳过表格纠错，用独立格式
+                    if item_type == "paragraph":
+                        entry = {
+                            "page": t["page"],
+                            "type": "paragraph",
+                            "data": data,  # data 是纯文本字符串
+                            "extractor": ext,
+                            "parse_status": "success" if data else "empty",
+                            "parse_message": "V2段切分离",
+                            "columns": 1 if data else 0,
+                        }
+                        if t.get("bbox"):
+                            entry["bbox"] = t["bbox"]
+                        results.append(entry)
+                        continue
+
+                    # 表格条目：自动纠错 + 标准格式
+                    if isinstance(data, list) and len(data) >= 2:
                         corrected = self.pdf_processor.TableAutoCorrector.correct(data)
                         if corrected and len(corrected) != len(data):
                             print(f"  [自动纠错] P{t.get('page')}: {len(data)}行→{len(corrected)}行")
@@ -5079,7 +5731,7 @@ class ProcessingWorker(QThread):
                             "parse_status": "empty",
                             "parse_message": "未配置API Key（空数据）"
                         })
-                    results.sort(key=lambda x: x["page"])
+                    results.sort(key=lambda x: (x["page"], _sort_y_for_page_order(x)))
                     self.progress.emit(95, "正在整理数据...")
 
                     # 生成预览图
@@ -5155,8 +5807,8 @@ class ProcessingWorker(QThread):
                     "parse_message": "未提取到表格数据"
                 })
 
-            # 按页码排序
-            results.sort(key=lambda x: x["page"])
+            # 按页码+页内Y坐标排序（保证表格和文本原始数据顺序）
+            results.sort(key=lambda x: (x["page"], _sort_y_for_page_order(x)))
 
             # ---- [旁路] liteparse 通道：解析表格页的空间布局文本 ----
             self._run_liteparse_side_channel(results, total_pages)
@@ -5201,72 +5853,122 @@ class ProcessingWorker(QThread):
                 progress_callback=lambda v, m: self.progress.emit(v, m),
                 liteparse_data=liteparse_data,
             )
-            # 最终确保按页码排序
-            results.sort(key=lambda x: x["page"])
+            # 最终确保按页码+页内Y坐标排序
+            results.sort(key=lambda x: (x["page"], _sort_y_for_page_order(x)))
 
-            # ---- 自动表格分割验证（liteparse 驱动） ----
-            # 保存分割前的原始数据，供人工对比
+            # ---- 混合表格分割（liteparse 边界 + pdf2docx 单元格融合） ----
             tables_before_segmentation = copy.deepcopy(results)
             seg_report = None
-            liteparse_seg_tables = None  # liteparse 原始格式，供对话框导出
+            liteparse_seg_tables = None
             try:
-                if liteparse_data:
-                    from codes.table_validator.liteparse_table_segmenter import (
-                        segment_tables_from_liteparse,
-                        liteparse_tables_to_standard,
+                if liteparse_data and results:
+                    from codes.table_validator.hybrid_segmenter import (
+                        hybrid_segment_tables,
                     )
-                    self.progress.emit(96, "正在自动分割表格...")
-                    seg_tables, seg_report = segment_tables_from_liteparse(
+                    from codes.table_validator.liteparse_table_segmenter import (
+                        extract_paragraphs_from_liteparse,
+                    )
+                    self.progress.emit(96, "正在混合分割表格...")
+                    # 只取表格类型条目（过滤段落/注解等非表格条目）
+                    docx_only = [
+                        t for t in results
+                        if isinstance(t.get("data"), list) and t.get("type") != "paragraph"
+                    ]
+                    seg_tables, seg_report = hybrid_segment_tables(
                         liteparse_data,
-                        enable_cross_page=True,
+                        docx_tables=copy.deepcopy(docx_only),
+                        enable_cross_page=False,
                     )
                     if seg_tables:
-                        # 保存 liteparse 原始格式（含 rows[dict]，供导出 CSV）
                         liteparse_seg_tables = seg_tables
-                        # 转为标准格式并保留分割前后两份数据
-                        segmented_results = liteparse_tables_to_standard(
-                            seg_tables, results
-                        )
-                        # 为原始表也打上质量标记（基于分类器）
+
+                        # 为原始表打上质量标记（基于分类器）
                         from codes.table_validator.table_classifier import classify_page
                         for t in tables_before_segmentation:
                             t_data = t.get("data", [])
                             if t_data:
                                 cr = classify_page(t_data, t.get("page", 0))
                                 t["is_real_table"] = cr.is_real_table
-                                t["is_complete"] = cr.is_real_table  # 简化判定
+                                t["is_complete"] = cr.is_real_table
                                 t["table_category"] = "财务数据表" if cr.is_real_table else "非表格"
                                 t["has_header"] = cr.checks.get("has_numeric_col", False)
                                 t["has_numeric_data"] = cr.checks.get("has_numeric_col", False)
                             t["segment_source"] = "original"
 
-                        # 分割后数据作为主结果
-                        results = segmented_results
+                        results = seg_tables
+                        # 确保分割后的表格按页内 Y 顺序排列
+                        results.sort(key=lambda r: (
+                            r.get("page", 0), _sort_y_for_page_order(r)
+                        ))
 
-                        # Phase 1 质量过滤：统计各决策层级
+                        # 从未被表格覆盖的 liteparse text_items 提取段落
+                        try:
+                            # 构建兼容格式供 extract_paragraphs_from_liteparse 使用
+                            # 混合表格的 data 列数用于检测覆盖范围
+                            lp_paragraphs = _extract_paragraphs_for_hybrid(
+                                liteparse_data, results
+                            )
+                            if lp_paragraphs:
+                                results.extend(lp_paragraphs)
+                                results.sort(key=lambda r: (
+                                    r.get("page", 0),
+                                    _sort_y_for_page_order(r),
+                                ))
+                                print(f"  [段切] liteparse 提取到 {len(lp_paragraphs)} 个文本段落")
+                        except Exception:
+                            pass
+
+                        # 混合融合不需要 extracted_text_entries（pdf2docx cell 不混入注解文本）
+                        # 但仍需处理 seg_report 中的段落提取结果
+                        extracted_entries = seg_report.get("extracted_text_entries", [])
+                        if extracted_entries:
+                            new_entries = []
+                            existing_texts = {
+                                (r.get("page"), r.get("data", "").strip())
+                                for r in results
+                                if r.get("type") in ("paragraph", "annotation")
+                            }
+                            seen = set()
+                            for entry in extracted_entries:
+                                entry_data = entry.get("data", "").strip()
+                                if not entry_data:
+                                    continue
+                                key = (entry.get("page"), entry_data)
+                                if key in existing_texts or key in seen:
+                                    continue
+                                seen.add(key)
+                                new_entries.append(entry)
+                            if new_entries:
+                                results.extend(new_entries)
+                                results.sort(key=lambda r: (
+                                    r.get("page", 0), _sort_y_for_page_order(r)
+                                ))
+
                         accepted_tables = [t for t in results if t.get("quality_decision") == "accepted"]
                         review_tables = [t for t in results if t.get("quality_decision") == "review"]
                         rejected_tables = [t for t in results if t.get("quality_decision") == "rejected"]
-
-                        # 保存原始和分割后的统计
-                        seg_stats = seg_report.get("table_summaries", [])
                         real_count = len(accepted_tables)
-                        print(f"  [自动分割] 原始 {len(tables_before_segmentation)} 张表 → "
+                        print(f"  [混合分割] 原始 {len(tables_before_segmentation)} 张表 → "
                               f"分割后 {len(results)} 张表, "
                               f"可信 {real_count} 张, 待复核 {len(review_tables)} 张, "
                               f"已拒绝 {len(rejected_tables)} 张")
 
-                        # ---- 跨表去重：相邻表 头部/尾部 ↔ 头部 方向性去重 ----
+                        # 跨表去重 V3: 使用统一去重引擎
                         if len(results) > 1:
                             self.progress.emit(97, "正在跨表去重...")
-                            results = _dedup_adjacent_tables_in_pipeline(results)
+                            dedup_engine = DeduplicationEngine()
+                            results = dedup_engine.dedup_adjacent(results)
+                            if dedup_engine._debug_log:
+                                print(f"  [混合分割去重] {len(dedup_engine._debug_log)} 项")
+                                for entry in dedup_engine._debug_log:
+                                    print(f"    {entry}")
                     else:
-                        print("  [自动分割] 分割未产生结果，保留原始表格")
+                        print("  [混合分割] 未产生结果，保留原始表格")
             except ImportError:
-                print("  [自动分割] liteparse segmenter 模块不可用，跳过")
+                print("  [混合分割] hybrid segmenter 模块不可用，跳过")
             except Exception as e:
                 import traceback
-                print(f"  [自动分割] 分割异常（不影响主流程）: {e}")
+                print(f"  [混合分割] 分割异常（不影响主流程）: {e}")
                 traceback.print_exc()
 
             # ---- 兜底表格分类（liteparse 不可用或分割失败时，确保每个表都有 category 标记）----
@@ -5301,6 +6003,16 @@ class ProcessingWorker(QThread):
                       f"非表格 {len(results) - classified_real} 张")
 
             self.progress.emit(98, "处理完成")
+
+            # ---- 页面类型标记：纯表格 / 半表格（文本+表格）----
+            _mark_page_types(results)
+            if tables_before_segmentation:
+                _mark_page_types(tables_before_segmentation)
+
+            # ---- 表格→文本去重 V3: 使用统一去重引擎 ----
+
+            # ---- 数据顺序一致性验证 ----
+            _verify_results_ordering(results)
 
             self.finished.emit({
                 "success": True,

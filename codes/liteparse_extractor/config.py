@@ -24,6 +24,12 @@ LITEPARSE_CONFIG = {
     # ---- 上下文提取 ----
     "context_margin_top": 100.0,   # 表格上方取上下文的最大距离（pt）
 
+    # ---- 上边界精修（找回密度网格漏掉的表格行）----
+    "boundary_refine_enabled": True,      # 是否启用上边界扩展
+    "boundary_max_gap_ratio": 3.0,        # Y 间隙 > 行高 × 该值 → 停止
+    "boundary_max_consecutive_miss": 2,   # 连续不匹配行数 → 停止
+    "boundary_col_tolerance": 15.0,       # 列对齐 X 容差（pt）
+
     # ---- 输出格式 ----
     "preserve_layout": True,       # 保留空格对齐的版式文本
     "include_bbox": True,          # 附带每个 TextItem 的坐标

@@ -3079,6 +3079,22 @@ def repair_and_split_tables(
             if sub_row >= 0:
                 # 确认子标题后确实有新的数据区块（对应 expanded[i+1]）
                 if sub_row < gap_end:
+                    # ---- 幽灵表防护 ----
+                    # 验证分割后子表是否有足够数据行（≥2 个含数值的行）。
+                    # 当列分配错误导致标签和数值被分离到不同行时，
+                    # 孤立的数值行会形成 1 行簇 → 应拒绝拆分。
+                    ds_next, de_next = expanded[i + 1]
+                    post_split_data_rows = sum(
+                        1 for ri in range(sub_row, min(de_next + 1, total_rows))
+                        if any(_is_numeric_cell(c) for c in table_data[ri])
+                    )
+                    if post_split_data_rows < 2:
+                        logger.info(
+                            f"  跳过幽灵表边界: 行{sub_row} "
+                            f"子表仅 {post_split_data_rows} 行含数值，不足 2 行"
+                        )
+                        continue
+
                     split_rows.append(sub_row)
                     logger.info(
                         f"  检测到子表边界: 行{sub_row} "
@@ -3267,9 +3283,26 @@ def deduplicate_adjacent_tables(
         if not overlap_fps and not jaccard_matches:
             continue
 
+        # V5 修复：检查 T1 是否是"碎片表"（无数据行或仅 ≤1 数据行 + ≤1 表头行）
+        # 只有碎片表才允许删除其表头行；完整表（有数据行+多级表头）保护其表头
+        # 如连续财务表共享列名"本集团/本行/2024年/2023年"的小表不应被去重吞掉表头
+        def _is_fragment_table(data):
+            num_data = sum(1 for r in data if _row_numeric_ratio(r) >= 0.3)
+            if num_data == 0:
+                return True
+            hdr_cnt = 0
+            for r in data[:min(5, len(data))]:
+                if _row_numeric_ratio(r) < 0.3:
+                    hdr_cnt += 1
+                else:
+                    break
+            return len(data) <= 5 and num_data <= 1 and hdr_cnt <= 1
+
+        t1_is_fragment = _is_fragment_table(t1_data)
+
         # 对每个重叠行裁决归属
         # 策略：结合数值占比 + 行在 T2 中的位置综合判定
-        # - T2 前2行重叠 → 几乎是表头 → 归入 T2（从 T1 删除）
+        # - T2 前2行重叠 → 几乎是表头 → 仅碎片 T1 才删除（归入 T2）
         # - T2 后方重叠 + 数值占比高 → 可能是数据 → 归入 T1（从 T2 删除）
         rows_to_remove_t1 = []  # 从 T1 删除（归入 T2）
         rows_to_remove_t2 = []  # 从 T2 删除（留在 T1）
@@ -3279,15 +3312,17 @@ def deduplicate_adjacent_tables(
             ratio = _row_numeric_ratio(row)
             pos_in_t2 = t2_fps[fp]  # 该行在 T2 中的位置
 
-            # 行在 T2 前2行 → 强信号是表头
+            # 行在 T2 前2行 → 强信号是表头 → 仅碎片 T1 才删除
             if pos_in_t2 <= 1:
-                rows_to_remove_t1.append(t1_fps[fp])
+                if t1_is_fragment:
+                    rows_to_remove_t1.append(t1_fps[fp])
             # 行在 T2 第3行及以后 + 数值占比 >= 0.5 → 可能是数据行
             elif pos_in_t2 >= 2 and ratio >= 0.5:
                 rows_to_remove_t2.append(t2_fps[fp])
             # 行在 T2 第3行及以后 但 数值占比低 → 仍是表头（如跨页表头重复等）
             else:
-                rows_to_remove_t1.append(t1_fps[fp])
+                if t1_is_fragment:
+                    rows_to_remove_t1.append(t1_fps[fp])
 
         # Jaccard 匹配的归属判定（同上逻辑）
         for t1_idx, t2_idx in jaccard_matches.items():
@@ -3295,21 +3330,25 @@ def deduplicate_adjacent_tables(
                 row = t1_data[t1_idx]
                 ratio = _row_numeric_ratio(row)
                 if t2_idx <= 1:
-                    rows_to_remove_t1.append(t1_idx)
+                    if t1_is_fragment:
+                        rows_to_remove_t1.append(t1_idx)
                 elif t2_idx >= 2 and ratio >= 0.5:
                     rows_to_remove_t2.append(t2_idx)
                 else:
-                    rows_to_remove_t1.append(t1_idx)
+                    if t1_is_fragment:
+                        rows_to_remove_t1.append(t1_idx)
 
         # 应用删除（从后往前删，避免索引偏移）
         overlap_records_t1 = []
         if rows_to_remove_t1:
             rows_to_remove_t1.sort(reverse=True)
             for row_idx in rows_to_remove_t1:
+                row_data = t1_data[row_idx]
                 overlap_records_t1.append({
                     "index": row_idx,
-                    "cells": [str(c).strip() for c in t1_data[row_idx][:6]],
-                    "numeric_ratio": round(_row_numeric_ratio(t1_data[row_idx]), 2),
+                    "data": row_data,  # 保留完整行数据
+                    "cells": [str(c).strip() for c in row_data[:6]],
+                    "numeric_ratio": round(_row_numeric_ratio(row_data), 2),
                     "reason": "header_of_table_below",
                 })
                 del t1_data[row_idx]
@@ -3318,10 +3357,12 @@ def deduplicate_adjacent_tables(
         if rows_to_remove_t2:
             rows_to_remove_t2.sort(reverse=True)
             for row_idx in rows_to_remove_t2:
+                row_data = t2_data[row_idx]
                 overlap_records_t2.append({
                     "index": row_idx,
-                    "cells": [str(c).strip() for c in t2_data[row_idx][:6]],
-                    "numeric_ratio": round(_row_numeric_ratio(t2_data[row_idx]), 2),
+                    "data": row_data,  # 保留完整行数据
+                    "cells": [str(c).strip() for c in row_data[:6]],
+                    "numeric_ratio": round(_row_numeric_ratio(row_data), 2),
                     "reason": "data_of_table_above",
                 })
                 del t2_data[row_idx]
