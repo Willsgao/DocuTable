@@ -50,6 +50,8 @@ from codes.table_validator.liteparse_table_segmenter import (
 from codes.table_validator.header_boundary import (
     is_date_only_header_block,
     is_date_only_header_row_items,
+    is_stage_column_header_block,
+    is_period_year_only_block,
     strip_tail_annotation_rows_from_data,
     compact_table_spacer_rows_and_columns,
     _ensure_y_mid,
@@ -58,11 +60,200 @@ from codes.table_validator.header_boundary import (
     assign_footnote_bundle,
     clear_footnote_bundle,
     footnote_text_key,
+    region_has_header_band,
+    table_data_has_header_band,
+    is_numeric_data_cell,
+    is_year_cell,
 )
 from codes.table_validator.table_content_splitter import (
     normalize_table_header_columns,
     split_mixed_table_entries,
 )
+
+
+# ================================================================
+# 阅读顺序（分割后条目不得乱序）
+# ================================================================
+
+
+def entry_reading_order_key(entry: dict) -> tuple:
+    """PDF 自上而下阅读顺序：页码 → y0 → 结构分裂 A 在 B 前 → y1 → 段内序号。"""
+    page = int(entry.get("page", 0) or 0)
+    y0 = float(entry.get("y0") or entry.get("_y0_before_split") or 0)
+    suffix = str(entry.get("_split_suffix", ""))
+    sub = 1 if suffix == "B" else 0
+    y1 = float(entry.get("y1") or y0)
+    seg = int(entry.get("_segment_seq", entry.get("table_id", 0)) or 0)
+    return (page, y0, sub, y1, seg)
+
+
+def sort_entries_reading_order(entries: List[dict]) -> List[dict]:
+    """按 PDF 阅读顺序排序；各阶段拆分/合并后均应调用，保证输出不乱序。"""
+    entries.sort(key=entry_reading_order_key)
+    return entries
+
+
+def _relocate_trailing_period_year_headers(tables: List[dict]) -> int:
+    """表尾单独「2023年」等报告期年份行 → 移至紧邻下一张同页表的表头首行。"""
+    from codes.table_validator.header_boundary import _pad_row_to_width
+
+    by_page: Dict[int, List[dict]] = {}
+    for t in tables:
+        if t.get("type") == "text" or not t.get("data"):
+            continue
+        by_page.setdefault(int(t.get("page", 0) or 0), []).append(t)
+
+    moved = 0
+    for page_tables in by_page.values():
+        page_tables.sort(key=lambda x: float(x.get("y0", 0) or 0))
+        for i in range(len(page_tables) - 1):
+            cur = page_tables[i]
+            nxt = page_tables[i + 1]
+            data = cur.get("data", [])
+            if len(data) < 2:
+                continue
+            width = max(len(r) for r in data)
+            last = _pad_row_to_width(data[-1], width)
+            non_empty = [
+                (j, str(c).strip()) for j, c in enumerate(last) if str(c).strip()
+            ]
+            if len(non_empty) != 1 or not is_year_cell(non_empty[0][1]):
+                continue
+            year_text = non_empty[0][1]
+            year_col = non_empty[0][0]
+            cur["data"] = data[:-1]
+            cur["rows"] = len(cur["data"])
+            ndata = nxt.get("data", [])
+            nwidth = max(
+                max((len(r) for r in ndata), default=0),
+                width,
+                year_col + 1,
+            )
+            period_row = [""] * nwidth
+            period_row[min(year_col, nwidth - 1)] = year_text
+            nxt["data"] = [period_row] + list(ndata)
+            nxt["rows"] = len(nxt["data"])
+            moved += 1
+    return moved
+
+
+def _liteparse_page_full_text(lp_page: dict) -> str:
+    """从 liteparse 页数据取整页文本（优先 full_text，否则由 text_items 按行拼接）。"""
+    full = str(lp_page.get("full_text", "")).strip()
+    if full:
+        return full
+    items = lp_page.get("text_items") or []
+    if not items:
+        return ""
+    rows = _cluster_items_by_y(items, use_dynamic_threshold=True)
+    lines = []
+    for row in rows:
+        line = " ".join(
+            str(it.get("text", "")).strip()
+            for it in sorted(row.get("items", []), key=lambda it: it.get("x0", 0))
+            if str(it.get("text", "")).strip()
+        )
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _page_has_table_regions(lp_page: dict, threshold: float = 0.3) -> bool:
+    regions = lp_page.get("table_regions") or []
+    return any(float(r.get("confidence", 0) or 0) >= threshold for r in regions)
+
+
+def _compute_pure_text_pages(
+    liteparse_data: dict,
+    docx_tables: List[dict],
+) -> set:
+    """判定纯文本页：pdf2docx 主通道未提取到表格的页。
+
+    此类页不再做 liteparse 表/文拆分，整页输出为一条 paragraph。
+    无 docx 参考时，回退为 liteparse 无 table_regions 的页。
+    """
+    docx_table_pages: set = set()
+    for dt in docx_tables:
+        pn = int(dt.get("page", 0) or 0)
+        data = dt.get("data")
+        if pn <= 0 or not data:
+            continue
+        if isinstance(data, list) and len(data) >= 2:
+            docx_table_pages.add(pn)
+
+    if not docx_table_pages:
+        return {
+            int(p.get("page_number", 0) or 0)
+            for p in liteparse_data.get("pages", [])
+            if int(p.get("page_number", 0) or 0) > 0
+            and not p.get("is_table_page")
+            and not _page_has_table_regions(p)
+        }
+
+    lp_page_nums = {
+        int(p.get("page_number", 0) or 0)
+        for p in liteparse_data.get("pages", [])
+        if int(p.get("page_number", 0) or 0) > 0
+    }
+    return lp_page_nums - docx_table_pages
+
+
+def _build_pure_text_page_entries(
+    liteparse_data: dict,
+    pure_text_pages: set,
+) -> List[dict]:
+    """纯文本页 → 整页一条 paragraph，不做表/文拆分。"""
+    if not pure_text_pages:
+        return []
+
+    entries: List[dict] = []
+    for lp_page in liteparse_data.get("pages", []):
+        pn = int(lp_page.get("page_number", 0) or 0)
+        if pn not in pure_text_pages:
+            continue
+
+        full_text = _liteparse_page_full_text(lp_page)
+        if len(full_text) < 10:
+            continue
+
+        items = lp_page.get("text_items") or []
+        if items:
+            y0 = min(float(it.get("y0", 0) or 0) for it in items)
+            y1 = max(float(it.get("y1", 0) or 0) for it in items)
+            x0 = min(float(it.get("x0", 0) or 0) for it in items)
+            x1 = max(float(it.get("x1", 0) or 0) for it in items)
+        else:
+            y0, y1, x0, x1 = 0.0, 0.0, 0.0, float(lp_page.get("page_width", 0) or 0)
+
+        entries.append({
+            "type": "paragraph",
+            "page": pn,
+            "data": full_text,
+            "text": full_text,
+            "context_text": full_text[:120],
+            "title": full_text[:80],
+            "y0": y0,
+            "y1": y1,
+            "x0": x0,
+            "x1": x1,
+            "bbox": [round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)],
+            "extractor": "hybrid_pure_text_page",
+            "segment_source": "pure_text_page",
+            "_is_pure_text_page": True,
+            "confidence": 0.85,
+            "rows": 1,
+            "cols": 1,
+            "parse_status": "success",
+            "parse_message": "纯文本页整页输出",
+            "is_real_table": False,
+            "is_complete": False,
+            "table_category": "文本段落",
+            "has_header": False,
+            "has_numeric_data": False,
+            "quality_decision": "accepted",
+        })
+
+    return entries
 
 
 # ================================================================
@@ -195,14 +386,19 @@ def _merge_regions_by_proximity(
             groups.append([curr])
             continue
 
-        if _has_paragraph_between(all_page_items, prev["y1"], curr["y0"]):
+        # ── 优先：下 region 无表头带 → 续表，与上 region 合并 ──
+        if (
+            not region_has_header_band(curr, all_page_items)
+            and _regions_compatible_for_merge(prev, curr)
+        ):
+            groups[-1].append(curr)
+            continue
+
+        if _gap_is_standalone_prose(all_page_items, prev["y1"], curr["y0"]):
             groups.append([curr])
             continue
 
-        # ── 表头缺失拦截 ─────────────────────────────────────────────
-        # 非首个 region 缺失独立表头 → liteparse 拆分错误，应合并回上一组。
-        # 核心原则：同一页上相邻的两个 region，中间没有文本，且后面的 region
-        # 没有独立表头 → 就应该合并到前面，不做额外的 Jaccard 检查。
+        # ── 表头缺失（旧逻辑兜底）────────────────────────────────────
         if not _region_has_own_header(curr, all_page_items):
             groups[-1].append(curr)
             continue
@@ -259,6 +455,50 @@ def _merge_regions_by_proximity(
         })
 
     return result
+
+
+def _regions_compatible_for_merge(prev: dict, curr: dict) -> bool:
+    """相邻 region 是否共享横向表格范围（列网格大致一致）。"""
+    px0, px1 = prev.get("x0", 0), prev.get("x1", 0)
+    cx0, cx1 = curr.get("x0", 0), curr.get("x1", 0)
+    pw, cw = px1 - px0, cx1 - cx0
+    if pw <= 0 or cw <= 0:
+        return False
+    overlap = min(px1, cx1) - max(px0, cx0)
+    return overlap / min(pw, cw) >= 0.45
+
+
+def _gap_is_standalone_prose(items, y_above, y_below) -> bool:
+    """间隙是否为独立说明段落（而非表内折行/小节）。"""
+    gap_items = [
+        it for it in items
+        if it.get("y0", 0) >= y_above and it.get("y1", 0) <= y_below
+    ]
+    if not gap_items:
+        return False
+
+    all_text = "".join(it.get("text", "") for it in gap_items)
+    if not all_text.strip():
+        return False
+
+    # 间隙内已有表格级数值 → 续表，不是独立段落
+    num_cells = sum(
+        1 for it in gap_items
+        if is_numeric_data_cell(it.get("text", ""))
+    )
+    if num_cells >= 2:
+        return False
+
+    # 完整说明句 → 独立段落
+    if re.search(r"[。；！？]", all_text):
+        return True
+
+    cn = len(re.findall(r"[\u4e00-\u9fff]", all_text))
+    if cn >= 40:
+        return True
+
+    # 短间隙（小节标题、折行标签）→ 表内续接
+    return False
 
 
 def _has_paragraph_between(items, y_above, y_below):
@@ -680,6 +920,181 @@ def _is_potential_missed_table(block: dict) -> bool:
     return False
 
 
+def _make_gap_block_from_items(block_items: List[dict]) -> Optional[dict]:
+    """由 text_items 列表构建单个间隙文本块元数据。"""
+    if not block_items:
+        return None
+    y0 = min(it.get("y0", 0) for it in block_items)
+    y1 = max(it.get("y1", 0) for it in block_items)
+    rows_by_y = _cluster_items_by_y(block_items)
+    lines = []
+    for row in rows_by_y:
+        line = " ".join(
+            it.get("text", "").strip()
+            for it in sorted(row.get("items", []), key=lambda it: it.get("x0", 0))
+        )
+        if line.strip():
+            lines.append(line.strip())
+    full_text = "\n".join(lines)
+    all_text = "".join(it.get("text", "") for it in block_items)
+    num_chars = len(re.findall(r"[\d.,%‰（）()\-]", all_text))
+    total_chars = len(all_text.strip())
+    num_ratio = num_chars / total_chars if total_chars > 0 else 0
+    cn_char_count = len(re.findall(r"[\u4e00-\u9fff]", all_text))
+    x_centers = sorted(
+        {round((it.get("x0", 0) + it.get("x1", 0)) / 2, 1) for it in block_items}
+    )
+    col_count = 1
+    if len(x_centers) >= 2:
+        gaps = [x_centers[i + 1] - x_centers[i] for i in range(len(x_centers) - 1)]
+        if gaps:
+            med_gap = sorted(gaps)[len(gaps) // 2]
+            if med_gap > 0:
+                col_count = sum(1 for g in gaps if g > med_gap * 0.5) + 1
+    return {
+        "y0": y0,
+        "y1": y1,
+        "text_items": block_items,
+        "full_text": full_text,
+        "num_ratio": num_ratio,
+        "col_count": col_count,
+        "cn_char_count": cn_char_count,
+    }
+
+
+def _row_items_are_period_year_header(row_items: List[dict]) -> bool:
+    texts = [
+        str(it.get("text", "")).strip()
+        for it in row_items
+        if str(it.get("text", "")).strip()
+    ]
+    if not texts:
+        return False
+    return all(is_year_cell(t) for t in texts)
+
+
+def _row_items_to_cell_row(row_items: List[dict]) -> List[str]:
+    """Y 聚类行内 text_items → 按 x 排序的单元格文本。"""
+    return [
+        str(it.get("text", "")).strip()
+        for it in sorted(row_items, key=lambda it: it.get("x0", 0))
+        if str(it.get("text", "")).strip()
+    ]
+
+
+def _row_items_are_pillar_grid_header_band(row_items: List[dict]) -> bool:
+    """间隙块底部是否为披露表表头带（a/b、单位行、报告期），不含小节标题/表题。"""
+    from codes.table_validator.table_content_splitter import (
+        _has_letter_column_header_row,
+        _is_rmb_unit_lead_row,
+        _row_has_pillar_table_caption,
+        _row_has_reporting_date,
+        is_date_only_header_row_cells,
+        is_short_table_section_label_row,
+        is_table_header_band_row,
+    )
+
+    cells = _row_items_to_cell_row(row_items)
+    if not cells:
+        return False
+    row = [c for c in cells]
+    if _row_has_pillar_table_caption(row):
+        return False
+    if is_short_table_section_label_row(row):
+        return False
+    if _has_letter_column_header_row(row):
+        return True
+    if _is_rmb_unit_lead_row(row):
+        return True
+    if is_date_only_header_row_cells(row):
+        return True
+    if _row_has_reporting_date(row):
+        return True
+    if _row_items_are_period_year_header(row_items):
+        return True
+    if is_table_header_band_row(row):
+        return True
+    if len(cells) == 1 and cells[0] in ("数额", "代码", "占比", "期数", "金额"):
+        return True
+    return False
+
+
+def _peel_pillar_grid_header_items_from_block(
+    block: dict,
+) -> Tuple[Optional[dict], List[dict]]:
+    """混合间隙块底部剥离 a/b、单位行、报告期 → 挂下表 _pre_header，避免落入 description_text。
+
+    底部小节标题（如「核心一级资本」）跳过并移出块，继续向上剥表头带。
+    """
+    from codes.table_validator.table_content_splitter import (
+        is_short_table_section_label_row,
+    )
+
+    items = list(block.get("text_items", []) or [])
+    if not items:
+        return block, []
+
+    rows = _cluster_items_by_y(items, use_dynamic_threshold=True)
+    peeled: List[dict] = []
+    while rows:
+        row_items = rows[-1].get("items", [])
+        cells = _row_items_to_cell_row(row_items)
+        if _row_items_are_pillar_grid_header_band(row_items):
+            peeled = row_items + peeled
+            peel_ids = {id(it) for it in row_items}
+            items = [it for it in items if id(it) not in peel_ids]
+            rows.pop()
+            continue
+        if cells and is_short_table_section_label_row(cells):
+            peel_ids = {id(it) for it in row_items}
+            items = [it for it in items if id(it) not in peel_ids]
+            rows.pop()
+            continue
+        break
+
+    if not peeled:
+        return block, []
+    return _make_gap_block_from_items(items), peeled
+
+
+def _peel_period_year_header_items_from_block(
+    block: dict,
+) -> Tuple[Optional[dict], List[dict]]:
+    """混合间隙块底部若含「2024年」等报告期年份行，剥离后挂下表表头，避免落入 description_text。"""
+    items = list(block.get("text_items", []) or [])
+    if not items:
+        return block, []
+
+    rows = _cluster_items_by_y(items, use_dynamic_threshold=True)
+    peeled: List[dict] = []
+    while rows:
+        row_items = rows[-1].get("items", [])
+        if not _row_items_are_period_year_header(row_items):
+            break
+        peeled = row_items + peeled
+        peel_ids = {id(it) for it in row_items}
+        items = [it for it in items if id(it) not in peel_ids]
+        rows.pop()
+
+    if not peeled:
+        return block, []
+    return _make_gap_block_from_items(items), peeled
+
+
+def _append_pre_header_to_boundary(
+    enriched_boundaries: List[dict],
+    next_idx: int,
+    header_items: List[dict],
+    header_y0: float,
+) -> None:
+    pre = enriched_boundaries[next_idx].get("_pre_header_items", [])
+    pre.extend(header_items)
+    enriched_boundaries[next_idx]["_pre_header_items"] = pre
+    old_y0 = enriched_boundaries[next_idx].get("y0", 0)
+    if header_y0 > 0 and (old_y0 <= 0 or header_y0 < old_y0):
+        enriched_boundaries[next_idx]["y0"] = header_y0
+
+
 def _classify_gap_text(
     block: dict,
     prev_boundary: Optional[dict],
@@ -707,9 +1122,19 @@ def _classify_gap_text(
         if re.search(pat, full_text):
             return ("next", "description_text")
 
-    # "注" / "注释" / "*" / "来源" → 前一张表的 notes
+    # ── 表头块优先于脚注规则（避免「注释」列名触发 ^注释 误判）──
+    if is_period_year_only_block(block) and next_boundary is not None:
+        return ("next", "_pre_header")
+
+    if is_stage_column_header_block(block) and next_boundary is not None:
+        return ("next", "_pre_header")
+
+    if is_date_only_header_block(block) and next_boundary is not None:
+        return ("next", "_pre_header")
+
+    # "注" / "*" / "来源" → 前一张表的 notes（勿用 ^注释，会误伤表头列名）
     footnote_patterns = [
-        r'^注[：:\s]', r'^注释', r'^\*[^*]', r'^来源[：:]', r'^数据来源',
+        r'^注[：:\s]', r'^注释[：:\s]', r'^\*[^*]', r'^来源[：:]', r'^数据来源',
         r'^\d+[\.\、]\s*注', r'^附注', r'^说明[：:]', r'^资料[来源]',
         r'^\*注', r'^[*＊]注',
     ]
@@ -724,10 +1149,6 @@ def _classify_gap_text(
     for pat in trailing_patterns:
         if re.search(pat, full_text):
             return ("prev", "description_text")
-
-    # ── Signal 1.5: 日期类多级表头 → 挂到下方主表（不按列数拆表） ──
-    if is_date_only_header_block(block) and next_boundary is not None:
-        return ("next", "_pre_header")
 
     # ── Signal 2: 疑似遗漏表格 ──
     if _is_potential_missed_table(block):
@@ -947,11 +1368,11 @@ def _capture_gap_text_items(
             if gap_y1 - gap_y0 < 2:
                 continue
 
-            # 收集间隙内的 text_items（中心点判断）
+            # 收集间隙内的 text_items（中心点判断；上界不含下一张表首行）
             gap_items = []
             for it in page_items:
                 cy = it.get("y_mid", (it.get("y0", 0) + it.get("y1", 0)) / 2)
-                if gap_y0 - 2 <= cy <= gap_y1 + 2:
+                if gap_y0 - 2 <= cy < gap_y1:
                     gap_items.append(it)
 
             if not gap_items:
@@ -961,14 +1382,6 @@ def _capture_gap_text_items(
             blocks = _cluster_text_items_into_blocks(gap_items)
 
             for block in blocks:
-                target, field = _classify_gap_text(
-                    block, prev_b, next_b, median_row_h
-                )
-
-                block_text = block.get("full_text", "")
-                if not block_text:
-                    continue
-
                 # ── 找到对应的 boundary 索引 ──
                 prev_idx = None
                 next_idx = None
@@ -977,6 +1390,40 @@ def _capture_gap_text_items(
                         prev_idx = idx
                     if next_b is not None and b is next_b:
                         next_idx = idx
+
+                if next_idx is not None and block:
+                    block, peeled_grid = _peel_pillar_grid_header_items_from_block(
+                        block,
+                    )
+                    if peeled_grid:
+                        _append_pre_header_to_boundary(
+                            enriched_boundaries,
+                            next_idx,
+                            peeled_grid,
+                            min(it.get("y0", 0) for it in peeled_grid),
+                        )
+                    if block:
+                        block, peeled_years = _peel_period_year_header_items_from_block(
+                            block,
+                        )
+                        if peeled_years:
+                            _append_pre_header_to_boundary(
+                                enriched_boundaries,
+                                next_idx,
+                                peeled_years,
+                                min(it.get("y0", 0) for it in peeled_years),
+                            )
+
+                if not block or not block.get("full_text", "").strip():
+                    continue
+
+                target, field = _classify_gap_text(
+                    block, prev_b, next_b, median_row_h
+                )
+
+                block_text = block.get("full_text", "")
+                if not block_text:
+                    continue
 
                 if target == "prev" and prev_idx is not None:
                     if field == "description_text":
@@ -1001,15 +1448,12 @@ def _capture_gap_text_items(
                             cur + "\n" + block_text if cur else block_text
                         )
                     elif field == "_pre_header":
-                        pre = enriched_boundaries[next_idx].get(
-                            "_pre_header_items", []
+                        _append_pre_header_to_boundary(
+                            enriched_boundaries,
+                            next_idx,
+                            block.get("text_items", []),
+                            block.get("y0", 0),
                         )
-                        pre.extend(block.get("text_items", []))
-                        enriched_boundaries[next_idx]["_pre_header_items"] = pre
-                        new_y0 = block.get("y0", 0)
-                        old_y0 = enriched_boundaries[next_idx].get("y0", 0)
-                        if new_y0 > 0 and (old_y0 <= 0 or new_y0 < old_y0):
-                            enriched_boundaries[next_idx]["y0"] = new_y0
 
                 elif target == "new_table":
                     recovered = _build_table_from_gap_block(
@@ -1497,6 +1941,11 @@ def _build_table_from_liteparse_fallback(
     if len(rows) < 2:
         return None
 
+    from codes.table_validator.table_content_splitter import (
+        split_clustered_date_code_header_rows,
+    )
+    rows = split_clustered_date_code_header_rows(rows)
+
     rows = _normalize_rows_to_columns(rows)
     if len(rows) < 2:
         return None
@@ -1667,6 +2116,102 @@ _YEAR_PATTERN = re.compile(
 )
 
 
+def _column_header_fingerprint(row: List[str]) -> Optional[frozenset]:
+    """多列表头行的列标签指纹（如 阶段一/阶段二/合计）。"""
+    from codes.table_validator.table_content_splitter import is_table_header_band_row
+
+    cells = [str(c).strip() for c in row if str(c).strip()]
+    if not cells or not is_table_header_band_row(row):
+        return None
+    tokens = {
+        c for c in cells
+        if len(c) <= 16 and not is_numeric_data_cell(c)
+    }
+    return frozenset(tokens) if len(tokens) >= 2 else None
+
+
+def _header_fingerprints_match(a: frozenset, b: frozenset) -> bool:
+    if not a or not b:
+        return False
+    overlap = len(a & b)
+    return overlap >= 2 and overlap >= min(len(a), len(b)) * 0.5
+
+
+def _is_reporting_period_date_row(row: list) -> bool:
+    """报告期日期行（可仅 1 格，如 2023年12月31日）。"""
+    from codes.table_validator.header_boundary import (
+        is_year_cell,
+        is_month_day_cell,
+        _MONTH_DAY_IN_TEXT_RE,
+        _YEAR_IN_TEXT_RE,
+    )
+
+    cells = [str(c).strip() for c in row if str(c).strip()]
+    if not cells or len(cells) > 3:
+        return False
+    joined = "".join(cells)
+    if is_year_cell(cells[0]) or is_month_day_cell(cells[0]):
+        return True
+    if _MONTH_DAY_IN_TEXT_RE.search(joined) and len(cells) <= 2:
+        return True
+    if (
+        len(cells) == 1
+        and _YEAR_IN_TEXT_RE.search(joined)
+        and len(re.findall(r"[\u4e00-\u9fff]", joined)) <= 10
+    ):
+        return True
+    return False
+
+
+def _find_mid_table_period_break(data: List[list]) -> int:
+    """检测表中间的重复表头带（两段相同列名 + 中间夹报告期日期）。
+
+    典型：2024块 … 数据 … → 2023年12月31日 → 阶段一/二/三/合计 → 2023数据
+    """
+    from codes.table_validator.table_content_splitter import is_main_table_data_row
+
+    if len(data) < 8:
+        return -1
+
+    first_fp: Optional[frozenset] = None
+    body_rows = 0
+    min_body = 3
+
+    for i, row in enumerate(data):
+        cells = [str(c).strip() for c in row]
+        fp = _column_header_fingerprint(cells)
+
+        if first_fp is None:
+            if fp:
+                first_fp = fp
+            continue
+
+        if is_main_table_data_row(row) or sum(
+            1 for c in cells if c and _is_numeric_cell(c)
+        ) >= 2:
+            body_rows += 1
+            continue
+
+        if body_rows < min_body:
+            continue
+
+        if _is_reporting_period_date_row(row):
+            if i + 1 < len(data):
+                fp_next = _column_header_fingerprint(
+                    [str(c).strip() for c in data[i + 1]]
+                )
+                if fp_next and _header_fingerprints_match(first_fp, fp_next):
+                    return i
+            continue
+
+        if fp and _header_fingerprints_match(first_fp, fp):
+            if i > 0 and _is_reporting_period_date_row(data[i - 1]):
+                return i - 1
+            return i
+
+    return -1
+
+
 def _find_structure_break_in_data(
     data: List[list],
     caption: str = "",
@@ -1691,9 +2236,29 @@ def _find_structure_break_in_data(
     if len(data) < 8:
         return -1
 
+    from codes.table_validator.table_content_splitter import (
+        is_pillar_disclosure_table_body,
+        is_table_header_band_row,
+        is_unit_column_header_row,
+    )
+    if is_pillar_disclosure_table_body(data):
+        return -1
+
+    mid_break = _find_mid_table_period_break(data)
+    if mid_break >= 0:
+        return mid_break
+
     NEW_UNIT_KW = {"百分比", "占比", "比例"}
     NEW_HEADER_KW = {"金额", "占比", "比例", "数量", "比重", "利率"}
     FOOTNOTE_KW = {"注：", "附注", "注释", "说明：", "资料"}
+
+    def _still_in_header_band(idx: int) -> bool:
+        """前 idx 行是否尚无主体数据（仍在表头带内）。"""
+        from codes.table_validator.table_content_splitter import is_main_table_data_row
+        for j in range(idx):
+            if is_main_table_data_row(data[j]):
+                return False
+        return True
 
     # Scan from row 3 to len-2 (need at least 2 rows after split point)
     for i in range(3, len(data) - 2):
@@ -1702,6 +2267,15 @@ def _find_structure_break_in_data(
         non_empty = [c for c in row if c]
 
         if len(non_empty) < 2:
+            # 单格报告期日期 + 下行重复列名（中间夹带的表头）
+            if _is_reporting_period_date_row(row) and i + 1 < len(data):
+                nxt = [str(c).strip() for c in data[i + 1]]
+                if _column_header_fingerprint(nxt) and i >= 3:
+                    from codes.table_validator.table_content_splitter import (
+                        is_main_table_data_row,
+                    )
+                    if any(is_main_table_data_row(data[j]) for j in range(i)):
+                        return i
             continue
 
         num_count = sum(1 for c in non_empty if _is_numeric_cell(c))
@@ -1722,6 +2296,10 @@ def _find_structure_break_in_data(
         cap_has_unit = any(kw in caption for kw in NEW_UNIT_KW)
 
         if has_new_unit and not cap_has_unit and num_count == 0:
+            if is_unit_column_header_row(row) or is_table_header_band_row(row):
+                continue
+            if _still_in_header_band(i):
+                continue
             return i
 
         # Signal 2: new column header keywords + data follows
@@ -1738,6 +2316,8 @@ def _find_structure_break_in_data(
         # Signal 3: year / date pattern in a non-numeric row
         #            (after substantial prior data → new table header section)
         if num_count == 0 and _YEAR_PATTERN.search(row_text):
+            if _still_in_header_band(i):
+                continue
             # Skip if the row looks like a footnote/annotation with a year reference
             if any(kw in row_text for kw in FOOTNOTE_KW):
                 continue
@@ -1771,6 +2351,57 @@ def _find_structure_break_in_data(
                             break
 
     return -1
+
+
+def _adjust_split_row_for_header_band(data: List[list], split_row: int) -> int:
+    """分裂点落在表头带与数据区之间时，将表头带划入下表（避免表头 orphaned）。"""
+    from codes.table_validator.table_content_splitter import (
+        is_table_header_band_row,
+        is_embedded_paragraph_row,
+        is_unit_column_header_row,
+        is_main_table_data_row,
+    )
+
+    if split_row <= 0 or split_row >= len(data):
+        return split_row
+
+    first = data[split_row]
+    starts_data_table = is_unit_column_header_row(first) or is_main_table_data_row(first)
+    if not starts_data_table and is_table_header_band_row(first):
+        nxt = data[split_row + 1] if split_row + 1 < len(data) else None
+        starts_data_table = bool(nxt and is_main_table_data_row(nxt))
+    if not starts_data_table:
+        return split_row
+
+    i = split_row - 1
+    header_top = split_row
+    while i >= 0:
+        row = data[i]
+        if is_table_header_band_row(row):
+            header_top = i
+            i -= 1
+            continue
+        if is_embedded_paragraph_row(row):
+            # 新表前的连续嵌套段落（如「股东权益」+说明）应划入下一段，
+            # 由表文拆分抽出为 text，且物理 y 位于下表表头之上。
+            peel = i
+            while peel > 0 and is_embedded_paragraph_row(data[peel - 1]):
+                peel -= 1
+            return peel
+        break
+    return header_top if header_top < split_row else split_row
+
+
+def _peel_embedded_paragraphs_before_split(data: List[list], split_row: int) -> int:
+    """结构分裂点前若有连续嵌套段落（章节标题+说明），改在段落块起始处切开。"""
+    from codes.table_validator.table_content_splitter import is_embedded_paragraph_row
+
+    if split_row <= 0 or split_row >= len(data):
+        return split_row
+    peel = split_row
+    while peel > 0 and is_embedded_paragraph_row(data[peel - 1]):
+        peel -= 1
+    return peel
 
 
 def _re_estimate_subtable_y(
@@ -1911,15 +2542,31 @@ def _split_fused_table_by_structure(
     import copy
     result = []
     split_count = 0
+    queue = list(tables)
 
-    for table in tables:
+    while queue:
+        table = queue.pop(0)
         data = table.get("data", [])
         if len(data) < 8:
             result.append(table)
             continue
 
+        from codes.table_validator.table_content_splitter import (
+            is_pillar_disclosure_table_body,
+        )
+        if is_pillar_disclosure_table_body(data):
+            result.append(table)
+            continue
+
         caption = table.get("caption", "")
         split_row = _find_structure_break_in_data(data, caption)
+
+        if split_row < 0:
+            result.append(table)
+            continue
+
+        split_row = _adjust_split_row_for_header_band(data, split_row)
+        split_row = _peel_embedded_paragraphs_before_split(data, split_row)
 
         if split_row < 0:
             result.append(table)
@@ -1969,7 +2616,7 @@ def _split_fused_table_by_structure(
             _re_estimate_subtable_y(t2, liteparse_data, y0_floor=y0_floor_for_t2)
 
         result.append(t1)
-        result.append(t2)
+        queue.insert(0, t2)
         split_count += 1
         print(f"  [结构分裂] P{table.get('page', '?')}: "
               f"行 {split_row} 处检测到新表格结构, "
@@ -1979,21 +2626,234 @@ def _split_fused_table_by_structure(
     if split_count > 0:
         print(f"  [结构分裂] 共从 {split_count} 个融合表中分离出内部不同表格")
 
-    # Sort by page + document order (split sub-table A always before B)
-    def _physical_table_sort_key(t: dict):
-        page = t.get("page", 0)
-        base_y = float(t.get("_y0_before_split", t.get("y0", 0)) or 0)
-        suffix = t.get("_split_suffix", "")
-        sub = 1 if suffix == "B" else 0
-        return (page, base_y, sub, float(t.get("y0", 0) or 0))
-
-    result.sort(key=_physical_table_sort_key)
+    sort_entries_reading_order(result)
 
     # Renumber
     for i, t in enumerate(result):
         t["table_id"] = i
 
     return result
+
+
+# ================================================================
+# Phase 2.55: 表头带向上回补
+# ================================================================
+
+_MAX_HEADER_UPWARD_PT = 100.0
+_MAX_HEADER_ROW_GAP_PT = 45.0
+
+
+def _liteparse_page_items(liteparse_data: dict, page: int) -> List[dict]:
+    for lp_page in liteparse_data.get("pages", []):
+        if lp_page.get("page_number") == page:
+            raw = lp_page.get("text_items", [])
+            if raw:
+                return _build_items(raw, page)
+    return []
+
+
+def _refine_text_segment_y_coords(
+    entries: List[dict], liteparse_data: dict | None,
+) -> int:
+    """用 liteparse 实测 y 修正表文拆分文本段坐标（行号比例估算常偏大）。"""
+    if not liteparse_data:
+        return 0
+    from codes.table_validator.cell_differ import _normalize_for_search
+
+    refined = 0
+    for entry in entries:
+        if entry.get("type") != "text":
+            continue
+        if entry.get("segment_source") != "table_content_split":
+            continue
+        ctx = str(entry.get("context_text") or entry.get("data") or "").strip()
+        if not ctx:
+            continue
+        page_items = _liteparse_page_items(
+            liteparse_data, int(entry.get("page", 0) or 0),
+        )
+        if not page_items:
+            continue
+
+        def _match_y(needle: str) -> tuple[float, float] | None:
+            tn = _normalize_for_search(needle)
+            if len(tn) < 2:
+                return None
+            best: tuple[float, float] | None = None
+            for it in page_items:
+                itn = _normalize_for_search(it.get("text", ""))
+                if len(itn) < 2:
+                    continue
+                if tn == itn or tn in itn or itn in tn:
+                    iy0 = float(it.get("y0", 0) or 0)
+                    iy1 = float(it.get("y1", iy0) or iy0)
+                    if best is None or iy0 < best[0]:
+                        best = (iy0, iy1)
+            return best
+
+        lines = [ln.strip() for ln in ctx.split("\n") if ln.strip()]
+        top = _match_y(lines[0])
+        if not top:
+            continue
+        y0, y1 = top
+        if len(lines) > 1:
+            bottom = _match_y(lines[-1])
+            if bottom:
+                y1 = max(y1, bottom[1])
+        entry["y0"] = y0
+        entry["y1"] = y1
+        refined += 1
+    return refined
+
+
+def _row_dict_to_cells(row: dict) -> List[str]:
+    texts = row.get("texts")
+    if texts:
+        return [str(t).strip() for t in texts]
+    cols = row.get("columns", [])
+    if cols:
+        return [str(c.get("text", "")).strip() for c in cols]
+    return []
+
+
+def _items_clustered_to_row_infos(items: List[dict]) -> List[Tuple[float, float, List[str]]]:
+    """Y 聚类 + 列归一化，返回 [(y0, y1, cells), ...] 自上而下。"""
+    if not items:
+        return []
+    rows = _cluster_items_by_y(_ensure_y_mid(items), use_dynamic_threshold=True)
+    if not rows:
+        return []
+    rows = _normalize_rows_to_columns(rows)
+    out: List[Tuple[float, float, List[str]]] = []
+    for row in rows:
+        cells = [c for c in _row_dict_to_cells(row) if c]
+        if not cells:
+            continue
+        row_items = row.get("items", [])
+        if row_items:
+            y0 = min(float(it.get("y0", 0)) for it in row_items)
+            y1 = max(float(it.get("y1", 0)) for it in row_items)
+        else:
+            y0 = y1 = 0.0
+        out.append((y0, y1, _row_dict_to_cells(row)))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _collect_header_rows_above_table(
+    table: dict,
+    page_items: List[dict],
+    *,
+    max_upward_pt: float = _MAX_HEADER_UPWARD_PT,
+    max_header_rows: int = 6,
+) -> Tuple[List[list], float]:
+    """从表顶 y0 向上扫描，收集紧邻的表头带行。
+
+    Returns:
+        (header_rows, new_y0) — new_y0 为回补后表顶估计值
+    """
+    from codes.table_validator.table_content_splitter import (
+        is_table_header_band_row,
+        is_embedded_paragraph_row,
+    )
+
+    ty0 = float(table.get("y0", 0) or 0)
+    bx0 = float(table.get("x0", 0) or 0) - 15
+    bx1 = float(table.get("x1", 0) or 9999) + 15
+
+    band = []
+    for it in page_items:
+        cx = (it.get("x0", 0) + it.get("x1", 0)) / 2
+        ym = it.get("y_mid", (it.get("y0", 0) + it.get("y1", 0)) / 2)
+        if ty0 - max_upward_pt <= ym < ty0 - 1 and bx0 <= cx <= bx1:
+            band.append(it)
+
+    if not band:
+        return [], ty0
+
+    row_infos = _items_clustered_to_row_infos(band)
+    if not row_infos:
+        return [], ty0
+
+    header_rows: List[list] = []
+    new_y0 = ty0
+    prev_upper = ty0
+
+    for y0, y1, cells in reversed(row_infos):
+        gap = prev_upper - y1
+        if gap > _MAX_HEADER_ROW_GAP_PT and header_rows:
+            break
+        if gap > _MAX_HEADER_ROW_GAP_PT + 15:
+            break
+
+        if is_table_header_band_row(cells):
+            header_rows.insert(0, cells)
+            new_y0 = min(new_y0, y0)
+            prev_upper = y0
+            if len(header_rows) >= max_header_rows:
+                break
+            continue
+
+        if is_embedded_paragraph_row(cells):
+            break
+
+        if header_rows:
+            break
+        break
+
+    return header_rows, new_y0
+
+
+def ensure_table_has_header_band(table: dict, liteparse_data: dict) -> bool:
+    """若表首行已是主体数据，向上查找并并入缺失的表头带行。"""
+    from codes.table_validator.table_content_splitter import _has_pillar_grid_header
+
+    if table.get("type") == "text" or not table.get("data"):
+        return False
+
+    data = table.get("data", [])
+    if len(data) < 2:
+        return False
+    # 披露表以 a/b 或单位行判定；勿把「1|科目|数值」误判为已有表头而跳过回补
+    if _has_pillar_grid_header(data):
+        return False
+
+    page = int(table.get("page", 0) or 0)
+    page_items = _liteparse_page_items(liteparse_data, page)
+    if not page_items:
+        return False
+
+    header_rows, new_y0 = _collect_header_rows_above_table(table, page_items)
+    if not header_rows:
+        return False
+
+    merged = normalize_table_header_columns(header_rows + data)
+    table["data"] = merged
+    table["rows"] = len(merged)
+    table["cols"] = max((len(r) for r in merged), default=0)
+    table["has_header"] = True
+    table["_header_recovered_upward"] = True
+    old_y0 = float(table.get("y0", 0) or 0)
+    if new_y0 < old_y0:
+        table["y0"] = new_y0
+
+    page_n = table.get("page", "?")
+    print(
+        f"  [表头回补] P{page_n}: 向上并入 {len(header_rows)} 行表头 "
+        f"→ 共 {len(merged)} 行"
+    )
+    return True
+
+
+def _ensure_tables_header_bands(
+    tables: List[dict],
+    liteparse_data: dict,
+) -> int:
+    count = 0
+    for t in tables:
+        if ensure_table_has_header_band(t, liteparse_data):
+            count += 1
+    return count
 
 
 # ================================================================
@@ -2080,6 +2940,21 @@ def hybrid_segment_tables(
         liteparse_data, region_confidence_threshold
     )
 
+    pure_text_pages = _compute_pure_text_pages(liteparse_data, docx_tables)
+    if pure_text_pages and boundaries:
+        before = len(boundaries)
+        boundaries = [
+            b for b in boundaries
+            if int(b.get("page", 0) or 0) not in pure_text_pages
+        ]
+        skipped = before - len(boundaries)
+        if skipped:
+            print(
+                f"  [纯文本页] {len(pure_text_pages)} 页跳过表/文分割"
+                f"（移除 {skipped} 个误检边界）: "
+                f"{sorted(pure_text_pages)}"
+            )
+
     if not boundaries:
         LOG.info("[混合] 无 liteparse 边界，回退纯 docx")
         print("  [混合] 无 liteparse 边界，使用纯 pdf2docx 表格")
@@ -2098,6 +2973,15 @@ def hybrid_segment_tables(
                 tables.append(tb)
         for i, t in enumerate(tables):
             t["table_id"] = i
+        pure_entries = _build_pure_text_page_entries(
+            liteparse_data, pure_text_pages,
+        )
+        if pure_entries:
+            tables.extend(pure_entries)
+            sort_entries_reading_order(tables)
+            for i, t in enumerate(tables):
+                t["table_id"] = i
+            print(f"  [纯文本页] {len(pure_entries)} 页整页输出")
         return tables, {
             "fusion_stats": {"total_boundaries": 0, "total_docx_tables": len(docx_tables)},
             "method": "docx_only",
@@ -2127,18 +3011,31 @@ def hybrid_segment_tables(
             tables.append(t)
             liteparse_count += 1
 
-    tables.sort(key=lambda t: (t.get("page", 0), t.get("y0", 0)))
+    sort_entries_reading_order(tables)
     for i, t in enumerate(tables):
         t["table_id"] = i
 
     print(f"  [混合] {len(boundaries)} 边界 → {liteparse_count} liteparse表格 "
           f"(docx={len(docx_tables)}暂存供格式化阶段使用)")
 
+    yr_moved = _relocate_trailing_period_year_headers(tables)
+    if yr_moved:
+        print(f"  [表头迁移] {yr_moved} 个表尾报告期年份行移至下表表头")
+
     # ── Phase 2.5: 行级结构分裂 ─────────────────────────────────────
     tables = _split_fused_table_by_structure(tables, liteparse_data)
 
+    # ── Phase 2.55: 首行是数据 → 向上回补表头带 ─────────────────────
+    header_recovered = _ensure_tables_header_bands(tables, liteparse_data)
+    if header_recovered:
+        print(f"  [表头回补] 共 {header_recovered} 张表自上方找回表头带")
+
     # ── Phase 2.6: 表内段落/子表拆分 ───────────────────────────────
     tables = split_mixed_table_entries(tables)
+    y_refined = _refine_text_segment_y_coords(tables, liteparse_data)
+    if y_refined:
+        print(f"  [坐标修正] {y_refined} 个表文拆分文本段 y 已按 liteparse 校准")
+    sort_entries_reading_order(tables)
 
     # ── Phase 2.65: 全表空行/空列清理 + 互补列合并（结构分裂后再压一次）──
     for t in tables:
@@ -2212,7 +3109,14 @@ def hybrid_segment_tables(
         all_entries.extend(footnote_entries)
         print(f"  [脚注提取] {len(footnote_entries)} 个脚注行转为独立文本条目（原位置唯一）")
 
-    all_entries.sort(key=lambda t: (t.get("page", 0), t.get("y0", 0)))
+    pure_text_entries = _build_pure_text_page_entries(
+        liteparse_data, pure_text_pages,
+    )
+    if pure_text_entries:
+        all_entries.extend(pure_text_entries)
+        print(f"  [纯文本页] {len(pure_text_entries)} 页整页输出为文本")
+
+    sort_entries_reading_order(all_entries)
 
     # 独立文本条目补全字段（确保下游兼容）
     for entry in all_entries:
@@ -2244,6 +3148,7 @@ def hybrid_segment_tables(
             "gap_total": len(gap_entries),
             "gap_recovered_tables": gap_table_count,
             "gap_standalone_texts": gap_text_count,
+            "pure_text_pages": len(pure_text_entries),
         },
         "method": "liteparse_only",
     }

@@ -79,6 +79,21 @@ data_block = {
 }
 check("numeric block is not date-only", not is_date_only_header_block(data_block))
 
+print("\n=== 1c. table_data_has_header_band ===")
+from codes.table_validator.header_boundary import table_data_has_header_band
+
+with_header = [
+    ["2023年12月31日", "产品发行募集", "", "2024年12月31日"],
+    ["（人民币百万元）", "期数", "金额"],
+    ["建信理财", "1,100", "1,499,121"],
+]
+no_header = [
+    ["建信理财", "1,100", "1,499,121", "676", "3,315,531"],
+    ["本行", "2", "79,443", "–", "101,819"],
+]
+check("table with header band above data", table_data_has_header_band(with_header))
+check("table starting with body data", not table_data_has_header_band(no_header))
+
 print("\n=== 2. gap 分类：日期表头 → 挂到 next ===")
 next_b = {"y0": 486, "y1": 649, "page": 6}
 target, field = _classify_gap_text(year_block, None, next_b, median_row_h=12.0)
@@ -186,9 +201,20 @@ if sensitivity:
 pension = None
 for t in p6_tables:
     flat = " ".join(str(c) for row in t.get("data", []) for c in row)
-    if "年初余额" in flat and "设定受益计划义务现值" in flat:
+    if "年初余额" in flat and "年末余额" in flat:
         pension = t
+        break
+p6_all_text = " ".join(
+    str(e.get("context_text", e.get("data", "")))
+    for e in tables
+    if e.get("page") == 6
+)
 check("found pension table", pension is not None)
+check(
+    "pension headers on page6",
+    "设定受益计划义务现值" in p6_all_text,
+    p6_all_text[:80],
+)
 if pension:
     pdata = pension.get("data", [])
     pflat = " ".join(str(c) for row in pdata for c in row)
@@ -221,6 +247,82 @@ if fn_hits and isinstance(fn_hits[0], dict):
     check("page2 footnote is _is_footnote text", fn_hits[0].get("_is_footnote") is True)
     check("page2 footnote y near table bottom", fn_hits[0].get("y0", 0) > 500)
 
+print("\n=== 5b. page2 理财产品发行表 — 表头带不拆成 text ===")
+lp2b = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[2]).to_dict()
+entries2b, _ = hybrid_segment_tables(lp2b, docx_tables=[])
+
+issuance_table = None
+issuance_header_texts = []
+for e in entries2b:
+    if e.get("page") != 2:
+        continue
+    if e.get("type") == "table":
+        flat = " ".join(str(c) for row in e.get("data", []) for c in row)
+        if "建信理财" in flat and "1,499,121" in flat and "1,641,013" in flat:
+            issuance_table = e
+    elif e.get("type") == "text":
+        txt = str(e.get("context_text", e.get("data", "")))
+        if "产品发行募集" in txt and "产品到期兑付" in txt:
+            issuance_header_texts.append(txt)
+
+check("page2 issuance table found", issuance_table is not None)
+check(
+    "page2 issuance headers not standalone text",
+    len(issuance_header_texts) == 0,
+    f"n={len(issuance_header_texts)}",
+)
+if issuance_table:
+    idata = issuance_table.get("data", [])
+    iflat = " ".join(str(c) for row in idata for c in row)
+    check("page2 issuance date header in table", "产品发行募集" in iflat)
+    check("page2 issuance unit header in table", "期数除外" in iflat or "期数" in iflat)
+    check("page2 issuance data rows kept", any("建信理财" in str(r[0]) for r in idata if r))
+    check("page2 issuance table has header+data rows", len(idata) >= 5, f"rows={len(idata)}")
+
+invest_header_texts = [
+    e for e in entries2b
+    if e.get("page") == 2 and e.get("type") == "text"
+    and "占比(%)" in str(e.get("context_text", e.get("data", "")))
+    and "建信理财" in str(e.get("context_text", e.get("data", "")))
+]
+check(
+    "page2 investment column headers not orphan text",
+    len(invest_header_texts) == 0,
+    f"n={len(invest_header_texts)}",
+)
+
+print("\n=== 5c. page5 阶段表 — 中间重复表头应拆成 2 表 ===")
+lp5 = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[5]).to_dict()
+entries5, _ = hybrid_segment_tables(lp5, docx_tables=[])
+
+loan_tables = []
+for e in entries5:
+    if e.get("page") != 5 or e.get("type") != "table":
+        continue
+    flat = " ".join(str(c) for row in e.get("data", []) for c in row)
+    if "22,622,128" in flat or "21,228,857" in flat:
+        loan_tables.append(e)
+
+check("page5 found loan stage tables", len(loan_tables) >= 2, f"n={len(loan_tables)}")
+t2024 = [
+    t for t in loan_tables
+    if "22,622,128" in " ".join(str(c) for row in t.get("data", []) for c in row)
+]
+t2023 = [
+    t for t in loan_tables
+    if "21,228,857" in " ".join(str(c) for row in t.get("data", []) for c in row)
+]
+check("page5 2024 block separate table", len(t2024) == 1, f"n={len(t2024)}")
+check("page5 2023 block separate table", len(t2023) == 1, f"n={len(t2023)}")
+if t2024:
+    flat4 = " ".join(str(c) for row in t2024[0].get("data", []) for c in row)
+    check("page5 2024 has stage headers", "阶段一" in flat4 and "2024" in flat4)
+    check("page5 2024 not mixed with 2023", "21,228,857" not in flat4)
+if t2023:
+    flat3 = " ".join(str(c) for row in t2023[0].get("data", []) for c in row)
+    check("page5 2023 has stage headers", "阶段一" in flat3 and "2023" in flat3)
+    check("page5 2023 not mixed with 2024", "22,622,128" not in flat3)
+
 print("\n=== 6. page4 表内标签行 — 数据列网格延续则不拆表 ===")
 lp4 = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[4]).to_dict()
 entries4, _ = hybrid_segment_tables(lp4, docx_tables=[])
@@ -248,6 +350,13 @@ if main_cash_table:
         str(labels[:8]),
     )
     check("page4 合计 in same table", any("合计" in l for l in labels))
+    check(
+        "page4 (1) PBOC footnote not in table data",
+        not any(
+            "本集团在中国人民银行" in " ".join(str(c) for c in row)
+            for row in data4
+        ),
+    )
 
 # 「存放中央银行款项」不应单独成 text 段
 orphan_section = [
@@ -264,6 +373,217 @@ footnote_cont = [
     and "用于本集团的日常业务运作" in str(e.get("context_text", e.get("data", "")))
 ]
 check("page4 footnote continuation still text", len(footnote_cont) >= 1)
+
+pboc_fn = [
+    e for e in entries4
+    if e.get("page") == 4
+    and "本集团在中国人民银行" in str(e.get("context_text", e.get("data", "")))
+]
+check("page4 (1) PBOC footnote extracted", len(pboc_fn) >= 1, f"n={len(pboc_fn)}")
+
+print("\n=== 7. page10 其他综合收益 — region 无表头带应合并 ===")
+from codes.table_validator.header_boundary import region_has_header_band, cluster_region_items_to_text_rows
+from codes.table_validator.hybrid_segmenter import (
+    _build_items, _merge_regions_by_proximity, _estimate_median_row_height,
+)
+
+lp10 = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[10]).to_dict()
+p10page = [p for p in lp10["pages"] if p["page_number"] == 10][0]
+p10_items = _build_items(p10page["text_items"])
+p10_regs = sorted(p10page["table_regions"], key=lambda r: r["y0"])
+check("page10 has 2 liteparse regions", len(p10_regs) == 2)
+if len(p10_regs) >= 2:
+    check(
+        "page10 region1 no header band",
+        not region_has_header_band(p10_regs[1], p10_items),
+    )
+    merged = _merge_regions_by_proximity(
+        p10_regs, p10_items, 10, _estimate_median_row_height(p10_items),
+    )
+    check("page10 regions merged to 1 boundary", len(merged) == 1, f"n={len(merged)}")
+
+entries10, _ = hybrid_segment_tables(lp10, docx_tables=[])
+p10_tables = [e for e in entries10 if e.get("page") == 10 and e.get("type") == "table"]
+p10_oci = None
+for t in p10_tables:
+    flat = " ".join(str(c) for row in t.get("data", []) for c in row)
+    if "23,981" in flat and "重新计量设定受益计划" in flat:
+        p10_oci = t
+        break
+check("page10 OCI main table unified", p10_oci is not None, f"tables={len(p10_tables)}")
+if p10_oci:
+    flat = " ".join(str(c) for row in p10_oci.get("data", []) for c in row)
+    check("page10 (一) and (二) in same table", "不能重分类" in flat and "将重分类" in flat or "23,597" in flat)
+    check("page10 (二) section in same table", "将重分类" in flat or "23,597" in flat)
+    check("page10 合计 in same table", "57,901" in flat or "合计" in flat)
+
+orphan_oci_text = [
+    e for e in entries10
+    if e.get("page") == 10 and e.get("type") == "text"
+    and str(e.get("context_text", "")).strip() in (
+        "（二）将重分类进损益的其他综合收益",
+        "以公允价值计量且其变动计入其",
+    )
+]
+check("page10 section not orphan text", len(orphan_oci_text) == 0, f"n={len(orphan_oci_text)}")
+
+print("\n=== 8. 分割后阅读顺序：全页 entries 按 PDF 自上而下单调 ===")
+from codes.table_validator.hybrid_segmenter import entry_reading_order_key
+
+
+def _entries_reading_order_ok(entries):
+    keys = [entry_reading_order_key(e) for e in entries]
+    for i in range(1, len(keys)):
+        if keys[i] < keys[i - 1]:
+            return False, i, keys[i - 1], keys[i]
+    return True, len(entries), None, None
+
+
+lp_all = parser.parse("data/input_pdfs/test_subset8.pdf").to_dict()
+entries_all, _ = hybrid_segment_tables(lp_all, docx_tables=[])
+ok, n, bad_i, pair = _entries_reading_order_ok(entries_all)
+check("all pages reading order monotonic", ok, f"n={n} break@{bad_i} {pair}")
+
+for page_num in (2, 4, 5, 6, 10):
+    page_entries = [e for e in entries_all if e.get("page") == page_num]
+    ok_p, n_p, bad_i_p, pair_p = _entries_reading_order_ok(page_entries)
+    check(f"page{page_num} reading order monotonic", ok_p, f"n={n_p} break@{bad_i_p} {pair_p}")
+
+print("\n=== 9. page1 股东权益说明须在权益表之前 ===")
+lp1 = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[1]).to_dict()
+entries1, _ = hybrid_segment_tables(lp1, docx_tables=[])
+p1 = [e for e in entries1 if e.get("page") == 1]
+
+def _entry_label(e):
+    if e.get("type") == "text":
+        return str(e.get("context_text", e.get("data", "")))[:30]
+    d = e.get("data", [])
+    if d:
+        return "TABLE:" + " ".join(str(c) for c in d[0] if c)[:25]
+    return "TABLE:?"
+
+equity_hdr_idx = None
+equity_tbl_idx = None
+for i, e in enumerate(p1):
+    txt = str(e.get("context_text", e.get("data", "")))
+    if e.get("type") == "text" and "股东权益" in txt and "下表列出" in txt:
+        equity_hdr_idx = i
+    if e.get("type") == "table":
+        flat = " ".join(str(c) for row in e.get("data", []) for c in row)
+        if "股本" in flat and "3,343,965" in flat:
+            equity_tbl_idx = i
+
+check("page1 equity section header found", equity_hdr_idx is not None)
+check("page1 equity table found", equity_tbl_idx is not None)
+if equity_hdr_idx is not None and equity_tbl_idx is not None:
+    check(
+        "page1 股东权益 text before equity table",
+        equity_hdr_idx < equity_tbl_idx,
+        f"hdr@{equity_hdr_idx} tbl@{equity_tbl_idx} labels={[_entry_label(e) for e in p1]}",
+    )
+
+deposit_tbl = None
+for e in p1:
+    if e.get("type") == "table":
+        flat = " ".join(str(c) for row in e.get("data", []) for c in row)
+        if "长江三角洲" in flat and "吸收存款" in flat:
+            deposit_tbl = e
+            break
+check("page1 deposit table has no 股东权益 row", deposit_tbl is not None)
+if deposit_tbl:
+    flat = " ".join(str(c) for row in deposit_tbl.get("data", []) for c in row)
+    check("page1 deposit table excludes equity header", "股东权益" not in flat)
+
+print("\n=== 10. page2 表格内容不得重复出现在文本段落中 ===")
+from codes.pdf_extractor.processor import _extract_paragraphs_for_hybrid
+
+lp2 = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[2]).to_dict()
+entries2, _ = hybrid_segment_tables(lp2, docx_tables=[])
+paras2 = _extract_paragraphs_for_hybrid(lp2, entries2)
+
+def _has_table_body_in_text(txt: str) -> bool:
+    if "建信理财" in txt and ("1,499,121" in txt or "3,315,531" in txt):
+        return True
+    if "现金、存款" in txt and "1,008,220" in txt:
+        return True
+    if "期数" in txt and "金额" in txt and sum(1 for c in txt if c.isdigit()) >= 6:
+        return True
+    return False
+
+bad_paras = [
+    p for p in paras2
+    if _has_table_body_in_text(str(p.get("data") or p.get("text") or ""))
+]
+check("page2 no table body in liteparse paragraphs", len(bad_paras) == 0, f"n={len(bad_paras)}")
+
+p2_tables = [
+    e for e in entries2 if e.get("page") == 2 and e.get("type") == "table"
+]
+issuance = None
+investment = None
+for t in p2_tables:
+    flat = " ".join(str(c) for row in t.get("data", []) for c in row)
+    if "1,499,121" in flat and "建信理财" in flat:
+        issuance = t
+    if "现金、存款" in flat and "1,008,220" in flat:
+        investment = t
+check("page2 issuance table exists", issuance is not None)
+check("page2 investment table exists", investment is not None)
+
+print("\n=== 11. page8 ECL 表：转移留在表内、2023 表头回补、阶段列不合并 ===")
+lp8 = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=[8]).to_dict()
+entries8, _ = hybrid_segment_tables(lp8, docx_tables=[])
+p8 = [e for e in entries8 if e.get("page") == 8]
+
+orphan_transfer = [
+    e for e in p8
+    if e.get("type") == "text"
+    and str(e.get("context_text", e.get("data", ""))).strip() in ("转移 ：", "转移:")
+]
+check("page8 转移 not standalone text", len(orphan_transfer) == 0, f"n={len(orphan_transfer)}")
+
+ecl_2024 = ecl_2023 = None
+for t in p8:
+    if t.get("type") != "table":
+        continue
+    flat = " ".join(str(c) for row in t.get("data", []) for c in row)
+    if "2024年12月31日" in flat and "23,016" in flat:
+        ecl_2024 = t
+    if "2023年12月31日" in flat and "33,304" in flat and "2023年1月1日" in flat:
+        ecl_2023 = t
+
+check("page8 2024 ECL table found", ecl_2024 is not None)
+check("page8 2023 ECL table found", ecl_2023 is not None)
+if ecl_2024:
+    d = ecl_2024.get("data", [])
+    hdr = " ".join(str(c) for c in d[0] if c)
+    hdr_all = " ".join(str(c) for row in d[:3] for c in row)
+    body = " ".join(str(c) for row in d for c in row)
+    check("page8 2024 has 阶段一 column", "阶段一" in hdr_all)
+    check("page8 2024 has period year header 2024年", "2024年" in hdr_all)
+    check("page8 2024 转移 in table", any("转移" in str(c) for row in d for c in row))
+if ecl_2023:
+    d = ecl_2023.get("data", [])
+    hdr_all = " ".join(str(c) for row in d[:3] for c in row)
+    check("page8 2023 has stage headers", all(k in hdr_all for k in ("阶段一", "阶段二", "阶段三")))
+    check("page8 2023 has period year header 2023年", "2023年" in hdr_all)
+    check("page8 2023 opening balance row", any("33,304" in str(c) for row in d for c in row))
+
+# --- 纯文本页：docx 无表的页整页输出一条 paragraph ---
+lp_all = parser.parse("data/input_pdfs/test_subset8.pdf", target_pages=list(range(1, 21))).to_dict()
+docx_mock = [
+    {"page": i, "data": [["占位", "1"], ["数据", "2"]]}
+    for i in range(1, 21) if i != 18
+]
+seg_pure, _ = hybrid_segment_tables(lp_all, docx_tables=docx_mock)
+p18_entries = [e for e in seg_pure if e.get("page") == 18]
+check("page18 single pure text entry", len(p18_entries) == 1, f"n={len(p18_entries)}")
+if p18_entries:
+    e18 = p18_entries[0]
+    check("page18 is pure text paragraph", e18.get("_is_pure_text_page") and e18.get("type") == "paragraph")
+    d18 = e18.get("data", "")
+    check("page18 full text not fragmented", isinstance(d18, str) and len(d18) > 200, f"len={len(d18) if isinstance(d18,str) else 0}")
+    check("page18 contains section 59", "关联方" in d18 or "59" in d18)
 
 print(f"\n=== 结果: {PASS} passed, {FAIL} failed ===")
 sys.exit(1 if FAIL else 0)

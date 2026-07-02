@@ -39,8 +39,8 @@ def _extract_paragraphs_for_hybrid(
 ) -> list:
     """为混合表格提取未被覆盖的 liteparse text_items 段落。
 
-    混合表格使用 pdf2docx cell 数据（不含 text_items），因此用表格的
-    Y 范围 + X 范围判断覆盖。同时利用 item_index 为段落打标，供后续精确去重。
+    混合表格使用 liteparse 行列重建，用表格/region 的 Y+X 范围判断覆盖。
+    表格内容不得重复落入段落（与 hybrid 产出的 table 条目互斥）。
 
     Args:
         liteparse_data: ParseResult.to_dict()
@@ -53,73 +53,147 @@ def _extract_paragraphs_for_hybrid(
     if not pages:
         return []
 
-    # 按页组织表格的 Y+X 覆盖范围
-    # V3: 使用 PageLayoutModel 自适应推导 Y_MARGIN，替代硬编码 25pt
-    # 从所有 hybrid_tables 的 text_items 推导每页的行高中位数
+    from codes.table_validator.liteparse_table_segmenter import _build_items
+    from codes.table_validator.cell_differ import _normalize_for_search
+    import re
+
+    # 按页组织覆盖矩形 (y0, y1, x0, x1)
     _layout_cache: dict = {}
-    _Y_MARGIN = 25.0  # 默认值，将被逐页覆盖
+    _Y_MARGIN = 25.0
     for t in hybrid_tables:
         p = t.get("page", 0)
         if p not in _layout_cache:
             items = t.get("text_items", [])
             if items:
                 _layout_cache[p] = PageLayoutModel.from_text_items(items, page_num=p)
-    # 用所有页的中位数作为默认 margin
     if _layout_cache:
         _Y_MARGIN = sum(m.table_y_margin for m in _layout_cache.values()) / len(_layout_cache)
-    coverage_by_page = {}  # {page_num: [(y0, y1, x0, x1), ...]}
-    for t in hybrid_tables:
-        p = t.get("page", 0)
-        y0 = t.get("y0", 0)
-        y1 = t.get("y1", 0)
-        if y0 <= 0 and y1 <= 0:
-            continue  # 无坐标，跳过
-        coverage_by_page.setdefault(p, []).append(
-            (y0 - _Y_MARGIN, y1 + _Y_MARGIN, 0, 9999)
-        )
 
-    def _is_covered(ity0, ity1, p):
-        """检查 text_item 是否被表格覆盖（Y 重叠超过 50%）。"""
+    coverage_by_page: dict = {}
+
+    def _add_coverage(page_num: int, y0: float, y1: float, x0: float, x1: float) -> None:
+        if y1 <= y0:
+            return
+        coverage_by_page.setdefault(page_num, []).append((
+            y0 - _Y_MARGIN,
+            y1 + _Y_MARGIN,
+            max(0.0, x0 - 8.0),
+            x1 + 8.0,
+        ))
+
+    # ① liteparse table_regions：覆盖整段检测区域（子表 y0 偏小时仍算已覆盖）
+    for lp_page in pages:
+        page_num = lp_page.get("page_number", 0)
+        for region in lp_page.get("table_regions", []):
+            if region.get("confidence", 0) < 0.3:
+                continue
+            _add_coverage(
+                page_num,
+                float(region.get("y0", 0)),
+                float(region.get("y1", 0)),
+                float(region.get("x0", 0)),
+                float(region.get("x1", 9999)),
+            )
+
+    # ② hybrid 条目 bbox（text 类型跳过）
+    for t in hybrid_tables:
+        if t.get("type") in ("text", "paragraph", "annotation"):
+            continue
+        p = t.get("page", 0)
+        y0 = float(t.get("y0", 0) or 0)
+        y1 = float(t.get("y1", 0) or 0)
+        if y0 <= 0 and y1 <= 0:
+            continue
+        x0 = float(t.get("x0", 0) or 0)
+        x1 = float(t.get("x1", 0) or 0)
+        if x1 <= x0:
+            x0, x1 = 0.0, 9999.0
+        _add_coverage(p, y0, y1, x0, x1)
+
+    # ③ 各页表格单元格文本指纹（内容去重安全网）
+    table_tokens_by_page: dict = {}
+    for t in hybrid_tables:
+        if t.get("type") in ("text", "paragraph", "annotation"):
+            continue
+        p = t.get("page", 0)
+        tokens = table_tokens_by_page.setdefault(p, set())
+        for row in t.get("data", []):
+            if not isinstance(row, list):
+                continue
+            for cell in row:
+                cs = str(cell).strip()
+                if len(cs) >= 2:
+                    tokens.add(_normalize_for_search(cs))
+                for part in re.findall(r"[\u4e00-\u9fff]{2,}|\d[\d,\.]+", cs):
+                    if len(part) >= 2:
+                        tokens.add(_normalize_for_search(part))
+
+    def _is_covered(itx0, ity0, itx1, ity1, p):
+        """text_item 中心点落在任一覆盖矩形内 → 已归属表格/region。"""
         if p not in coverage_by_page:
             return False
-        item_h = ity1 - ity0
-        if item_h <= 0:
-            return False
+        cx = (itx0 + itx1) / 2
+        cy = (ity0 + ity1) / 2
         for cy0, cy1, cx0, cx1 in coverage_by_page[p]:
-            overlap = min(ity1, cy1) - max(ity0, cy0)
-            if overlap > item_h * 0.5:
+            if cx0 <= cx <= cx1 and cy0 <= cy <= cy1:
                 return True
         return False
 
-    # 导入 _build_items 用于 item_index
-    from codes.table_validator.liteparse_table_segmenter import _build_items
+    def _text_duplicates_table_cells(text: str, page_num: int) -> bool:
+        """段落正文与当页表格单元格高度重合 → 视为表格重复，不输出为文本。"""
+        tokens = table_tokens_by_page.get(page_num)
+        if not tokens:
+            return False
+        raw_parts = re.findall(r"[\u4e00-\u9fff]{2,}|\d[\d,\.]{2,}", text)
+        if not raw_parts:
+            return False
+        norm = [_normalize_for_search(p) for p in raw_parts if len(p) >= 2]
+        if len(norm) < 2:
+            return False
+        hit = sum(1 for p in norm if p in tokens)
+        if hit >= 3 and hit / len(norm) >= 0.45:
+            return True
+        # 典型表头/数据行特征
+        if hit >= 2 and any(k in text for k in ("期数", "占比", "百万元", "12月31日")):
+            if sum(1 for c in text if c.isdigit()) >= 4:
+                return True
+        return False
 
     paragraphs = []
+    pure_text_pages = {
+        int(r.get("page", 0) or 0)
+        for r in hybrid_tables
+        if r.get("_is_pure_text_page")
+    }
     for lp_page in pages:
         page_num = lp_page.get("page_number", 0)
+        if page_num in pure_text_pages:
+            continue
+        regions = lp_page.get("table_regions") or []
+        if not any(float(r.get("confidence", 0) or 0) >= 0.3 for r in regions):
+            continue
         text_items_raw = lp_page.get("text_items", [])
         if not text_items_raw:
             continue
 
-        # 构建带 item_index 的标准 items（与分割阶段同源）
         indexed_items = _build_items(text_items_raw, page_num)
 
-        # 收集未被覆盖的 items（hybrid 表格无 text_items，仍用 bbox 判断）
         orphan_items = []
         for it in indexed_items:
             text = it.get("text", "").strip()
             if not text or len(text) < 2:
                 continue
+            x0 = it.get("x0", 0)
             y0 = it.get("y0", 0)
+            x1 = it.get("x1", 0)
             y1 = it.get("y1", 0)
-            if _is_covered(y0, y1, page_num):
+            if _is_covered(x0, y0, x1, y1, page_num):
                 continue
             orphan_items.append(it)
 
         if not orphan_items:
             continue
 
-        # 按 Y 聚类为段落块
         orphan_items.sort(key=lambda it: it["y_mid"])
         blocks = _cluster_orphans_to_text_blocks(orphan_items)
 
@@ -127,11 +201,15 @@ def _extract_paragraphs_for_hybrid(
             text = block["text"].strip()
             if len(text) < 5:
                 continue
+            if _text_duplicates_table_cells(text, page_num):
+                continue
             paragraphs.append({
                 "page": page_num,
                 "type": "paragraph",
                 "data": text,
                 "text": text,
+                "y0": block.get("y0", 0),
+                "y1": block.get("y1", 0),
                 "extractor": "liteparse_hybrid",
                 "confidence": 0.5,
                 "rows": block.get("line_count", 1),
@@ -170,7 +248,7 @@ def _mark_page_types(results: list) -> None:
         stats = page_stats[p]
         if t == "table":
             stats["has_table"] = True
-        elif t in ("paragraph", "annotation"):
+        elif t in ("paragraph", "annotation", "text"):
             stats["has_paragraph"] = True
 
     # 计算每页类型
@@ -5810,7 +5888,7 @@ class ProcessingWorker(QThread):
             # 按页码+页内Y坐标排序（保证表格和文本原始数据顺序）
             results.sort(key=lambda x: (x["page"], _sort_y_for_page_order(x)))
 
-            # ---- [旁路] liteparse 通道：解析表格页的空间布局文本 ----
+            # ---- [旁路] liteparse 通道：全页空间布局文本解析 ----
             self._run_liteparse_side_channel(results, total_pages)
 
             self.progress.emit(95, "正在整理数据...")
@@ -5909,12 +5987,86 @@ class ProcessingWorker(QThread):
                                 liteparse_data, results
                             )
                             if lp_paragraphs:
-                                results.extend(lp_paragraphs)
-                                results.sort(key=lambda r: (
-                                    r.get("page", 0),
-                                    _sort_y_for_page_order(r),
-                                ))
-                                print(f"  [段切] liteparse 提取到 {len(lp_paragraphs)} 个文本段落")
+                                from codes.table_validator.cell_differ import (
+                                    _normalize_for_search,
+                                )
+                                import re as _re
+
+                                def _entry_text_blob(r: dict) -> str:
+                                    return str(
+                                        r.get("context_text")
+                                        or r.get("data")
+                                        or r.get("text")
+                                        or ""
+                                    ).strip()
+
+                                existing_keys = set()
+                                for r in results:
+                                    if r.get("type") not in (
+                                        "text", "paragraph", "annotation",
+                                    ):
+                                        continue
+                                    blob = _entry_text_blob(r)
+                                    if blob:
+                                        existing_keys.add((
+                                            r.get("page", 0),
+                                            _normalize_for_search(blob[:300]),
+                                        ))
+
+                                merged_paras = []
+                                for para in lp_paragraphs:
+                                    blob = _entry_text_blob(para)
+                                    if not blob:
+                                        continue
+                                    key = (
+                                        para.get("page", 0),
+                                        _normalize_for_search(blob[:300]),
+                                    )
+                                    if key in existing_keys:
+                                        continue
+                                    # 与已有文本条目高度重合则跳过
+                                    dup = False
+                                    norm_new = _normalize_for_search(blob)
+                                    parts = _re.findall(
+                                        r"[\u4e00-\u9fff]{2,}", norm_new,
+                                    )
+                                    for r in results:
+                                        if r.get("type") not in (
+                                            "text", "paragraph", "annotation",
+                                        ):
+                                            continue
+                                        if r.get("page") != para.get("page"):
+                                            continue
+                                        norm_old = _normalize_for_search(
+                                            _entry_text_blob(r),
+                                        )
+                                        if not norm_old:
+                                            continue
+                                        if norm_new in norm_old or norm_old in norm_new:
+                                            dup = True
+                                            break
+                                        if parts:
+                                            hit = sum(
+                                                1 for p in parts if p in norm_old
+                                            )
+                                            if hit >= 3 and hit / len(parts) >= 0.6:
+                                                dup = True
+                                                break
+                                    if dup:
+                                        continue
+                                    existing_keys.add(key)
+                                    merged_paras.append(para)
+
+                                if merged_paras:
+                                    results.extend(merged_paras)
+                                    results.sort(key=lambda r: (
+                                        r.get("page", 0),
+                                        _sort_y_for_page_order(r),
+                                    ))
+                                    print(
+                                        f"  [段切] liteparse 提取到 "
+                                        f"{len(merged_paras)} 个文本段落"
+                                    )
                         except Exception:
                             pass
 
@@ -6046,44 +6198,37 @@ class ProcessingWorker(QThread):
                 context.close()
 
     def _run_liteparse_side_channel(self, results, total_pages):
-        """[旁路] 调用 liteparse 解析表格页的空间布局文本。
+        """[旁路] liteparse 全页空间布局解析。
 
-        仅对 pdf2docx/V2 已识别出的表格页做 liteparse 解析，
-        结果缓存到 data/mid_cache/<pdf>/liteparse/，
-        供后续差分对比使用。
+        对 PDF 全部页（1..total_pages，受 max_pages 约束）做 liteparse 解析，
+        不仅限于 pdf2docx 已识别出表格的页，避免纯文字页丢失坐标文本。
+        结果缓存到 data/mid_cache/<pdf>/liteparse/，供混合分割与差分对比使用。
 
         此步骤失败不阻塞主流程。
         """
         try:
             from codes.liteparse_extractor import LiteParseParser
 
-            # 收集表格页页码（剔除 failed/empty 类型）
-            table_page_numbers = sorted(set(
-                r["page"] for r in results
-                if r.get("parse_status") == "success" and r.get("data")
-            ))
-            if not table_page_numbers:
-                print("  [liteparse] 无表格页，跳过")
+            if total_pages < 1:
+                print("  [liteparse] 无有效页，跳过")
                 return
 
-            # 受 max_pages 约束
-            if self.max_pages:
-                table_page_numbers = [
-                    p for p in table_page_numbers if p <= self.max_pages
-                ]
-            if not table_page_numbers:
-                return
+            all_page_numbers = list(range(1, total_pages + 1))
 
-            self.progress.emit(93, f"liteparse 正在解析 {len(table_page_numbers)} 个表格页...")
-            print(f"  [liteparse] 开始解析表格页: {table_page_numbers}")
+            self.progress.emit(
+                93, f"liteparse 正在解析全部 {len(all_page_numbers)} 页...",
+            )
+            print(f"  [liteparse] 开始全页解析: 1-{total_pages} "
+                  f"({len(all_page_numbers)} 页)")
 
             parser = LiteParseParser()
-            result = parser.parse_table_pages_only(
-                self.pdf_path, table_page_numbers
+            result = parser.parse(
+                self.pdf_path, target_pages=all_page_numbers,
             )
 
             print(f"  [liteparse] 完成: "
-                  f"{result.page_count_with_table} 页含表格, "
+                  f"{len(result.pages)} 页已解析, "
+                  f"{result.page_count_with_table} 页含表格区域, "
                   f"耗时 {result.parse_time_sec:.1f}s")
 
         except ImportError:

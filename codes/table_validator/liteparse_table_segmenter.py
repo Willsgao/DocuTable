@@ -2139,6 +2139,75 @@ def _get_segment_caption(
 # 4. 行 normalization：对齐到统一列结构
 # ================================================================
 
+def _disclosure_col_index_for_item(
+    x0: float,
+    x1: float,
+    col_ranges: List[Tuple[float, float]],
+    text: str = "",
+) -> int:
+    """第三支柱披露表 3 列：行号 | 科目/数额/报告期 | 数值/代码。
+
+    报告期日期与 a、数额 同属中间列（x≈430）；数值与 b、代码 在右列（x≥457）。
+    须用 x0 判定右列，勿用 x1（日期 bbox 较宽会误触右列）。
+    """
+    if len(col_ranges) != 3:
+        centers = [(a + b) / 2 for a, b in col_ranges]
+        xc = (x0 + x1) / 2
+        return min(range(len(centers)), key=lambda i: abs(xc - centers[i]))
+
+    t = str(text or "").strip()
+    if t:
+        try:
+            from codes.table_validator.table_content_splitter import (
+                _row_has_reporting_date,
+            )
+            if _row_has_reporting_date([t]):
+                return 1
+        except ImportError:
+            pass
+
+    row_num_x1 = col_ranges[0][1]
+    value_x0 = col_ranges[2][0]
+    value_col_x0 = value_x0 - 8.0
+
+    if x0 <= row_num_x1 + 12:
+        return 0
+    if x0 >= value_col_x0:
+        return 2
+    return 1
+
+
+def _row_uses_disclosure_column_layout(
+    row: dict,
+    col_ranges: List[Tuple[float, float]],
+) -> bool:
+    """表头带行用披露表列界，避免 a/b 被最近中心误判到左列。"""
+    if len(col_ranges) != 3:
+        return False
+    texts = [str(t).strip() for t in row.get("texts", []) if str(t).strip()]
+    if not texts:
+        return False
+    try:
+        from codes.table_validator.table_content_splitter import (
+            _has_letter_column_header_row,
+            _is_rmb_unit_lead_row,
+            is_table_header_band_row,
+        )
+    except ImportError:
+        return False
+
+    row_as_list = texts
+    if _has_letter_column_header_row(row_as_list):
+        return True
+    if _is_rmb_unit_lead_row(row_as_list):
+        return True
+    if is_table_header_band_row(row_as_list):
+        return True
+    if texts[0].startswith(("（", "(")) and "人民币" in texts[0]:
+        return True
+    return False
+
+
 def _normalize_rows_to_columns(
     rows: List[dict],
     col_ranges: Optional[List[Tuple[float, float]]] = None,
@@ -2178,22 +2247,26 @@ def _normalize_rows_to_columns(
             normalized.append(row)
             continue
 
-        # 按 X 中心点找最近列
+        # 按 X 坐标映射到列
         col_texts: Dict[int, str] = {}
+        use_disclosure = _row_uses_disclosure_column_layout(row, col_ranges)
         for it in items:
             x0 = it.get("x0", 0)
             x1 = it.get("x1", 0)
             text = it.get("text", "")
-            xc = (x0 + x1) / 2
-
-            # 找 X 中心最近的列
-            best_col = 0
-            best_dist = float("inf")
-            for ci, cc in enumerate(col_centers):
-                dist = abs(xc - cc)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_col = ci
+            if use_disclosure:
+                best_col = _disclosure_col_index_for_item(
+                    x0, x1, col_ranges, text,
+                )
+            else:
+                xc = (x0 + x1) / 2
+                best_col = 0
+                best_dist = float("inf")
+                for ci, cc in enumerate(col_centers):
+                    dist = abs(xc - cc)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_col = ci
 
             # 碰撞处理：同一列已有值 → 拼接到已有文本后面
             existing = col_texts.get(best_col, "")
@@ -2204,13 +2277,15 @@ def _normalize_rows_to_columns(
 
         aligned_texts = [col_texts.get(ci, "") for ci in range(n_cols)]
 
-        # 安全检查：归一化后非空项数不得少于原始
+        # 安全检查：多 item 落入同一列合并时非空格数会减少，但字符未丢
         aligned_non_empty = sum(1 for t in aligned_texts if t.strip())
         if aligned_non_empty < original_non_empty:
-            # 数据丢失 → 退回：保留原始 texts 并补齐列数
-            aligned_texts = list(original_texts)
-            while len(aligned_texts) < n_cols:
-                aligned_texts.append("")
+            merged_chars = sum(len(t.strip()) for t in aligned_texts)
+            original_chars = sum(len(t.strip()) for t in original_texts)
+            if merged_chars + 1 < original_chars:
+                aligned_texts = list(original_texts)
+                while len(aligned_texts) < n_cols:
+                    aligned_texts.append("")
 
         normalized.append({
             "items": items,

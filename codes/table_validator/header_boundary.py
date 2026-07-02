@@ -62,11 +62,33 @@ def is_row_label_cell(text: str) -> bool:
     return cn >= 2 and not re.search(r"[\d.,()%]", t)
 
 
+# 脚注编号单元格：(1) （1） 1. 注： 等（结构，非科目词）
+_FOOTNOTE_MARKER_CELL_RE = re.compile(
+    r"^[\s　]*(?:"
+    r"\(\d+\)|（\d+）"
+    r"|\d+[\.\．\、\)\)]"
+    r"|注[：:]"
+    r"|\*"
+    r"|[①②③④⑤⑥⑦⑧⑨⑩]"
+    r")"
+)
+
+
+def is_footnote_marker_cell(text: str) -> bool:
+    """单元格是否为脚注/注释编号标记（(1)、1.、注：等）。"""
+    return bool(_FOOTNOTE_MARKER_CELL_RE.match(str(text or "").strip()))
+
+
 def is_numeric_data_cell(text: str) -> bool:
     t = str(text or "").strip()
     if not t:
         return False
     if is_year_cell(t) or is_month_day_cell(t):
+        return False
+    if not re.search(r"\d", t):
+        return False
+    # 长中文说明（如表尾注释落在非首列）不是数值格
+    if len(re.findall(r"[\u4e00-\u9fff]", t)) >= 8:
         return False
     return bool(re.search(r"[\d.,()%\-（）()]", t))
 
@@ -103,8 +125,14 @@ def is_date_only_header_row_items(row_items: List[dict]) -> bool:
 def is_date_only_header_block(block: dict) -> bool:
     """间隙块是否仅为日期类表头（应挂到下方主表，而非独立成表）。"""
     items = block.get("text_items", [])
+    full = block.get("full_text", "")
+    if full:
+        # 含附注章节号 / 长说明句 → 不是纯日期表头块（勿整段挂 _pre_header）
+        if re.search(r"(?:^|\n)\d{1,2}\s+[\u4e00-\u9fff]", full):
+            return False
+        if re.search(r"[（(]\d+[)）]\s*[\u4e00-\u9fff]", full):
+            return False
     if not items:
-        full = block.get("full_text", "")
         if not full:
             return False
         has_year = bool(_YEAR_IN_TEXT_RE.search(full))
@@ -117,6 +145,13 @@ def is_date_only_header_block(block: dict) -> bool:
     rows = _cluster_items_by_y(_ensure_y_mid(items))
     if not rows:
         return False
+
+    for row in rows:
+        texts = row_texts_from_items(row.get("items", []))
+        if texts and re.match(r"^\d{1,2}$", texts[0].strip()):
+            return False
+        if texts and re.match(r"^[（(]\d+[)）]$", texts[0].strip()):
+            return False
 
     body_numeric_rows = 0
     header_rows = 0
@@ -132,6 +167,47 @@ def is_date_only_header_block(block: dict) -> bool:
 
     # 全是日期表头行，或日期表头 + 至多 1 行非数值
     return header_rows >= 1 and body_numeric_rows == 0
+
+
+def is_stage_column_header_block(block: dict) -> bool:
+    """阶段一/二/三列名 + 年份 → 预期信用损失等续表的间隙表头，挂下方 region。"""
+    items = block.get("text_items", [])
+    full = block.get("full_text", "")
+    text = full if full else " ".join(
+        it.get("text", "") for it in items
+    )
+    if not text:
+        return False
+    if not all(k in text for k in ("阶段一", "阶段二", "阶段三")):
+        return False
+    if "合计" not in text:
+        return False
+    return bool(_YEAR_IN_TEXT_RE.search(text))
+
+
+def is_period_year_only_block(block: dict) -> bool:
+    """间隙块仅含单个报告期年份（如「2024年」）→ 挂下方表作多级表头首行。"""
+    items = block.get("text_items", [])
+    full = str(block.get("full_text", "")).strip()
+    lines = [ln.strip() for ln in full.split("\n") if ln.strip()]
+    if len(lines) == 1 and is_year_cell(lines[0]):
+        return True
+    if items and len(items) <= 3:
+        texts = [str(it.get("text", "")).strip() for it in items if str(it.get("text", "")).strip()]
+        if len(texts) == 1 and is_year_cell(texts[0]):
+            return True
+    return False
+
+
+def is_stage_migration_label_row(row: list) -> bool:
+    """表内「转移：」等阶段迁移小节行（留在表中，不拆 text）。"""
+    cells = [str(c).strip() for c in row if str(c).strip()]
+    if not cells or len(cells) > 2:
+        return False
+    joined = "".join(cells)
+    if re.match(r"^转移\s*[:：]?\s*$", joined):
+        return True
+    return False
 
 
 def count_numeric_data_cells_in_row(row_items: List[dict]) -> int:
@@ -199,6 +275,11 @@ _TABLE_SECTION_PHRASES = (
     "计入当期损益",
     "计入其他综合收益",
     "其他变动",
+    "流动性覆盖率",
+    "净稳定资金比例",
+    "可用资本（数额）",
+    "风险加权资产（数额）",
+    "其他各级资本要求",
 )
 
 
@@ -234,6 +315,8 @@ def is_in_table_section_label_row(row: list) -> bool:
     if not non_empty or len(non_empty) > 3:
         return False
     joined = "".join(non_empty)
+    if is_stage_migration_label_row(row):
+        return True
     cn = len(re.findall(r"[\u4e00-\u9fff]", joined))
     if sum(1 for c in non_empty if is_value_like_cell(c)) > 0:
         return False
@@ -246,7 +329,27 @@ def is_in_table_section_label_row(row: list) -> bool:
         return True
     if joined.startswith(("－", "—", "-")):
         return True
-    return False
+    return _is_short_section_label_structural(cells, joined)
+
+
+def _is_short_section_label_structural(cells: List[str], joined: str) -> bool:
+    """短中文表内小节（无行号、无有效数值），通用结构判定。"""
+    import re as _re
+    if not cells or len(cells) > 3:
+        return False
+    if cells[0] and _re.match(r"^\d+[a-z]?$", cells[0], _re.IGNORECASE):
+        return False
+    if sum(
+        1 for c in cells
+        if is_value_like_cell(c) and str(c).strip() not in _DASH_PLACEHOLDERS
+    ) > 0:
+        return False
+    cn = len(_re.findall(r"[\u4e00-\u9fff]", joined))
+    if cn < 3 or cn > 28:
+        return False
+    if joined.endswith(("。", "；")) and cn > 12:
+        return False
+    return True
 
 
 def is_table_tail_annotation_row(row: list, col_count: int) -> bool:
@@ -260,7 +363,41 @@ def is_table_tail_annotation_row(row: list, col_count: int) -> bool:
     if len(row) > col_count:
         return False
 
+    # 行列数短于表宽 → 可能是碎片；脚注编号行除外（常少一列）
+    if 0 < len(row) < col_count:
+        first_peek = str(row[0] or "").strip() if row else ""
+        if not is_footnote_marker_cell(first_peek):
+            return False
+
     cells = _pad_row_to_width(row, col_count)
+
+    joined_all = "".join(c for c in cells if c)
+    # 列名表头（期数/金额/占比重复）不是表尾注释
+    if (
+        count_value_cells_in_row(cells, col_count, start_col=0) == 0
+        and joined_all.count("期数") >= 1
+        and joined_all.count("金额") >= 1
+        and (
+            joined_all.count("期数") >= 2
+            or "百万元" in joined_all
+            or "占比" in joined_all
+        )
+    ):
+        return False
+
+    non_empty_idx = [i for i, c in enumerate(cells) if c]
+    if not non_empty_idx:
+        return True
+
+    first = cells[non_empty_idx[0]]
+
+    # 脚注编号行：首格为 (1)/1. 等且同行无数值列（排除排名表 1. 工行 500）
+    if is_footnote_marker_cell(first):
+        if re.match(r"^注[：:]", first):
+            return True
+        if count_value_cells_in_row(cells, col_count, start_col=1) >= 1:
+            return False
+        return True
 
     # 条件1：数值列应有数值类数据；有则视为数据行
     if count_value_cells_in_row(cells, col_count, start_col=1) >= 1:
@@ -270,13 +407,7 @@ def is_table_tail_annotation_row(row: list, col_count: int) -> bool:
     if is_in_table_section_label_row(cells):
         return False
 
-    non_empty_idx = [i for i, c in enumerate(cells) if c]
-    if not non_empty_idx:
-        return True
-
-    first = cells[non_empty_idx[0]]
-
-    # 编号/注：类脚注前缀
+    # 编号/注：类脚注前缀（兼容旧模式）
     if re.match(
         r"^\d+[\.\、\)\)]|^注[：:]|^\*|^[①②③④⑤⑥⑦⑧⑨⑩]|^来源[：:]|^数据来源[：:]",
         first,
@@ -298,7 +429,56 @@ def is_table_tail_annotation_row(row: list, col_count: int) -> bool:
         if cn >= 10 and all(not cells[i] for i in range(1, col_count)):
             return True
 
+    # 整行无数值格、长中文说明（说明落在非首列，如 col2 长段落）
+    if count_value_cells_in_row(cells, col_count, start_col=0) == 0:
+        joined = "".join(c for c in cells if c)
+        cn = len(re.findall(r"[\u4e00-\u9fff]", joined))
+        if cn >= 12:
+            return True
+
     return False
+
+
+def _last_body_row_index(data: List[list], col_count: int) -> int:
+    """最后一行主体数据（≥2 个数值/占位格，自第 1 列起）。"""
+    last = -1
+    for i, row in enumerate(data):
+        cells = _pad_row_to_width(row, col_count)
+        if count_value_cells_in_row(cells, col_count, start_col=1) >= 2:
+            last = i
+        elif count_value_cells_in_row(cells, col_count, start_col=0) >= 2:
+            last = i
+    return last
+
+
+def _strip_contiguous_annotations_after_body(
+    data: List[list],
+    width: int,
+) -> Tuple[List[list], List[str]]:
+    """剥离紧接在最后主体数据行之后的连续注释行（如 合计 后的 (1) 说明）。"""
+    body_idx = _last_body_row_index(data, width)
+    if body_idx < 0 or body_idx >= len(data) - 1:
+        return data, []
+
+    remove_idx: List[int] = []
+    for i in range(body_idx + 1, len(data)):
+        if is_table_tail_annotation_row(data[i], width):
+            remove_idx.append(i)
+        else:
+            break
+
+    if not remove_idx:
+        return data, []
+
+    texts: List[str] = []
+    for i in remove_idx:
+        row = _pad_row_to_width(data[i], width)
+        text = " ".join(c for c in row if c).strip()
+        if text:
+            texts.append(text)
+
+    new_data = [row for j, row in enumerate(data) if j not in remove_idx]
+    return new_data, texts
 
 
 def strip_tail_annotation_rows_from_data(
@@ -333,7 +513,14 @@ def strip_tail_annotation_rows_from_data(
             break
 
     if remove > 0:
-        return data[: len(data) - remove], stripped
+        data = data[: len(data) - remove]
+
+    data, body_texts = _strip_contiguous_annotations_after_body(data, width)
+    if body_texts:
+        stripped.extend(body_texts)
+
+    if remove > 0 or body_texts:
+        return data, stripped
     return data, []
 
 
@@ -416,6 +603,19 @@ def _pair_has_distinct_year_headers(data: List[list], j: int, width: int) -> boo
     return min(years_l) != min(years_r)
 
 
+def _pair_has_stage_column_headers(
+    data: List[list], left_col: int, width: int,
+) -> bool:
+    """相邻列若含阶段一/二/三表头 → 禁止互补列合并。"""
+    markers = ("阶段一", "阶段二", "阶段三")
+    for row in data[:5]:
+        cells = _pad_row_to_width(row, width)
+        for ci in (left_col, left_col + 1):
+            if ci < len(cells) and any(m in str(cells[ci]) for m in markers):
+                return True
+    return False
+
+
 def merge_complementary_column_pairs(data: List[list]) -> List[list]:
     """合并相邻互补列：数据行中极少同时有值的列对（同一逻辑列的 PDF 偏移）。
 
@@ -453,6 +653,8 @@ def merge_complementary_column_pairs(data: List[list]) -> List[list]:
             if overlap > 1 or fill_l < 1 or fill_r < 1:
                 continue
             if _pair_has_distinct_year_headers(normalized, j, width):
+                continue
+            if _pair_has_stage_column_headers(normalized, j, width):
                 continue
 
             new_width = width - 1
@@ -560,6 +762,133 @@ def is_new_table_header_row_items(
     if is_date_only_header_row_items(row_items):
         return False
     return _is_header_row(row_items, col_ranges, col_tolerance=col_tolerance)
+
+
+# --- 表头带 / 主体数据行（region 合并与切分共用，纯结构） ---
+
+
+def cluster_region_items_to_text_rows(
+    region: dict,
+    all_page_items: List[dict],
+    y_tol: float = 8.0,
+) -> List[List[str]]:
+    """将 region 内 text_items 按 Y 聚类为行（每行若干 cell 文本）。"""
+    ry0, ry1 = region.get("y0", 0), region.get("y1", 0)
+    scoped = [
+        it for it in all_page_items
+        if ry0 - 8 <= it.get("y_mid", (it.get("y0", 0) + it.get("y1", 0)) / 2) <= ry1 + 8
+    ]
+    if not scoped:
+        return []
+
+    scoped.sort(key=lambda it: (it.get("y0", 0), it.get("x0", 0)))
+    rows: List[List[str]] = []
+    row_y: Optional[float] = None
+    for it in scoped:
+        ym = it.get("y_mid", (it.get("y0", 0) + it.get("y1", 0)) / 2)
+        t = str(it.get("text", "")).strip()
+        if not t:
+            continue
+        if row_y is None or abs(ym - row_y) > y_tol:
+            rows.append([t])
+            row_y = ym
+        else:
+            rows[-1].append(t)
+    return rows
+
+
+def is_body_data_row_texts(row_texts: List[str]) -> bool:
+    """主体数据行：行内 ≥2 个数值/占位格。"""
+    non_empty = [t for t in row_texts if t]
+    if len(non_empty) < 2:
+        return False
+    return sum(1 for t in non_empty if is_value_like_cell(t)) >= 2
+
+
+def is_header_band_row_texts(row_texts: List[str]) -> bool:
+    """表头带行：非主体数据，且呈多列表头或日期表头形态。"""
+    if is_body_data_row_texts(row_texts):
+        return False
+    non_empty = [t for t in row_texts if t]
+    if not non_empty:
+        return False
+
+    # 披露表行号数据行（1 / 2a + 科目 + 数值）不是表头带
+    if re.match(r"^\d+[a-z]?$", non_empty[0], re.IGNORECASE):
+        return False
+
+    date_like = sum(1 for t in non_empty if is_year_cell(t) or is_month_day_cell(t))
+    num = sum(1 for t in non_empty if is_numeric_data_cell(t))
+    if date_like >= 1 and num == 0 and date_like >= len(non_empty) * 0.4:
+        return True
+
+    text_cols = [t for t in non_empty if not is_value_like_cell(t)]
+    if len(text_cols) >= 2:
+        return True
+    if len(non_empty) >= 2 and num == 0:
+        return True
+    return False
+
+
+def region_has_header_band(
+    region: dict,
+    all_page_items: List[dict],
+    *,
+    lookahead: int = 8,
+) -> bool:
+    """region 顶部是否存在表头带（一行或多行表头文本）。
+
+    若首行已是主体数据、其前又无表头行 → False（疑似被 liteparse 拦腰切断）。
+    """
+    rows = cluster_region_items_to_text_rows(region, all_page_items)
+    if not rows:
+        return True
+
+    scan = rows[:lookahead]
+    first_body: Optional[int] = None
+    for i, row in enumerate(scan):
+        if is_body_data_row_texts(row):
+            first_body = i
+            break
+
+    if first_body is None:
+        return any(is_header_band_row_texts(r) for r in scan)
+
+    if first_body == 0:
+        return False
+
+    return any(is_header_band_row_texts(r) for r in scan[:first_body])
+
+
+def table_data_has_header_band(data: List[list], *, max_scan: int = 8) -> bool:
+    """表 data 顶部是否存在表头带。
+
+    若首行已是主体数据、其前又无表头行 → False（疑似拦腰切断，应向上回补）。
+    """
+    if not data:
+        return True
+
+    scan = data[:max_scan]
+    first_body: Optional[int] = None
+    for i, row in enumerate(scan):
+        cells = [str(c).strip() for c in row if str(c).strip()]
+        if is_body_data_row_texts(cells):
+            first_body = i
+            break
+
+    if first_body is None:
+        return any(
+            is_header_band_row_texts([str(c).strip() for c in row if str(c).strip()])
+            for row in scan
+        )
+
+    if first_body == 0:
+        return False
+
+    return any(
+        is_header_band_row_texts([str(c).strip() for c in row if str(c).strip()])
+        for row in scan[:first_body]
+    )
 
 
 # --- 表尾脚注：原位置唯一一份，拆分/深拷贝只转移不复制 ---
