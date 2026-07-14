@@ -32,7 +32,7 @@ class V2Config:
         "y_threshold_max": 15.0,         # 最大值
 
         # 列检测
-        "align_tolerance": 4.0,          # 对齐聚簇容差(pt)
+        "align_tolerance": 8.0,          # 对齐聚簇容差(pt)：需>同列抖动(~6pt)且<列间距(~27pt)
         "gap_factor": 0.3,               # gap阈值因子
         "gap_min": 10.0,                 # gap最小值
         "line_merge_tolerance": 2.0,     # 竖线去重容差(pt)
@@ -46,6 +46,11 @@ class V2Config:
 
         # 单元格分配
         "row_margin_factor": 0.2,        # 行分配允许越界比例
+        "preserve_label_indent": True,     # 标签列保留缩进层次（前导空格）
+        "indent_step_pt": 12.0,          # 每档缩进对应 x0 偏移(pt)
+        "indent_threshold_pt": 5.0,      # 低于此偏移视为 0 级
+        "indent_spaces_per_level": 2,    # 每级缩进空格数
+        "indent_max_level": 4,           # 最大缩进层级
 
         # 置信度
         "confidence_col_weight": 0.35,
@@ -72,9 +77,12 @@ class V2Config:
     STEP2_DEFAULTS: Dict[str, Any] = {
         "enable_line_detection": True,
         "enable_text_detection": True,
+        "enable_coord_detection": True,
         "line_merge_tolerance": 2.0,
         "text_confidence": 0.55,
         "line_confidence": 0.80,
+        "coord_confidence": 0.75,
+        "row_margin_factor": 0.15,
     }
 
     # ============================================================

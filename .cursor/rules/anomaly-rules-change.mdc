@@ -1,0 +1,25 @@
+---
+description: 修改表格质检/异常检测相关代码时，强制执行防回归流程
+globs:
+  - codes/v2_steps/table_anomaly_rules.py
+  - codes/v2_steps/table_anomaly_bridge.py
+  - tests/anomaly_golden/**
+  - _test_step1_anomaly_detect.py
+alwaysApply: false
+---
+
+# 表格质检修改规则
+
+修改匹配文件前：
+
+1. 阅读 `docs/正常表契约.md` 与 `docs/表格质检-修改标准流程.md`
+2. 运行 `python -m codes.v2_steps.anomaly_change_guard preflight`
+3. 填写或更新 `anomaly-change-scope.txt`
+
+修改后：
+
+1. 运行 `python -m codes.v2_steps.anomaly_change_guard verify`
+2. verify 失败则不得结束任务
+3. 默认只改 `table_anomaly_rules.py`；扩大范围须在 scope 中说明
+
+用户只提目标时，使用项目技能 `.cursor/skills/anomaly-rules-change/SKILL.md`。

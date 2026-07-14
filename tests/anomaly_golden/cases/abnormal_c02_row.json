@@ -1,0 +1,14 @@
+{
+  "id": "abnormal_c02_row",
+  "contract": "C2",
+  "description": "无法归类的数据行",
+  "data": [
+    ["列A", "列B", "列C"],
+    ["foo", "bar", "baz"],
+    ["xxx", "", "yyy"]
+  ],
+  "expect": {
+    "needs_review": true,
+    "rule_ids_any": ["C02_unrecognized_data_row"]
+  }
+}

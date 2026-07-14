@@ -1,0 +1,17 @@
+﻿region y0=330.9 scope_y0=269.6
+--- items between page top and region.y0 ---
+  y=274.6 x=429 text='a'
+  y=274.6 x=505 text='b'
+  y=290.2 x=421 text='数额'
+  y=290.9 x=71 text='（人民币百万元，百分比除外）'
+  y=297.3 x=498 text='代码'
+  y=302.6 x=395 text='2024年12月31日'
+  y=318.7 x=71 text='核心一级资本'
+--- items in scope band above region ---
+  y=274.6 text='a'
+  y=274.6 text='b'
+  y=290.2 text='数额'
+  y=290.9 text='（人民币百万元，百分比除外）'
+  y=297.3 text='代码'
+  y=302.6 text='2024年12月31日'
+  y=318.7 text='核心一级资本'

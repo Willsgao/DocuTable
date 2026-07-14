@@ -1,0 +1,10 @@
+﻿r0 h 38.06000000000003 r1 h 299.61 gap 69.91999999999996
+r0 header stamp? True
+merge from idx0 0 next_idx 1 merged y 244.04 282.1
+merge from idx1 1 2
+gap before r1 count 3 y range 319.47
+gap before r0 14
+pre r0 gap 3 desc 104 中国建设银行股份有限公司 2024年度报告
+管理层讨论与分析
+风险管理
+ narr 3

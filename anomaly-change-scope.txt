@@ -1,0 +1,23 @@
+# 复制本文件为 anomaly-change-scope.txt 后填写（每次修改任务一份）
+# verify 会据此检查改动范围
+
+task: 表头缺失单独归类，非质量异常，可续表合并
+
+allowed:
+  - codes/v2_steps/table_anomaly_rules.py
+  - codes/v2_steps/table_anomaly_bridge.py
+  - codes/v2_steps/anomaly_change_guard.py
+  - codes/ui/table_compare_manager.py
+  - docs/正常表契约.md
+  - tests/anomaly_golden/**
+  - _test_step1_anomaly_detect.py
+
+forbidden:
+  - codes/pdf_extractor/**
+
+must_pass:
+  - golden
+  - unit
+
+notes: |
+  C01 单独归类 missing_header；UI 蓝标非红标；bridge 写 table_category

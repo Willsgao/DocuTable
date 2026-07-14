@@ -20,7 +20,7 @@ from .models import (
 from .table_classifier import classify_page, classify_all
 from .llm_checker import verify_table_with_llm
 from .validator import run_cross_validation, quick_classify
-from .rule_based_repair import (
+from .table_structure_repair import (
     repair_table_rules,
     repair_and_split_tables,
     deduplicate_adjacent_tables,

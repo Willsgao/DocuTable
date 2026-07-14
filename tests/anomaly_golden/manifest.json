@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "description": "表格质检黄金样本：修改规则前后必须全部通过",
+  "cases": [
+    "normal_three_col.json",
+    "normal_wrap_p43.json",
+    "normal_multi_header.json",
+    "normal_report_period_header.json",
+    "normal_text_len_neighbors.json",
+    "abnormal_p43_split.json",
+    "abnormal_missing_header.json",
+    "abnormal_numeric_merge.json",
+    "abnormal_header_misalign.json",
+    "abnormal_c02_row.json"
+  ]
+}

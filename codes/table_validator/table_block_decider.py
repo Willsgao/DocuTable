@@ -3,7 +3,8 @@
 集中分块决策器（TableBlockDecider）—— 架构修复 #2
 
 硬伤诊断：
-  表格分块决策分散在 liteparse_table_segmenter → hybrid_segmenter → processor
+  表格分块决策曾分散在旧 liteparse 分割链 → processor；
+  现由 Table Engine + TableBlockDecider 承接。
   形成"先合并再修补"的长链，每一步引入误差累积。
 
 解决方案：
@@ -18,7 +19,7 @@
   4. 不确定的区域标记 needs_review，不再猜测
 
 设计约束：
-  - 不替代现有的 hybrid_segmenter / liteparse_table_segmenter
+  - 不替代 Table Engine 主建表路径
   - 作为新的决策层包裹现有能力
   - 后续逐步将 segmenter 内的分块逻辑迁移到此模块
 """

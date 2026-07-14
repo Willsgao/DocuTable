@@ -1,0 +1,17 @@
+{
+  "id": "abnormal_missing_header",
+  "contract": "C1",
+  "description": "数据列无表头 — 单独归类 missing_header，非质量异常",
+  "data": [
+    ["序号", "名称", ""],
+    ["1", "A", "100"],
+    ["2", "B", "200"]
+  ],
+  "expect": {
+    "needs_review": false,
+    "header_missing": true,
+    "anomaly_class": "missing_header",
+    "is_normal_table": true,
+    "rule_ids_any": ["C01_missing_header"]
+  }
+}

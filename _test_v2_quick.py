@@ -72,7 +72,7 @@ from codes.v2_steps.config import V2Config
 pipeline = V2Pipeline()
 check("Step1 默认启用", pipeline.is_enabled("step1"))
 check("Step2 默认启用", pipeline.is_enabled("step2"))
-check("Step3 默认禁用(待迁移)", not pipeline.is_enabled("step3"))
+check("Step3 默认启用", pipeline.is_enabled("step3"))
 
 pipeline.disable("step2")
 check("disable/enable", not pipeline.is_enabled("step2"))

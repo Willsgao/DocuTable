@@ -1,0 +1,10 @@
+﻿python :   File "<string>", line 17
+所在位置 C:\Users\1\AppData\Local\Temp\ps-script-a0003470-d0fb-4b6e-b282-d5a2b5e3eca7.ps1:83 字符: 47
++ Set-Location f:\wills\my_softwares\DocuTable; python -c "
++                                               ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (  File "<string>", line 17:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    print(f'T{i} y={e.y0:.0f}-{e.y1:.0f} rows={len(rows)} has553={" 553.41\
+          ^
+SyntaxError: unterminated string literal (detected at line 17)

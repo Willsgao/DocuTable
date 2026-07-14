@@ -1,0 +1,18 @@
+# 复制本文件为 anomaly-change-scope.txt 后填写（每次修改任务一份）
+# verify 会据此检查改动范围
+
+task: （一句话描述本次目标）
+
+allowed:
+  - codes/v2_steps/table_anomaly_rules.py
+
+forbidden:
+  - codes/ui/**
+  - codes/pdf_extractor/**
+  - codes/v2_steps/table_anomaly_bridge.py
+
+must_pass:
+  - golden
+  - unit
+
+notes: |

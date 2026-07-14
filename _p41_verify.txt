@@ -1,0 +1,5 @@
+﻿entries: 1 table, 0 text
+ TABLE: rows=23 cols=12 y=76-518
+  row18: 5
+  row28: 22
+  header 序号: True

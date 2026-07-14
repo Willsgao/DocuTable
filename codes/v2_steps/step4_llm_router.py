@@ -21,8 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
-# 复用 rule_based_repair 的异常类型常量
-from codes.table_validator.rule_based_repair import (
+# 复用 table_structure_repair 的异常类型常量
+from codes.table_validator.table_structure_repair import (
     ANCHOR_SHIFT,
     WEAK_ANCHOR,
     HEADER_TEXT_MISSING,
@@ -155,7 +155,7 @@ class Step4LlmRouter:
         """对一批异常做批量路由决策
 
         Args:
-            anomalies: 异常字典列表（通常来自 rule_based_repair 输出）
+            anomalies: 异常字典列表（通常来自 table_structure_repair 输出）
             page_num: 页码
 
         Returns:
@@ -222,10 +222,11 @@ class Step4LlmRouter:
 
         for tr in table_results:
             anomalies = tr.get("anomalies", [])
-            if not anomalies:
-                continue
-            rr = Step4LlmRouter.route_anomalies(
-                anomalies, page_num=tr.get("page", 0))
+            if anomalies:
+                rr = Step4LlmRouter.route_anomalies(
+                    anomalies, page_num=tr.get("page", 0))
+            else:
+                rr = RouteResult(page=tr.get("page", 0), total_anomalies=0)
             per_table.append(rr)
             total_anomalies += rr.total_anomalies
             all_need_llm.extend(rr.need_llm)

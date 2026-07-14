@@ -1,0 +1,10 @@
+﻿python :   File "<string>", line 19
+所在位置 C:\Users\1\AppData\Local\Temp\ps-script-179748f8-d9f8-47dc-8ab9-e731cf35322b.ps1:83 字符: 47
++ Set-Location f:\wills\my_softwares\DocuTable; python -c "
++                                               ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (  File "<string>", line 19:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    print(f'row{ri}: col0={repr(r0[0][:20] if r0[0] else " \)}
+          ^
+SyntaxError: unterminated string literal (detected at line 19)

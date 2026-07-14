@@ -1,0 +1,16 @@
+{
+  "id": "abnormal_header_misalign",
+  "contract": "R08",
+  "description": "邻列表头数据错位",
+  "data": [
+    ["序号", "有表头列", "", "金额"],
+    ["1", "数据A", "错位列数据1", "100"],
+    ["2", "", "错位列数据2", "200"],
+    ["3", "", "错位列数据3", "300"],
+    ["4", "", "错位列数据4", "400"]
+  ],
+  "expect": {
+    "needs_review": true,
+    "rule_ids_any": ["R08_header_data_misalign"]
+  }
+}

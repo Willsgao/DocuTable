@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "hash": "4e0dc2334602fc47",
+  "cases": {
+    "normal_three_col": {
+      "needs_review": false,
+      "is_normal_table": true,
+      "rule_ids": []
+    },
+    "normal_wrap_p43": {
+      "needs_review": false,
+      "is_normal_table": true,
+      "rule_ids": []
+    },
+    "normal_multi_header": {
+      "needs_review": false,
+      "is_normal_table": true,
+      "rule_ids": []
+    },
+    "normal_report_period_header": {
+      "needs_review": false,
+      "is_normal_table": true,
+      "rule_ids": []
+    },
+    "normal_text_len_neighbors": {
+      "needs_review": false,
+      "is_normal_table": true,
+      "rule_ids": []
+    },
+    "abnormal_p43_split": {
+      "needs_review": true,
+      "is_normal_table": false,
+      "rule_ids": [
+        "R02_merged_in_short_col"
+      ]
+    },
+    "abnormal_missing_header": {
+      "needs_review": false,
+      "is_normal_table": true,
+      "rule_ids": [
+        "C01_missing_header"
+      ]
+    },
+    "abnormal_numeric_merge": {
+      "needs_review": true,
+      "is_normal_table": false,
+      "rule_ids": [
+        "R04_merged_numeric"
+      ]
+    },
+    "abnormal_header_misalign": {
+      "needs_review": true,
+      "is_normal_table": false,
+      "rule_ids": [
+        "C01_missing_header",
+        "R08_header_data_misalign"
+      ]
+    },
+    "abnormal_c02_row": {
+      "needs_review": true,
+      "is_normal_table": false,
+      "rule_ids": [
+        "C02_unrecognized_data_row"
+      ]
+    }
+  }
+}

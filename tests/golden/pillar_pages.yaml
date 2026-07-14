@@ -1,0 +1,50 @@
+# 第三支柱 PDF — Table Engine Step 5 P0 验收清单
+total_pages: 43
+
+# 所有 is_table_page 必须至少建出 1 张表
+table_pages_must_build: true
+
+# P0 页：失败即阻断 Step 5
+p0_pages:
+  - page: 5
+    min_tables: 1
+    max_tables: 2
+    max_text: 2
+    layout: pillar_disclosure
+  - page: 6
+    min_tables: 1
+    max_tables: 2
+    max_text: 2
+    layout: pillar_disclosure
+  - page: 9
+    min_tables: 1
+    max_tables: 2
+    max_text: 2
+    layout: pillar_disclosure
+  - page: 10
+    min_tables: 1
+    max_tables: 1
+    max_text: 3
+    layout: pillar_cc1
+  - page: 11
+    min_tables: 1
+    max_tables: 1
+    max_text: 2
+    layout: pillar_cc1
+  - page: 13
+    min_tables: 1
+    max_tables: 1
+    max_text: 2
+    layout: pillar_cc2
+  - page: 27
+    min_tables: 1
+    max_tables: 2
+    max_text: 2
+    layout: pillar_sec1
+
+# 全文档规模参考（非硬失败，仅打印对比）
+expected_totals:
+  min_tables: 33
+  max_tables: 50
+  min_text: 25
+  max_text: 80

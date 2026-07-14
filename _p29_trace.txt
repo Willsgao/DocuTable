@@ -1,0 +1,7 @@
+﻿scope_y0_for_region 275.9
+margin_below 30.0
+expand_y_limit 613.95
+band count 39 ymin 263.9
+after expand 44 ymin 263.9 ymax 605.52
+after append 44 ymax 605.52
+desc_items 业务及管理费 ys [369.91]

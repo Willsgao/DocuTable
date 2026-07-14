@@ -1,0 +1,3 @@
+﻿0 ['a', 'b', 'c', 'd', 'e', 'a', 'b', 'c', 'd', 'e'] pillar_band= True
+1 ['（人民币百万元，百分', '2024 年第四季度', '2024 年第三季度'] pillar_band= True
+2 ['序号'] pillar_band= False

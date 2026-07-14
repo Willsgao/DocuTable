@@ -56,6 +56,13 @@ class ProcessingManager(QObject):
         elif cache_info.get('is_valid', False):
             cached_data = load_mid_data(path)
             if cached_data:
+                from codes.v2_steps.table_anomaly_bridge import ensure_anomaly_reports
+                flagged = ensure_anomaly_reports(
+                    cached_data, pdf_path=path, force=False,
+                )
+                if flagged:
+                    print(f"[Anomaly] 缓存补检: {flagged} 张表标记为异常")
+                save_mid_data(path, cached_data)
                 self.mw.current_file = path
                 self.mw.processed_results = cached_data
                 self.mw.file_label.setText(f"{os.path.basename(path)} [从缓存加载]")
@@ -203,6 +210,12 @@ class ProcessingManager(QObject):
         self.mw.preview_text.append(
             f"PDF类型: {'图片型（扫描件）' if result.get('is_image_pdf') else '文字型（可直接复制）'}\n"
         )
+        seg_report = result.get("segmentation_report") or {}
+        if seg_report.get("error") == "scanned_pdf_ocr_required":
+            self.mw.preview_text.append(
+                "⚠ Table Engine: 扫描 PDF 需 OCR 后端，当前 stub 未接入，"
+                "表格建表已跳过。\n"
+            )
         self.mw.preview_text.append("页面统计:\n")
         self.mw.preview_text.append(f"  总页面数: {total_pages}\n")
         self.mw.preview_text.append(f"  ✅ 可信表格: {success_count} 个\n")

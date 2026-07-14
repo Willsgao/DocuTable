@@ -254,6 +254,19 @@ class V2Pipeline:
         if self._enabled.get("step_dedup", True) and len(page_results) >= 2:
             self._run_step_dedup(page_results)
 
+        # ---- 最终异常检测（data 已定稿：Step2+去重后）----
+        # 在 Step1 初检之外，于 data 最终版本上重跑一遍检测，使 UI 🔴 标记与
+        # 实际展示数据对齐。
+        # 注意：Step4 LLM 路由基于 Step1 初检 _anomaly（此时已固化），本终检会
+        # 覆盖 _anomaly，故 Step4 路由结果与实际 UI 标记可能不完全一致（预期行为）。
+        from .table_anomaly_bridge import detect_anomalies_for_table
+        for r in page_results:
+            if r.get("type") != "table":
+                continue
+            r["_anomaly"] = detect_anomalies_for_table(
+                r, words=ctx.words,
+            )
+
         # ---- 页面类型标记：Pipeline 层仅产出表格，base 默认为纯表格 ----
         # 下游 processor 会基于实际段落存在情况覆写为 "mixed"
         for r in page_results:
@@ -284,6 +297,7 @@ class V2Pipeline:
                 modified_data, merge_info, stats = Step2MergeDetect.execute(
                     table_data, ctx.drawings, row_bounds, col_bounds, cfg,
                     apply_merge=self._step2_apply_merge,
+                    words=result.get("_source_words"),
                 )
                 if self._step2_apply_merge:
                     result["data"] = modified_data
@@ -350,19 +364,23 @@ class V2Pipeline:
         决策哪些表格需要 LLM 复核。
         """
         from .step4_llm_router import Step4LlmRouter
+        from .table_anomaly_bridge import anomaly_reasons_to_step4_list
 
         # 收集本页所有表格的异常信息
+        # 注：异常字段名为 _anomaly（Step1 初检 / 终检写入），而非 anomalies。
+        # Step4 路由仅用于 LLM 触发决策，column_merge_anomaly 不在 Position/Semantic
+        # 类型集内，几乎不会触发 LLM（属预期：主目标为 UI 🔴 人工复核标记）。
         table_anomaly_list = []
         for result in page_results:
             if result.get("type") != "table":
                 continue
             classify = result.get("classify", {})
-            anomalies = result.get("anomalies", [])
+            raw_anomaly = result.get("_anomaly", {}) or {}
             table_anomaly_list.append({
                 "page": result.get("page", 0),
                 "needs_review": classify.get("needs_review", False),
                 "weighted_score": classify.get("weighted_score", 1.0),
-                "anomalies": anomalies,
+                "anomalies": anomaly_reasons_to_step4_list(raw_anomaly),
             })
 
         if not table_anomaly_list:
@@ -371,11 +389,17 @@ class V2Pipeline:
         # 跨表批量路由
         batch_result = Step4LlmRouter.route_across_tables(table_anomaly_list)
 
-        # 将路由结果附加到每页结果上
-        for i, result in enumerate(page_results):
+        # 将路由结果附加到每页结果上（per_table 与 table_anomaly_list 一一对应）
+        table_route_idx = 0
+        for result in page_results:
             if result.get("type") != "table":
                 continue
-            per_table = batch_result["per_table"][i] if i < len(batch_result["per_table"]) else {}
+            per_table = (
+                batch_result["per_table"][table_route_idx]
+                if table_route_idx < len(batch_result["per_table"])
+                else {}
+            )
+            table_route_idx += 1
             classify = result.get("classify", {})
             result["llm_route"] = {
                 "need_llm": per_table.get("need_llm_count", 0) > 0,
@@ -479,7 +503,7 @@ class V2Pipeline:
         将 page_results 数据格式转换为 (table_data, repair_info) 元组列表，
         调用 deduplicate_adjacent_tables，然后将去重结果写回 page_results。
         """
-        from codes.table_validator.rule_based_repair import deduplicate_adjacent_tables
+        from codes.table_validator.table_structure_repair import deduplicate_adjacent_tables
 
         # 仅处理 table 类型的结果
         table_indices = [

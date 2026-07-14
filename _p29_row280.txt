@@ -1,0 +1,12 @@
+﻿item 280.9 45.30亿元，主要是债券投资处置收益和证券化资产转让业务收益同比增加 ；汇兑收益73.63亿元，较上年增加
+cells ['45.30亿元，主要是债券投资处置收益和证券化资产转让业务收益同比增加 ；汇兑收益73.63亿元，较上年增加']
+entity False
+maturity False
+section False
+letter False
+rmb False
+period False
+year False
+fv False
+wfv False
+pfv True

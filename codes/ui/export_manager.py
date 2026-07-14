@@ -27,13 +27,13 @@ class ExportManager:
         success_tables = [t for t in tables
                           if t.get('parse_status') == 'success'
                           and (t.get('manual_mark') == 'table'
-                               or t.get('table_category') == '财务数据表')]
+                               or t.get('table_category') in ('财务数据表', '数据表(缺表头)'))]
         empty_tables = [t for t in tables if t.get('parse_status') == 'empty']
 
         if not success_tables and not empty_tables:
             QMessageBox.warning(self.mw, "警告",
                                 "没有可导出的表格数据\n"
-                                "（导出规则：人工标记为「人工表格」+ 自动识别为「财务数据表」的页面）")
+                                "（导出规则：人工标记为「人工表格」+「财务数据表 / 数据表(缺表头)」）")
             return
 
         # 如果有空数据但没有成功数据，提示用户

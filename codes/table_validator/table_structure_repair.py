@@ -2493,7 +2493,7 @@ def _try_parse_headers_from_context(
 
 # ── 从原始 liteparse items 中提取真实列标题 ──
 
-# 年份模式（与 liteparse_table_segmenter 保持一致）
+# 年份模式（与 Table Engine 表头识别保持一致）
 _RAW_YEAR_PATTERN = re.compile(r'(19|20)\d{2}年?')
 _RAW_ENTITY_KW = ['本集团', '本行', '本公司', '母公司', '子公司',
                   '本基金', '本计划', '本集合', '本产品']

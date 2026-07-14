@@ -1,0 +1,15 @@
+{
+  "id": "normal_three_col",
+  "contract": "C1+C2+C3",
+  "description": "基础三列文本表",
+  "data": [
+    ["名称", "地址", "电话"],
+    ["支行A", "成都市XX路1号", "028-12345678"],
+    ["支行B", "成都市YY路2号", "028-87654321"]
+  ],
+  "expect": {
+    "needs_review": false,
+    "is_normal_table": true,
+    "rule_ids": []
+  }
+}

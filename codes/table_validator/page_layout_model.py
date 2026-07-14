@@ -98,7 +98,7 @@ class PageLayoutModel:
         """表格覆盖范围的 Y 边距。
 
         替代：
-          - hybrid_segmenter.py: Y_MARGIN_BELOW = 30.0
+          - 旧 hybrid 分割链: Y_MARGIN_BELOW = 30.0
           - processor.py: _Y_MARGIN = 25.0
 
         策略：行高的 70%，但不少于 15pt 且不多于 40pt。

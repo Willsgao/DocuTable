@@ -11,12 +11,18 @@ Step 1: 表格线感知列切分
 从 processor.py 迁移而来，消除 self.V2_CONFIG 依赖。
 """
 
+import re
 import statistics
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
 
 from .models import PipelineContext
 from .config import V2Config
+from .column_align_utils import (
+    assign_words_to_grid as _assign_words_to_grid_bilateral,
+    detect_bilateral_column_boundaries,
+    gap_fallback_boundaries,
+)
 
 
 class Step1ColumnSplit:
@@ -25,6 +31,29 @@ class Step1ColumnSplit:
     独立于 PDFProcessor，所有配置通过参数传入。
     默认配置从 V2Config.STEP1_DEFAULTS 获取。
     """
+
+    # ================================================================
+    # 名称+地址合并拆分（liteparse 将相邻列文本合并为一个 item）
+    # ================================================================
+    _NAME_SUFFIX_RE = re.compile(
+        r"(?:支行|分行|营业部|分理处|储蓄所|信用社"
+        r"|办事处|受理点|服务部|经营部|管理部|代表处|分部)"
+    )
+    _ADDR_START_STRONG_RE = re.compile(
+        r"^[\u4e00-\u9fff]{2,}(?:省|市|县|区|自治[州县区旗])"
+    )
+    # 数值 token：独立数字（含逗号千分位、小数点、负号），用于检测两个数值挤到一格
+    _NUMERIC_TOKEN_RE = re.compile(r'^[\d,.\-]+$')
+    # 文本表结构：地址/机构名特征（分支机构表等）
+    _ADDR_MARKERS_RE = re.compile(
+        r"(?:省|市|自治区|州|县|区|路|街|号|大道|广场|层|幢|栋|号楼|裙楼)"
+    )
+    _BRANCH_MARKERS_RE = re.compile(
+        r"(?:支行|分行|营业部|分理处|储蓄所|总行|营业室)"
+    )
+    _MERGED_SERIAL_LABEL_ADDR_RE = re.compile(
+        r"^\s*\d{1,3}\s+[\u4e00-\u9fff].+?(?:省|市|区|县|路|街|号|大道|广场|新区)"
+    )
 
     @classmethod
     def execute(cls, ctx: PipelineContext, config: Optional[Dict[str, Any]] = None) -> List[Dict]:
@@ -121,6 +150,9 @@ class Step1ColumnSplit:
                 if len(sub_region_words) < 3:
                     continue
 
+                # 拆分 liteparse 合并的名称+地址项（如"华兴支行 成都市人民中路…"）
+                sub_region_words = cls._split_name_addr_merged_words(sub_region_words)
+
                 # 提取上下文文本
                 context_text = cls._extract_context_text(
                     words, srx0, sry0, srx1, sry1)
@@ -138,10 +170,14 @@ class Step1ColumnSplit:
                     continue
 
                 # 5. 网格填充（原始数据，未规范化）
-                table_data = cls._assign_words_to_grid(
+                table_data, cell_meta = cls._assign_words_to_grid(
                     sub_region_words, row_bounds, col_bounds, config)
                 if not table_data or len(table_data) < 2:
                     continue
+
+                # 5b. 异常检测（合并单元格/切碎迹象识别）
+                anomaly_report = cls._detect_table_anomalies(
+                    table_data, sub_region_words, row_bounds, col_bounds)
 
                 # 6. 置信度（基于原始网格）
                 has_border = bool([d for d in drawings if d.get("direction") in ("h", "v")])
@@ -162,6 +198,10 @@ class Step1ColumnSplit:
                     # 保存内部数据供 Step 2 使用
                     "_row_bounds": row_bounds,
                     "_col_bounds": col_bounds,
+                    "_source_words": sub_region_words,
+                    "cell_meta": cell_meta,
+                    # 异常检测报告（供后续步骤判是否需要 LLM 修复）
+                    "_anomaly": anomaly_report,
                 })
 
             if paragraph_found_count > 0:
@@ -430,6 +470,127 @@ class Step1ColumnSplit:
         return rows
 
     # ================================================================
+    # 列边界检测：名称+地址合并拆分
+    # ================================================================
+
+    @classmethod
+    def _split_name_addr_merged_words(cls, words: List[dict]) -> List[dict]:
+        """将 liteparse 合并的「机构名+地址」复合 word 拆分为两个独立 word。
+
+        两遍扫描：
+        - Pass 1：从独立行收集名称 x1 中位数和地址 x0 中位数
+        - Pass 2：用参考坐标拆分合并项
+
+        名称列（文本，左对齐）→ 用独立名称 item 的 x1 中位数作为右边界
+        地址列（文本，左对齐）→ 用独立地址 item 的 x0 中位数作为左边界
+
+        只在副本上操作，不修改原始数据。
+        """
+        if not words or len(words) < 3:
+            return words
+
+        # --- 检测函数 ---
+        def _try_detect_merge(text: str) -> Optional[Tuple[str, str]]:
+            t = str(text or "").strip()
+            if len(t) < 10:
+                return None
+            m = cls._NAME_SUFFIX_RE.search(t)
+            if not m:
+                return None
+            split_pos = m.end()
+            name_part = t[:split_pos].strip()
+            addr_part = t[split_pos:].strip()
+            if len(name_part) < 4 or len(addr_part) < 4:
+                return None
+            if not re.search(r"[\u4e00-\u9fff]", addr_part):
+                return None
+            if not re.search(r"(?:[路街号市区镇层栋幢厦])", addr_part):
+                return None
+            if not (cls._ADDR_START_STRONG_RE.match(addr_part)
+                    or re.match(r"^\d", addr_part)):
+                return None
+            return (name_part, addr_part)
+
+        # --- Pass 1: 收集参考坐标 ---
+        name_x1s: List[float] = []
+        addr_x0s: List[float] = []
+
+        for w in words:
+            t = str(w.get("text", "")).strip()
+            x0 = float(w.get("x0", 0))
+            x1 = float(w.get("x1", 0))
+            if not t or not re.search(r"[\u4e00-\u9fff]", t):
+                continue
+            # 跳过会被拆分的项，避免污染参考坐标
+            if _try_detect_merge(t):
+                continue
+            # 纯名称 item（如"华兴支行"）→ 记录 x1
+            if cls._NAME_SUFFIX_RE.search(t):
+                name_x1s.append(x1)
+            # 独立地址 item（如"成都市一环路南四段 30 号"）→ 记录 x0
+            elif re.search(r"(?:[路街号市区镇层栋幢厦])", t):
+                addr_x0s.append(x0)
+
+        ref_name_x1: Optional[float] = None
+        if name_x1s:
+            name_x1s.sort()
+            ref_name_x1 = name_x1s[len(name_x1s) // 2]
+
+        ref_split_x: Optional[float] = None
+        if addr_x0s:
+            addr_x0s.sort()
+            ref_split_x = addr_x0s[len(addr_x0s) // 2]
+
+        # --- Pass 2: 拆分合并项 ---
+        has_split = False
+        result: List[dict] = []
+        for w in words:
+            t = str(w.get("text", "")).strip()
+            split = _try_detect_merge(t)
+            if not split:
+                result.append(w)
+                continue
+
+            has_split = True
+            name_part, addr_part = split
+            x0 = float(w.get("x0", 0))
+            x1 = float(w.get("x1", 0))
+
+            # 名称 x1 估算：优先用参考坐标，否则按文字宽度估算
+            if ref_name_x1 and ref_name_x1 > x0 + 10:
+                name_x1 = min(ref_name_x1, x1 - 20)
+            else:
+                name_x1 = x0 + max(4, len(name_part)) * 11.0
+
+            # 地址 x0 估算：优先用参考坐标
+            if ref_split_x and ref_split_x > name_x1 + 4:
+                addr_x0 = ref_split_x
+            else:
+                addr_x0 = name_x1 + 6.0
+
+            # 确定安全分割点
+            split_boundary = max(name_x1 + 2, addr_x0)
+            if split_boundary >= x1 - 10:
+                # 参考坐标不可用，回退到文字比例估算
+                ratio = len(name_part) / max(len(name_part) + len(addr_part), 1)
+                split_boundary = x0 + max(0, (x1 - x0) * ratio)
+
+            # 构建两个拆分 item
+            w_name = dict(w)
+            w_name["text"] = name_part
+            w_name["x1"] = split_boundary - 1
+
+            w_addr = dict(w)
+            w_addr["text"] = addr_part
+            w_addr["x0"] = split_boundary
+            w_addr["x1"] = x1
+
+            result.append(w_name)
+            result.append(w_addr)
+
+        return result if has_split else words
+
+    # ================================================================
     # 列边界检测
     # ================================================================
 
@@ -460,55 +621,25 @@ class Step1ColumnSplit:
 
         anchor_lines = inner_lines[:]
 
-        # 指令2：文本对齐聚簇
-        x0_list = [w["x0"] for w in words if w["text"].strip()]
-        x1_list = [w["x1"] for w in words if w["text"].strip()]
+        # 指令2：双边对齐聚簇（标签 x0 + 数值 x1，参考另一侧坐标防拆列）
+        boundaries = detect_bilateral_column_boundaries(
+            words,
+            page_width,
+            config,
+            anchor_lines=anchor_lines,
+            fuse_fn=cls._fuse_line_anchors_with_aligns,
+        )
+        if boundaries and len(boundaries) >= 3:
+            return boundaries
 
-        if x0_list:
-            left_aligns = cls._cluster_1d(x0_list, config["align_tolerance"])
-            right_aligns = cls._cluster_1d(x1_list, config["align_tolerance"])
-            all_aligns = sorted(set(left_aligns + right_aligns))
-
-            if anchor_lines:
-                all_aligns = cls._fuse_line_anchors_with_aligns(
-                    all_aligns, anchor_lines, config["align_tolerance"])
-
-            if len(all_aligns) >= 3:
-                return all_aligns
-
-        # 指令3：gap检测（兜底）
-        all_x = sorted(set(x0_list + x1_list))
-        if len(all_x) < 3:
-            return [0, page_width]
-
-        gaps = []
-        gap_positions = []
-        for i in range(len(all_x) - 1):
-            gap = all_x[i + 1] - all_x[i]
-            if gap > 0:
-                gaps.append(gap)
-                gap_positions.append((all_x[i], all_x[i + 1]))
-
-        if not gaps:
-            return [0, page_width]
-
-        median_gap = statistics.median(gaps)
-        stdev_gap = statistics.stdev(gaps) if len(gaps) >= 2 else median_gap * 0.5
-        gap_threshold = max(
-            median_gap + stdev_gap * config["gap_factor"], config["gap_min"])
-
-        boundaries = [0]
-        for (left, right), gap in zip(gap_positions, gaps):
-            if gap > gap_threshold:
-                boundaries.append((left + right) / 2)
-
-        if anchor_lines:
-            boundaries = cls._fuse_line_anchors_with_aligns(
-                boundaries, anchor_lines, config["gap_min"])
-        else:
-            boundaries.append(page_width)
-
-        return sorted(set(boundaries))
+        # 指令3：gap检测（兜底，数值用 x1、文本用 x0）
+        return gap_fallback_boundaries(
+            words,
+            page_width,
+            config,
+            anchor_lines=anchor_lines,
+            fuse_fn=cls._fuse_line_anchors_with_aligns,
+        )
 
     # ================================================================
     # 线条辅助方法
@@ -585,74 +716,38 @@ class Step1ColumnSplit:
     def _assign_words_to_grid(words: List[dict],
                               row_bounds: List[Tuple[float, float]],
                               col_bounds: List[float],
-                              config: Dict[str, Any]) -> List[List[str]]:
-        """将 words 分配到行列网格中（重叠面积法）"""
-        n_rows = len(row_bounds)
-        n_cols = len(col_bounds) - 1
-
-        if n_rows == 0 or n_cols == 0:
-            return []
-
-        grid = [[[] for _ in range(n_cols)] for _ in range(n_rows)]
-
-        for w in words:
-            wx0, wy0, wx1, wy1 = w["x0"], w["y0"], w["x1"], w["y1"]
-            text = w["text"]
-
-            if not text.strip():
-                continue
-
-            # 行分配
-            row_idx = None
-            center_y = (wy0 + wy1) / 2
-            margin = (row_bounds[0][1] - row_bounds[0][0]) * config["row_margin_factor"]
-            for r, (y_top, y_bot) in enumerate(row_bounds):
-                if (y_top - margin) <= center_y <= (y_bot + margin):
-                    row_idx = r
-                    break
-
-            # 列分配：重叠面积法
-            col_idx = None
-            max_overlap = 0
-            for c in range(n_cols):
-                col_left = col_bounds[c]
-                col_right = col_bounds[c + 1]
-                overlap = max(0.0, min(wx1, col_right) - max(wx0, col_left))
-                if overlap > max_overlap:
-                    max_overlap = overlap
-                    col_idx = c
-
-            # 兜底：最近列中心
-            if col_idx is None:
-                center_x = (wx0 + wx1) / 2
-                min_dist = float('inf')
-                for c in range(n_cols):
-                    col_center = (col_bounds[c] + col_bounds[c + 1]) / 2
-                    dist = abs(center_x - col_center)
-                    if dist < min_dist:
-                        min_dist = dist
-                        col_idx = c
-
-            if row_idx is not None and col_idx is not None:
-                grid[row_idx][col_idx].append(text)
-
-        # 合并单元格文本
-        result = []
-        for r in range(n_rows):
-            row_data = []
-            for c in range(n_cols):
-                cell_texts = grid[r][c]
-                if cell_texts:
-                    row_data.append(" ".join(cell_texts))
-                else:
-                    row_data.append("")
-            result.append(row_data)
-
-        return result
+                              config: Dict[str, Any]) -> Tuple[List[List[str]], Dict]:
+        """将 words 分配到行列网格（锚点落列 + 标签缩进 + cell_meta）。"""
+        out = _assign_words_to_grid_bilateral(words, row_bounds, col_bounds, config)
+        if isinstance(out, tuple):
+            data, meta = out
+        else:
+            data, meta = out, {}
+        return Step1ColumnSplit._strip_empty_columns(data), meta
 
     # ================================================================
     # 规范化
     # ================================================================
+
+    @staticmethod
+    def _strip_empty_columns(table_data: List[List[str]]) -> List[List[str]]:
+        """移除空列及极稀疏列（>90% 行为空）。
+
+        x0/x1 对齐点混合产生的列检测可能产生大量空列（窄间隙列），
+        以及只有地址续行碎片等零星数据的稀疏列。
+        此方法在网格填充后清理这些列，保持数据列紧凑。
+        """
+        if not table_data or not table_data[0]:
+            return table_data
+        n_rows = len(table_data)
+        n_cols = len(table_data[0])
+        non_empty_cols = [
+            c for c in range(n_cols)
+            if sum(1 for row in table_data if row[c].strip()) > n_rows * 0.1
+        ]
+        if len(non_empty_cols) == n_cols:
+            return table_data
+        return [[row[c] for c in non_empty_cols] for row in table_data]
 
     @staticmethod
     def _normalize_table_columns(table_data: List[List[str]]) -> List[List[str]]:
@@ -763,3 +858,28 @@ class Step1ColumnSplit:
             confidence += config["confidence_line_bonus"]
 
         return min(1.0, max(0.0, confidence))
+
+    # ================================================================
+    # 异常检测：识别合并/切碎迹象
+    # ================================================================
+
+    @staticmethod
+    def _detect_table_anomalies(
+        table_data: List[List[str]],
+        words: List[dict],
+        row_bounds: List[Tuple[float, float]],
+        col_bounds: List[float],
+    ) -> Dict[str, Any]:
+        """检测表格分列异常：确定性硬规则，命中任一条即 needs_review。
+
+        规则定义见 table_anomaly_rules.py（R01~R07）。
+        row_bounds 保留参数兼容；列角色与结构规则只依赖 table_data。
+        """
+        from .table_anomaly_rules import evaluate_table_issues, issues_to_report
+
+        issues, _roles = evaluate_table_issues(
+            table_data,
+            words=words,
+            col_bounds=col_bounds,
+        )
+        return issues_to_report(issues, table_data)

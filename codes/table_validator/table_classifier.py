@@ -11,10 +11,13 @@ Table Classifier — 规则判定真表格 vs 假表格
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Any
 
 from .config import CLASSIFIER_CONFIG, TOC_KEYWORDS
 from .models import ClassifyResult
+
+_PERIOD_HEADER_RE = re.compile(r"(?:19|20)\d{2}\s*年")
 
 
 def _is_numeric_value(val: str) -> bool:
@@ -54,6 +57,29 @@ def _column_duplicate_ratio(col_values: List[str]) -> float:
         return 0.0
     most_common_count = counter.most_common(1)[0][1]
     return most_common_count / len(col_values)
+
+
+def _has_period_header_row(data: List[List[str]]) -> bool:
+    """首行含 ≥2 个报告期（年份/完整日期）。"""
+    if not data:
+        return False
+    hits = sum(
+        1 for c in data[0]
+        if c and _PERIOD_HEADER_RE.search(str(c).strip())
+    )
+    return hits >= 2
+
+
+def _count_numeric_data_columns(data: List[List[str]], max_cols: int) -> int:
+    count = 0
+    for c in range(max_cols):
+        col_vals = [
+            str(r[c]).strip() if c < len(r) and r[c] is not None else ""
+            for r in data
+        ]
+        if _column_numeric_ratio(col_vals) >= CLASSIFIER_CONFIG["numeric_column_ratio"]:
+            count += 1
+    return count
 
 
 def _contains_toc_keyword(data: List[List[str]]) -> bool:
@@ -112,13 +138,19 @@ def classify_page(data: List[List[str]], page_num: int) -> ClassifyResult:
         )
     reason_parts.append(f"列数={max_cols} ✓")
 
-    # ---- ③ 数据行 ≥ 3 ----
+    # ---- ③ 数据行 ≥ 3（小表豁免：报告期表头 + ≥2 列数值）----
     data_rows = len(data) - 1 if len(data) > 1 else len(data)  # 排除首行表头
     checks["data_rows"] = data_rows
-    if data_rows < CLASSIFIER_CONFIG["min_data_rows"]:
+    min_rows = CLASSIFIER_CONFIG["min_data_rows"]
+    small_table_ok = (
+        data_rows >= 2
+        and _has_period_header_row(data)
+        and _count_numeric_data_columns(data, max_cols) >= 2
+    )
+    if data_rows < min_rows and not small_table_ok:
         return ClassifyResult(
             page=page_num, is_real_table=False, confidence=0.9,
-            reason=f"数据行不足（{data_rows} < 3），仅 {len(data)} 行",
+            reason=f"数据行不足（{data_rows} < {min_rows}），仅 {len(data)} 行",
             checks=checks,
         )
     reason_parts.append(f"数据行={data_rows} ✓")

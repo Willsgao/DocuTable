@@ -6,7 +6,7 @@
   - **向上（表头）**：日期/年份类行视为多级表头，不因列数少、列不对齐而拆出。
   - **向下（表尾）**：数据区列指纹稳定后，下方行列数或数值列模式偏离 → 停止扩展 / 应拆分。
 
-供 hybrid_segmenter、liteparse_table_segmenter 共用。
+供 Table Engine / header 扩展共用。
 """
 
 from __future__ import annotations
@@ -533,18 +533,26 @@ def remove_fully_empty_rows(data: List[list]) -> List[list]:
     return [list(r) for r in data if any(_cell_nonempty(c) for c in r)]
 
 
-def remove_fully_empty_columns(data: List[list]) -> Tuple[List[list], int]:
-    """删除整列全空的列（所有行该列均无内容）。"""
+def remove_fully_empty_columns(
+    data: List[list],
+    preserve_col_indices: Optional[Set[int]] = None,
+) -> Tuple[List[list], int]:
+    """删除整列全空的列（所有行该列均无内容）。
+
+    preserve_col_indices: 即使全空也保留的列（如 CC1 的「代码」列）。
+    """
     if not data:
         return data, 0
     width = max((len(r) for r in data), default=0)
     if width <= 1:
         return data, 0
 
+    preserve = preserve_col_indices or set()
     empty_cols = [
         c
         for c in range(width)
-        if all(
+        if c not in preserve
+        and all(
             not _cell_nonempty(row[c] if c < len(row) else "")
             for row in data
         )
@@ -680,10 +688,26 @@ def merge_complementary_column_pairs(data: List[list]) -> List[list]:
     return normalized
 
 
-def compact_table_spacer_rows_and_columns(data: List[list]) -> List[list]:
+def _code_column_index_from_header(data: List[list]) -> Optional[int]:
+    """表头含「代码」时返回其列索引，用于保留空代码列。"""
+    width = max((len(r) for r in data), default=0)
+    for row in data[:6]:
+        cells = _pad_row_to_width(row, width)
+        for j, c in enumerate(cells):
+            if str(c).strip() == "代码":
+                return j
+    return None
+
+
+def compact_table_spacer_rows_and_columns(
+    data: List[list],
+    *,
+    preserve_code_column: bool = False,
+) -> List[list]:
     """删除全空行/列，并合并 PDF 间隔造成的互补偏移列。
 
     行序、列序严格保持 PDF 自上而下、从左到右；仅删除空列，不交换列位。
+    preserve_code_column: CC1 a/b 表保留「代码」列，即使多为空白。
     """
     if not data or len(data) < 2:
         return data
@@ -692,8 +716,17 @@ def compact_table_spacer_rows_and_columns(data: List[list]) -> List[list]:
     if not data:
         return data
 
-    data, _ = remove_fully_empty_columns(data)
-    data = merge_complementary_column_pairs(data)
+    preserve: Set[int] = set()
+    if preserve_code_column:
+        code_idx = _code_column_index_from_header(data)
+        if code_idx is not None:
+            preserve.add(code_idx)
+        elif max((len(r) for r in data), default=0) >= 4:
+            preserve.add(3)
+
+    data, _ = remove_fully_empty_columns(data, preserve_col_indices=preserve)
+    if not preserve_code_column:
+        data = merge_complementary_column_pairs(data)
     return data
 
 
@@ -748,6 +781,50 @@ def row_body_mismatch_with_fingerprint(
     return False
 
 
+def _item_in_column_ranges(
+    cx: float,
+    col_ranges: List[Tuple[float, float]],
+    tolerance: float = 15.0,
+) -> bool:
+    for x0, x1 in col_ranges:
+        if x0 - tolerance <= cx <= x1 + tolerance:
+            return True
+    return False
+
+
+def _is_coord_header_row(
+    row_items: List[dict],
+    col_ranges: List[Tuple[float, float]],
+    col_tolerance: float = 15.0,
+) -> bool:
+    """判断一行 items 是否为多列表头行（坐标域）。"""
+    if len(row_items) < 2:
+        return False
+    in_col = []
+    for it in row_items:
+        cx = (it["x0"] + it["x1"]) / 2
+        if _item_in_column_ranges(cx, col_ranges, tolerance=col_tolerance):
+            in_col.append(it)
+    if len(in_col) < 2:
+        return False
+    numeric_count = sum(
+        1 for it in in_col if re.search(r"[\d.,()%]", it.get("text", ""))
+    )
+    total = len(in_col)
+    label_count = total - numeric_count
+    if label_count >= max(2, total // 2):
+        cols_hit = set()
+        for it in in_col:
+            cx = (it["x0"] + it["x1"]) / 2
+            for ci, (rx0, rx1) in enumerate(col_ranges):
+                if rx0 - col_tolerance <= cx <= rx1 + col_tolerance:
+                    cols_hit.add(ci)
+                    break
+        if len(cols_hit) >= 2:
+            return True
+    return False
+
+
 def is_new_table_header_row_items(
     row_items: List[dict],
     col_ranges: List[Tuple[float, float]],
@@ -757,11 +834,9 @@ def is_new_table_header_row_items(
 
     日期-only 行不算新表起点（属于多级表头）。
     """
-    from codes.table_validator.liteparse_table_segmenter import _is_header_row  # noqa: PLC0415
-
     if is_date_only_header_row_items(row_items):
         return False
-    return _is_header_row(row_items, col_ranges, col_tolerance=col_tolerance)
+    return _is_coord_header_row(row_items, col_ranges, col_tolerance=col_tolerance)
 
 
 # --- 表头带 / 主体数据行（region 合并与切分共用，纯结构） ---

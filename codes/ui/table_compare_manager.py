@@ -30,6 +30,203 @@ from codes.ui.validation_dialog import CrossValidationDialog, CrossValidationWor
 from codes.table_validator.cell_differ import diff_table_with_liteparse, classify_rows_with_liteparse, _cluster_items_by_y, _normalize_for_search
 
 
+# ── 条目分类 / 筛选（与导出规则对齐，避免「✅表格」与「财务数据表」筛选项不一致）──
+FINANCIAL_TABLE_CATEGORIES = frozenset({"财务数据表", "数据表(缺表头)"})
+NONSTANDARD_CATEGORIES = frozenset({"目录", "非标准表格", "空表", "图表标签"})
+
+
+def _is_text_entry(table: dict) -> bool:
+    if table.get("type") in ("text", "paragraph"):
+        return True
+    return table.get("parse_status") == "text"
+
+
+def _category_list_badge(table: dict) -> str:
+    """列表项前缀：按分类一眼区分财务表 / 文本 / 非表格。"""
+    if table.get("manual_mark") == "table":
+        return "🔧 "
+    if table.get("manual_mark") == "non_table":
+        return "🚫 "
+    if _is_text_entry(table):
+        return "📝 "
+    cat = table.get("table_category", "")
+    return {
+        "财务数据表": "💰 ",
+        "数据表(缺表头)": "📊 ",
+        "文本列表": "📋 ",
+        "文本段落": "📝 ",
+        "非表格": "❌ ",
+        "目录": "⚠ ",
+        "非标准表格": "⚠ ",
+        "空表": "⚠ ",
+        "图表标签": "⚠ ",
+    }.get(cat, "")
+
+
+def _format_entry_status(table: dict) -> tuple:
+    """返回 (状态栏文案, 样式键)。"""
+    parse_status = table.get("parse_status", "")
+    category = table.get("table_category", "")
+    manual_mark = table.get("manual_mark", "")
+
+    if _is_text_entry(table):
+        label = category or "文本段落"
+        return f"📝 {label}", "text"
+
+    if manual_mark == "non_table":
+        return "🚫 人工非表格", "manual_reject"
+
+    if manual_mark == "table":
+        cat = category or "人工表格"
+        return f"🔧 {cat}", "manual_table"
+
+    if category in FINANCIAL_TABLE_CATEGORIES:
+        return f"💰 {category}", "financial"
+
+    if category == "非表格":
+        return "❌ 非表格", "rejected"
+
+    if category in NONSTANDARD_CATEGORIES:
+        return f"⚠ {category}", "nonstandard"
+
+    if category == "文本列表":
+        return "📋 文本列表", "text_list"
+
+    if category:
+        return f"📄 {category}", "other"
+
+    if parse_status == "success":
+        return "✅ 已解析（未分类）", "parsed"
+
+    if parse_status == "empty":
+        return "○ 空数据", "empty"
+
+    return "❌ 解析失败", "rejected"
+
+
+_STATUS_STYLES = {
+    "financial": """
+        QLabel { color: #1E8449; font-weight: bold; padding: 2px 8px;
+                 background-color: #E9F7EF; border-radius: 4px; border: 1px solid #27AE60; }
+    """,
+    "manual_table": """
+        QLabel { color: #2471A3; font-weight: bold; padding: 2px 8px;
+                 background-color: #EAF2F8; border-radius: 4px; border: 1px solid #2980B9; }
+    """,
+    "manual_reject": """
+        QLabel { color: #B7950B; font-weight: bold; padding: 2px 8px;
+                 background-color: #FEF9E7; border-radius: 4px; border: 1px solid #F39C12; }
+    """,
+    "text": """
+        QLabel { color: #8E44AD; font-weight: bold; padding: 2px 8px;
+                 background-color: #F4ECF7; border-radius: 4px; border: 1px solid #8E44AD; }
+    """,
+    "text_list": """
+        QLabel { color: #7D3C98; font-weight: bold; padding: 2px 8px;
+                 background-color: #F5EEF8; border-radius: 4px; border: 1px solid #9B59B6; }
+    """,
+    "rejected": """
+        QLabel { color: #C0392B; font-weight: bold; padding: 2px 8px;
+                 background-color: #FDEDEC; border-radius: 4px; border: 1px solid #E74C3C; }
+    """,
+    "nonstandard": """
+        QLabel { color: #CA6F1E; font-weight: bold; padding: 2px 8px;
+                 background-color: #FEF5E7; border-radius: 4px; border: 1px solid #E67E22; }
+    """,
+    "parsed": """
+        QLabel { color: #2874A6; font-weight: bold; padding: 2px 8px;
+                 background-color: #EBF5FB; border-radius: 4px; border: 1px solid #3498DB; }
+    """,
+    "empty": """
+        QLabel { color: #7F8C8D; font-weight: bold; padding: 2px 8px;
+                 background-color: #F4F6F6; border-radius: 4px; border: 1px solid #BDC3C7; }
+    """,
+    "other": """
+        QLabel { color: #566573; font-weight: bold; padding: 2px 8px;
+                 background-color: #EAECEE; border-radius: 4px; border: 1px solid #95A5A6; }
+    """,
+    "anomaly": """
+        QLabel { color: #922B21; font-weight: bold; padding: 2px 8px;
+                 background-color: #FADBD8; border-radius: 4px; border: 1px solid #E74C3C; }
+    """,
+    "missing_header": """
+        QLabel { color: #1F618D; font-weight: bold; padding: 2px 8px;
+                 background-color: #EBF5FB; border-radius: 4px; border: 1px solid #3498DB; }
+    """,
+}
+
+
+def _get_anomaly_summary(table: dict) -> dict:
+    """从 table dict 提取行列质检结果（仅 _anomaly，不含 Step3 分类存疑）。"""
+    anomaly = table.get("_anomaly", {})
+
+    needs_review = bool(anomaly.get("needs_review", False))
+    header_missing = bool(anomaly.get("header_missing", False))
+    anomaly_class = str(anomaly.get("anomaly_class", "none"))
+    has_anomalies = anomaly.get("has_anomalies", False)
+    anomaly_score = anomaly.get("anomaly_score", 0)
+    reasons = anomaly.get("reasons", [])
+    cross_boundary = anomaly.get("cross_boundary_words", [])
+    mixed_cells = anomaly.get("mixed_type_cells", [])
+    empty_cols = anomaly.get("empty_cols", [])
+    empty_rows = anomaly.get("empty_rows", [])
+    length_outliers = anomaly.get("length_outliers", [])
+    merged_values = anomaly.get("merged_values", [])
+
+    return {
+        "needs_review": needs_review,
+        "header_missing": header_missing,
+        "anomaly_class": anomaly_class,
+        "is_normal_table": anomaly.get("is_normal_table", not needs_review),
+        "has_anomalies": has_anomalies,
+        "anomaly_score": anomaly_score,
+        "reasons": reasons,
+        "cross_boundary": cross_boundary,
+        "mixed_cells": mixed_cells,
+        "empty_cols": empty_cols,
+        "empty_rows": empty_rows,
+        "length_outliers": length_outliers,
+        "merged_values": merged_values,
+    }
+
+
+def _table_matches_type_filter(table: dict, filter_text: str) -> bool:
+    category = table.get("table_category", "")
+    manual_mark = table.get("manual_mark", "")
+
+    if filter_text == "全部":
+        return True
+    if filter_text == "💰 财务数据表":
+        if category == "财务数据表":
+            return True
+        if manual_mark == "table" and category != "数据表(缺表头)":
+            return True
+        return False
+    if filter_text == "📊 数据表(缺表头)":
+        if category == "数据表(缺表头)":
+            return True
+        return _get_anomaly_summary(table).get("header_missing", False)
+    if filter_text == "📋 文本列表":
+        return category == "文本列表"
+    if filter_text == "📝 文本段落":
+        return _is_text_entry(table) and category in ("", "文本段落")
+    if filter_text == "⚠ 非标准":
+        return category in NONSTANDARD_CATEGORIES
+    if filter_text == "❌ 非表格":
+        if category == "非表格":
+            return True
+        if manual_mark == "non_table":
+            return True
+        return False
+    if filter_text == "🔧 人工表格":
+        return manual_mark == "table"
+    if filter_text == "🚫 人工非表格":
+        return manual_mark == "non_table"
+    if filter_text == "🔴 异常表格":
+        return _get_anomaly_summary(table).get("needs_review", False)
+    return True
+
+
 def _extract_table_title_from_data(table_data):
     """从表格数据中提取标题（用于拆分后子表命名）"""
     if not table_data:
@@ -161,12 +358,23 @@ class TableCompareManager(QObject):
             "全部",
             "💰 财务数据表",
             "📊 数据表(缺表头)",
+            "📝 文本段落",
             "📋 文本列表",
             "⚠ 非标准",
+            "❌ 非表格",
             "🔧 人工表格",
             "🚫 人工非表格",
+            "🔴 异常表格",
         ])
-        self.table_type_filter.setToolTip("筛选显示的页面类型")
+        self.table_type_filter.setToolTip(
+            "筛选左侧列表条目：\n"
+            "· 财务数据表：有完整表头的财务表\n"
+            "· 数据表(缺表头)：C01 缺表头/续表候选（蓝标 📊，可跨页合并）\n"
+            "· 文本段落：分割后的说明/叙述文本（非表格矩阵）\n"
+            "· 非表格：兜底分类为假表、人工标为非表格\n"
+            "· 异常表格：合并/空列/类型混杂等质量异常（红标 🔴）\n"
+            "提示：选中表后状态栏显示分类；悬停列表项可看 tooltip"
+        )
         self.table_type_filter.currentIndexChanged.connect(self.on_table_type_filter_changed)
         self.table_type_filter.setMinimumWidth(100)
         filter_layout.addWidget(self.table_type_filter)
@@ -1103,6 +1311,15 @@ class TableCompareManager(QObject):
             print(f"[DEBUG] processed_results 为空，提前返回")
             return
 
+        from codes.v2_steps.table_anomaly_bridge import ensure_anomaly_reports
+        pdf_path = getattr(self.main_window, "current_file", "") or ""
+        if pdf_path:
+            ensure_anomaly_reports(
+                self.main_window.processed_results,
+                pdf_path=pdf_path,
+                force=False,
+            )
+
         # 重置页面跟踪状态，防止跨PDF污染
         # (_save_previous_page_data 不在此处调用，因为每次编辑时 _sync_ui_to_processed_results 已即时保存，
         #  且切换PDF后 _last_displayed_table_idx 指向旧PDF的索引，会错误地将旧数据写入新PDF)
@@ -1122,31 +1339,8 @@ class TableCompareManager(QObject):
         
         self.filtered_indices = []
         for i, table in enumerate(tables):
-            is_success = table.get('parse_status') == 'success'
-            category = table.get("table_category", "")
-            confidence = table.get("financial_confidence", 0.0)
-
-            manual_mark = table.get('manual_mark', '')
-            if filter_text == "全部":
+            if _table_matches_type_filter(table, filter_text):
                 self.filtered_indices.append(i)
-            elif filter_text == "💰 财务数据表":
-                if category == "财务数据表":
-                    self.filtered_indices.append(i)
-            elif filter_text == "📊 数据表(缺表头)":
-                if category == "数据表(缺表头)":
-                    self.filtered_indices.append(i)
-            elif filter_text == "📋 文本列表":
-                if category == "文本列表":
-                    self.filtered_indices.append(i)
-            elif filter_text == "⚠ 非标准":
-                if category in ("目录", "非标准表格", "空表", "图表标签"):
-                    self.filtered_indices.append(i)
-            elif filter_text == "🔧 人工表格":
-                if manual_mark == "table":
-                    self.filtered_indices.append(i)
-            elif filter_text == "🚫 人工非表格":
-                if manual_mark == "non_table":
-                    self.filtered_indices.append(i)
         
         self.filtered_index = 0
         self.update_filter_nav_buttons()
@@ -1253,6 +1447,8 @@ class TableCompareManager(QObject):
                     merge_info += "[跨页]"
                 if merge_info:
                     quality_icon = merge_info + quality_icon
+            if not quality_icon:
+                quality_icon = _category_list_badge(table)
 
             # 人工标记图标
             manual_mark = table.get('manual_mark', '')
@@ -1268,7 +1464,26 @@ class TableCompareManager(QObject):
             # 自动扫描标记
             auto_scan_mark = " 🤖" if table.get('_auto_scan_hit') else ""
 
-            item_text = f"{quality_icon}{confidence_badge}{status_icon} P{page}_{page_seq[page]} [{ext_tag}]{llm_mark}{merge_mark}{manual_mark_icon}{extracted_mark}{auto_scan_mark}{title_str}"
+            # 异常检测标记（step1 _anomaly / step3 needs_review）
+            anomaly_summary = _get_anomaly_summary(table)
+            anomaly_badge = ""
+            if anomaly_summary["needs_review"]:
+                anomaly_badge = " 🔴"
+            elif anomaly_summary.get("header_missing"):
+                anomaly_badge = " 📊"
+
+            category_tag = ""
+            if (
+                table.get("table_category") == "数据表(缺表头)"
+                or anomaly_summary.get("header_missing")
+            ):
+                category_tag = "[缺表头]"
+
+            item_text = (
+                f"{quality_icon}{confidence_badge}{status_icon} P{page}_{page_seq[page]} "
+                f"[{ext_tag}]{category_tag}{llm_mark}{merge_mark}{manual_mark_icon}"
+                f"{extracted_mark}{auto_scan_mark}{anomaly_badge}{title_str}"
+            )
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
 
@@ -1294,6 +1509,19 @@ class TableCompareManager(QObject):
                 tooltip_parts.append(f"理由: {reason}")
             if merge_tooltip:
                 tooltip_parts.append(merge_tooltip)
+            # 异常检测详情的 tooltip（最醒目的提示）
+            if anomaly_summary["needs_review"]:
+                score = anomaly_summary["anomaly_score"]
+                ab = [f"🔴〔异常检测〕评分: {score:.0%}"]
+                for reason in anomaly_summary["reasons"][:3]:
+                    ab.append(f"  → {reason}")
+                tooltip_parts.extend(ab)
+            elif anomaly_summary.get("header_missing"):
+                ab = ["📊〔表头缺失〕单独归类，可续表/跨页合并"]
+                for reason in anomaly_summary["reasons"][:3]:
+                    if "C01" in reason:
+                        ab.append(f"  → {reason}")
+                tooltip_parts.extend(ab)
             if manual_mark:
                 mark_labels = {"table": "人工表格（将纳入导出）", "non_table": "人工非表格（不导出）"}
                 tooltip_parts.append(f"人工标记: {mark_labels.get(manual_mark, manual_mark)}")
@@ -1465,23 +1693,12 @@ class TableCompareManager(QObject):
         print(f"[DEBUG] 当前页: {pdf_page}, 类型: {table.get('type')}, 状态: {table.get('parse_status')}")
         print(f"[DEBUG] table data 前3行: {table.get('data', [])[:3] if table.get('data') else '无数据'}")
         
-        # 更新表格类型标签
-        parse_status = table.get('parse_status', '')
-        category = table.get('table_category', '')
-        manual_mark = table.get('manual_mark', '')
-        if table.get('type') in ('text', 'paragraph') or parse_status == 'text':
-            status_text = "📝 文本"
-        else:
-            status_text = "✅ 表格" if parse_status == 'success' else "❌ 非表格"
-        # 附加分类信息和人工标记
-        extra_info = ""
-        if category:
-            extra_info = f" | {category}"
-        if manual_mark == "table":
-            extra_info += " | 🔧人工表格"
-        elif manual_mark == "non_table":
-            extra_info += " | 🚫人工非表格"
-        self.table_type_label.setText(f"状态: {status_text}{extra_info}")
+        # 更新表格类型标签（分类与筛选项一致，避免「✅表格」误导）
+        status_text, style_key = _format_entry_status(table)
+        parse_detail = table.get('parse_status', '')
+        if parse_detail and parse_detail not in ('success', 'text') and style_key not in ('text', 'financial'):
+            status_text = f"{status_text} | 解析:{parse_detail}"
+        self.table_type_label.setText(f"状态: {status_text}")
         
         # 更新上下文文本展示区
         context_text = table.get('context_text', '')
@@ -1501,35 +1718,25 @@ class TableCompareManager(QObject):
             else:
                 self.context_text_browser.setPlainText("（无上下文描述文字）")
         
-        # 根据状态设置标签颜色
-        manual_mark_for_color = table.get('manual_mark', '')
-        if manual_mark_for_color == "table":
-            # 人工标记为表格：蓝色强调
-            self.table_type_label.setStyleSheet("""
-                QLabel { color: #2471A3; font-weight: bold; padding: 2px 8px;
-                         background-color: #EAF2F8; border-radius: 4px; border: 1px solid #2980B9; }
-            """)
-        elif manual_mark_for_color == "non_table":
-            # 人工标记为非表格：橙色警告
-            self.table_type_label.setStyleSheet("""
-                QLabel { color: #B7950B; font-weight: bold; padding: 2px 8px;
-                         background-color: #FEF9E7; border-radius: 4px; border: 1px solid #F39C12; }
-            """)
-        elif table.get('type') in ('text', 'paragraph') or parse_status == 'text':
-            self.table_type_label.setStyleSheet("""
-                QLabel { color: #8E44AD; font-weight: bold; padding: 2px 8px;
-                         background-color: #F4ECF7; border-radius: 4px; border: 1px solid #8E44AD; }
-            """)
-        elif parse_status == 'success':
-            self.table_type_label.setStyleSheet("""
-                QLabel { color: #27AE60; font-weight: bold; padding: 2px 8px;
-                         background-color: #E8F8F5; border-radius: 4px; border: 1px solid #27AE60; }
-            """)
-        else:
-            self.table_type_label.setStyleSheet("""
-                QLabel { color: #E74C3C; font-weight: bold; padding: 2px 8px;
-                         background-color: #FDEDEC; border-radius: 4px; border: 1px solid #E74C3C; }
-            """)
+        # 根据分类设置标签颜色
+        # 异常检测优先级最高：红底覆盖任何其他分类样式
+        anomaly_summary = _get_anomaly_summary(table)
+        if anomaly_summary["needs_review"]:
+            style_key = "anomaly"
+            status_text = f"🔴 异常表格 (评分{anomaly_summary['anomaly_score']:.0%})"
+            # 同步更新显示的文本
+            self.table_type_label.setText(f"状态: {status_text}")
+        elif anomaly_summary.get("header_missing"):
+            style_key = "missing_header"
+            status_text = "📊 数据表(缺表头)"
+            self.table_type_label.setText(f"状态: {status_text}（可续表合并）")
+        elif table.get('manual_mark') == "table":
+            style_key = "manual_table"
+        elif table.get('manual_mark') == "non_table":
+            style_key = "manual_reject"
+        self.table_type_label.setStyleSheet(
+            _STATUS_STYLES.get(style_key, _STATUS_STYLES["other"])
+        )
         
         # 显示PDF预览
         print(f"[DEBUG] 准备显示PDF预览")
@@ -1711,7 +1918,78 @@ class TableCompareManager(QObject):
             for j, cell in enumerate(row):
                 item = QTableWidgetItem(str(cell) if cell is not None else "")
                 self.table_widget.setItem(i, j, item)
-        
+
+        # 异常检测（提前提取，供高亮和横幅共用）
+        anomaly = _get_anomaly_summary(table)
+
+        # 异常检测高亮（仅对 data 层，因为异常报告基于 data 生成）
+        if data_key == 'data':
+            if anomaly["needs_review"]:
+                # 优先级: 类型混杂 > 长度异常 > 空行 > 空列
+                highlighted = set()  # (r, c) tuples already colored
+
+                # ① 类型混杂单元格 → 红底（最高优先级）
+                for (r, c, text, dom, ct) in anomaly["mixed_cells"]:
+                    if r < rows and c < cols and (r, c) not in highlighted:
+                        item = self.table_widget.item(r, c)
+                        if item:
+                            item.setBackground(QColor("#FADBD8"))
+                            item.setToolTip(
+                                f"🔴 类型混杂: 本列应为「{dom}」而此格为「{ct}」\n"
+                                f"内容: {text}\n→ 疑似跨列合并，请人工检查")
+                            highlighted.add((r, c))
+
+                # ② 长度异常 → 橙底
+                for (r, c, text, mean_len, cell_len) in anomaly["length_outliers"]:
+                    if r < rows and c < cols and (r, c) not in highlighted:
+                        item = self.table_widget.item(r, c)
+                        if item:
+                            item.setBackground(QColor("#FDEBD0"))
+                            item.setToolTip(
+                                f"🟠 长度异常: {cell_len}字 vs 列均值{mean_len:.0f}字\n"
+                                f"内容: {text}\n→ 疑似多列数据被合并到此格")
+                            highlighted.add((r, c))
+
+                # ③ 空行 → 灰底（填充率断崖式下跌）
+                for (r, ratio) in anomaly["empty_rows"]:
+                    if r < rows:
+                        for c2 in range(cols):
+                            if (r, c2) in highlighted:
+                                continue
+                            item = self.table_widget.item(r, c2)
+                            if item:
+                                item.setBackground(QColor("#EAECEE"))
+                                if not item.toolTip() and not str(item.text()).strip():
+                                    item.setToolTip(
+                                        f"⬜ 空行碎片 (填充率{ratio:.0%})\n"
+                                        f"→ 疑似长文本被错误切分为多行")
+                        # 不标记 highlighted，空列仍可覆盖
+
+                # ④ 空列 → 浅灰底
+                for (c, ratio) in anomaly["empty_cols"]:
+                    if c < cols:
+                        for r2 in range(rows):
+                            if (r2, c) in highlighted:
+                                continue
+                            item = self.table_widget.item(r2, c)
+                            if item:
+                                item.setBackground(QColor("#F4F6F6"))
+                                if not item.toolTip():
+                                    item.setToolTip(
+                                        f"⬜ 疑似空白列 (空值率{ratio:.0%})\n"
+                                        f"→ 列检测可能产生了多余的列边界")
+
+                # ⑤ 数值合并 → 紫红底（纯数值列中一个格子含两个独立数值）
+                for (r, c, text, n_tokens) in anomaly["merged_values"]:
+                    if r < rows and c < cols and (r, c) not in highlighted:
+                        item = self.table_widget.item(r, c)
+                        if item:
+                            item.setBackground(QColor("#E8DAEF"))
+                            item.setToolTip(
+                                f"🟣 数值合并: 含{n_tokens}个独立数值\n"
+                                f"内容: {text}\n→ 疑似相邻列数值被挤到一格，切分不够细")
+                            highlighted.add((r, c))
+
         self.table_widget.resizeColumnsToContents()
         self.table_widget.blockSignals(False)
         
@@ -1719,8 +1997,17 @@ class TableCompareManager(QObject):
         if self.diff_mode:
             self._apply_diff_highlight(table, data)
         
-        # 更新统计标签（显示分类 + 置信度 + 锁定状态）
+        # 更新统计标签（显示分类 + 置信度 + 异常检测 + 锁定状态）
         tip = "选中单元格查看统计信息"
+        # 异常检测横幅（最优先展示，anomaly 在填充区已计算）
+        if anomaly["needs_review"]:
+            reasons_brief = "；".join(
+                r.split("，")[0][:40] for r in anomaly["reasons"][:2]
+            )
+            tip = (f"🔴〔异常检测〕评分 {anomaly['anomaly_score']:.0%} | "
+                   f"{reasons_brief} | " + tip)
+        elif anomaly.get("header_missing"):
+            tip = "📊〔表头缺失〕可续表/跨页合并 | " + tip
         # 分割视图下显示分类和置信度
         if self.segment_view_mode:
             cat = table.get("table_category", "")
@@ -2916,12 +3203,18 @@ class TableCompareManager(QObject):
         self.table_widget.resizeColumnsToContents()
     
     def calculate_selected(self):
-        """计算选中区域"""
+        """计算选中区域；单格选中时显示 Table Engine 溯源 bbox。"""
         selected = self.table_widget.selectedItems()
         if not selected:
             self.stats_label.setText("请先选择单元格区域")
             return
-        
+
+        if len(selected) == 1:
+            trace_line = self._trace_selected_cell_bbox(selected[0])
+            if trace_line:
+                self.stats_label.setText(trace_line)
+                return
+
         total_sum = 0
         count = 0
         values = []
@@ -2941,7 +3234,48 @@ class TableCompareManager(QObject):
             self.stats_label.setText(f"总和: {total_sum:,.2f} | 平均: {avg:,.2f} | 数量: {count}")
         else:
             self.stats_label.setText("选中区域没有数值")
-    
+
+    def _trace_selected_cell_bbox(self, item) -> str:
+        """Table Engine 结构化表：单格选中时显示 liteparse 源坐标。"""
+        table_idx = self._get_current_table_index()
+        if table_idx is None:
+            return ""
+        tables = self._get_active_tables()
+        if table_idx >= len(tables):
+            return ""
+        table = tables[table_idx]
+        if not table.get("_structured"):
+            return ""
+        pdf_path = getattr(self.main_window, "pdf_path", "") or ""
+        if not pdf_path:
+            return ""
+        try:
+            from codes.table_engine.integration.trace_bridge import (
+                format_cell_trace_line,
+                trace_legacy_cell_bbox,
+            )
+            info = trace_legacy_cell_bbox(
+                table, item.row(), item.column(), pdf_path,
+            )
+            if not info:
+                return ""
+            line = format_cell_trace_line(info)
+            tip_lines = [line]
+            for src in info.get("source_items", []):
+                if src.get("missing"):
+                    tip_lines.append(f"  missing idx={src.get('item_index')}")
+                else:
+                    tip_lines.append(
+                        f"  idx={src['item_index']} "
+                        f"({src['x0']:.1f},{src['y0']:.1f}) "
+                        f"{src.get('text', '')!r}"
+                    )
+            item.setToolTip("\n".join(tip_lines))
+            return f"📍 {line}"
+        except Exception as e:
+            print(f"[Trace] cell bbox failed: {e}")
+            return ""
+
     def filter_table(self):
         """筛选表格内容"""
         if not hasattr(self, 'table_widget'):
@@ -3316,7 +3650,14 @@ class TableCompareManager(QObject):
 
         # 判断当前表格是否已经过分割
         has_segmented = any(
-            t.get("segment_source") == "liteparse_segment" for t in tables
+            t.get("segment_source") in (
+                "liteparse_segment",
+                "table_engine",
+                "pillar_disclosure_table",
+                "table_engine_text",
+            )
+            or t.get("extractor") == "table_engine"
+            for t in tables
         )
 
         # liteparse 格式的原始分割表（供对话框导出用）
@@ -3331,14 +3672,16 @@ class TableCompareManager(QObject):
             self._load_liteparse_cache()
         if not seg_tables and self._liteparse_cache:
             try:
-                from codes.table_validator.liteparse_table_segmenter import (
-                    segment_tables_from_liteparse,
-                )
-                seg_tables, seg_report = segment_tables_from_liteparse(
-                    self._liteparse_cache,
-                    enable_cross_page=True,
-                )
-                print(f"  [分割报告] 生成完成, {seg_report.get('total_tables', 0)} 张表")
+                pdf_path = getattr(self.main_window, "pdf_path", "") or ""
+                if pdf_path:
+                    from codes.table_engine.integration.processor_bridge import (
+                        run_table_engine_segmentation,
+                    )
+                    _, seg_report, seg_tables = run_table_engine_segmentation(pdf_path)
+                    print(
+                        f"  [分割报告] Table Engine 生成完成, "
+                        f"{seg_report.get('total_tables', 0)} 张表"
+                    )
             except ImportError:
                 pass
             except Exception as e:
@@ -3349,16 +3692,18 @@ class TableCompareManager(QObject):
         if not seg_tables and not seg_report.get("total_tables") and not has_segmented:
             QMessageBox.information(
                 self.main_window, "无分割数据",
-                "该 PDF 尚未运行 liteparse 表格分割。\n\n"
-                "请重新处理 PDF 文件，分割将自动运行。\n"
+                "该 PDF 尚未运行 Table Engine 建表分割。\n\n"
+                "请重新处理 PDF 文件。\n"
                 "（确保 liteparse 已安装: pip install liteparse）"
             )
             return
 
         # 生成可读报告文本
         try:
-            from codes.table_validator.liteparse_table_segmenter import print_verification_report
-            report_text = print_verification_report(
+            from codes.table_engine.integration.processor_bridge import (
+                format_segmentation_report,
+            )
+            report_text = format_segmentation_report(
                 seg_tables if seg_tables else tables, seg_report
             )
         except Exception:
@@ -3882,7 +4227,7 @@ class TableCompareManager(QObject):
                 column_x_ranges = table_info.get("column_x_ranges", [])
                 if text_items and column_x_ranges:
                     try:
-                        from codes.table_validator.rule_based_repair import (
+                        from codes.table_validator.table_structure_repair import (
                             _extract_headers_from_raw_items,
                         )
                         raw_header_info = _extract_headers_from_raw_items(
@@ -3929,7 +4274,7 @@ class TableCompareManager(QObject):
         QApplication.processEvents()  # 刷新UI
 
         try:
-            from codes.table_validator.rule_based_repair import (
+            from codes.table_validator.table_structure_repair import (
                 repair_table_rules,
                 repair_and_split_tables,
                 deduplicate_cross_tables,
@@ -5361,9 +5706,11 @@ class TableCompareManager(QObject):
 
             n_texts = len(non_empty)
 
-            # 判断是否是数据行（≥2列含长数字）
+            # 判断是否是数据行（≥2列含长数字；报告期日期不算）
             long_num_count = 0
             for t in non_empty:
+                if re.search(r'(?:19|20)\d{2}\s*年', t):
+                    continue
                 if re.search(r'\d[\d,.]{3,}', t):
                     long_num_count += 1
             if long_num_count >= 2:

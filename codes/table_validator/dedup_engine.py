@@ -90,7 +90,7 @@ _CHAR_NORMALIZE_RE = re.compile("|".join(re.escape(k) for k in _CHAR_NORMALIZE_M
 def normalize_cell(content: str) -> str:
     """统一单元格内容归一化：去除PDF编码差异、空白规范化。
 
-    替代分散在 rule_based_repair.py 和 processor.py 中的多个 _normalize_cell_content 实现。
+    替代分散在 table_structure_repair.py 和 processor.py 中的多个 _normalize_cell_content 实现。
     """
     if not content:
         return ""
@@ -183,7 +183,7 @@ def is_effectively_empty(text: str) -> bool:
 class DeduplicationEngine:
     """统一去重引擎。
 
-    所有去重操作的唯一入口。替代分散在 processor.py、rule_based_repair.py、
+    所有去重操作的唯一入口。替代分散在 processor.py、table_structure_repair.py、
     UI 层中的 8 个独立去重函数。
 
     核心不变量的唯一执法点：
@@ -490,7 +490,7 @@ class DeduplicationEngine:
         if not results or not reference_entries:
             return results
 
-        from codes.table_validator.rule_based_repair import (
+        from codes.table_validator.table_structure_repair import (
             _has_complete_table_structure,
         )
 

@@ -720,7 +720,7 @@ def confirm_anomalies_with_llm(
         如果调用失败，返回 {"error": "..."}
     """
     from codes.pdf_extractor.utils import load_config
-    from .rule_based_repair import prepare_anomalies_for_llm
+    from .table_structure_repair import prepare_anomalies_for_llm
 
     anomalies = rule_repair_info.get('anomalies', [])
     if not anomalies:

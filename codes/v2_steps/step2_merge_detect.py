@@ -26,7 +26,8 @@ class Step2MergeDetect:
                 row_bounds: List[Tuple[float, float]],
                 col_bounds: List[float],
                 config: Optional[Dict[str, Any]] = None,
-                apply_merge: bool = False) -> tuple:
+                apply_merge: bool = False,
+                words: Optional[List[dict]] = None) -> tuple:
         """主入口
 
         Args:
@@ -36,6 +37,7 @@ class Step2MergeDetect:
             col_bounds: [x0, x1, ...] 列分割线
             config: 步骤配置
             apply_merge: 是否将合并应用到 table_data（默认 False）
+            words: 原始 words（用于坐标跨列检测，无线表）
 
         Returns:
             (modified_table, merge_info, stats)
@@ -43,21 +45,27 @@ class Step2MergeDetect:
         if config is None:
             config = V2Config.STEP2_DEFAULTS
 
-        if not drawings:
-            return table_data, {}, {"line_spans": 0, "text_spans": 0,
-                                     "total_spans": 0, "cells_merged": 0}
-
-        # 阶段1：线条视觉检测
-        line_spans = cls._detect_from_lines(drawings, row_bounds, col_bounds, config)
-
-        # 阶段2：文本模式检测
-        text_spans = cls._detect_from_text(table_data)
-
-        # 合并两阶段结果
-        all_spans = line_spans + text_spans
         n_rows = len(table_data)
         n_cols = max(len(row) for row in table_data) if table_data else 0
-        merged_spans = cls._merge_overlapping_spans(all_spans, max(n_rows, 1), max(n_cols, 1))
+
+        line_spans: List[Tuple[int, int, int, int, float]] = []
+        if config.get("enable_line_detection", True) and drawings:
+            line_spans = cls._detect_from_lines(drawings, row_bounds, col_bounds, config)
+
+        text_spans: List[Tuple[int, int, int, int, float]] = []
+        if config.get("enable_text_detection", True):
+            text_spans = cls._detect_from_text(table_data)
+
+        coord_spans: List[Tuple[int, int, int, int, float]] = []
+        if config.get("enable_coord_detection", True) and words:
+            coord_spans = cls._detect_from_coordinates(
+                words, row_bounds, col_bounds, table_data, config,
+            )
+
+        all_spans = line_spans + text_spans + coord_spans
+        merged_spans = cls._merge_overlapping_spans(
+            all_spans, max(n_rows, 1), max(n_cols, 1),
+        )
 
         # 阶段3：应用合并
         if apply_merge:
@@ -74,6 +82,7 @@ class Step2MergeDetect:
         stats = {
             "line_spans": len(line_spans),
             "text_spans": len(text_spans),
+            "coord_spans": len(coord_spans),
             "total_spans": len(merged_spans),
             "cells_merged": sum(rs * cs - 1 for _, _, rs, cs, _ in merged_spans),
         }
@@ -281,6 +290,77 @@ class Step2MergeDetect:
                     c += 1
 
         return Step2MergeDetect._merge_overlapping_spans(merge_spans, n_rows, n_cols)
+
+    @staticmethod
+    def _detect_from_coordinates(
+        words: List[dict],
+        row_bounds: List[Tuple[float, float]],
+        col_bounds: List[float],
+        table_data: List[List[str]],
+        config: Dict[str, Any],
+    ) -> List[Tuple[int, int, int, int, float]]:
+        """无线表：word 横向跨多列 → colspan。"""
+        from codes.v2_steps.column_align_utils import (
+            _horizontal_overlap,
+            _row_index_for_word,
+            is_center_header_word,
+        )
+
+        if not words or len(col_bounds) < 3 or not table_data:
+            return []
+
+        n_rows = len(table_data)
+        n_cols = len(col_bounds) - 1
+        margin = config.get("row_margin_factor", 0.15)
+        conf = float(config.get("coord_confidence", 0.75))
+        spans: List[Tuple[int, int, int, int, float]] = []
+        seen: set = set()
+
+        for w in words:
+            text = str(w.get("text", "")).strip()
+            if not text or len(text) < 2:
+                continue
+            x0 = float(w.get("x0", 0))
+            x1 = float(w.get("x1", x0))
+            cy = (float(w["y0"]) + float(w["y1"])) / 2.0
+            row_idx = _row_index_for_word(cy, row_bounds, margin)
+            if row_idx is None or row_idx >= n_rows:
+                continue
+
+            spanned: List[int] = []
+            for c in range(n_cols):
+                lo = float(col_bounds[c])
+                hi = float(col_bounds[c + 1])
+                col_w = max(hi - lo, 1.0)
+                if _horizontal_overlap(x0, x1, lo, hi) >= col_w * 0.2:
+                    spanned.append(c)
+
+            if len(spanned) < 2:
+                continue
+
+            start_col = min(spanned)
+            end_col = max(spanned)
+            colspan = end_col - start_col + 1
+            if colspan < 2:
+                continue
+
+            key = (row_idx, start_col, colspan)
+            if key in seen:
+                continue
+
+            start_val = Step2MergeDetect._safe_cell(table_data, row_idx, start_col)
+            if not start_val:
+                continue
+
+            empty_tail = all(
+                not Step2MergeDetect._safe_cell(table_data, row_idx, c)
+                for c in range(start_col + 1, end_col + 1)
+            )
+            if empty_tail or is_center_header_word(text):
+                spans.append((row_idx, start_col, 1, colspan, conf))
+                seen.add(key)
+
+        return Step2MergeDetect._merge_overlapping_spans(spans, n_rows, n_cols)
 
     @staticmethod
     def _safe_cell(table_data: List[List[str]], row: int, col: int) -> str:

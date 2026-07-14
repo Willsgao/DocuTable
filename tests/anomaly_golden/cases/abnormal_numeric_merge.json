@@ -1,0 +1,14 @@
+{
+  "id": "abnormal_numeric_merge",
+  "contract": "R04",
+  "description": "数值格多 token",
+  "data": [
+    ["名称", "2023", "2024"],
+    ["支行A", "1234 5678", "2345"],
+    ["支行B", "3456", "4567 8901"]
+  ],
+  "expect": {
+    "needs_review": true,
+    "rule_ids_any": ["R04_merged_numeric"]
+  }
+}
