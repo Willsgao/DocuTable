@@ -326,10 +326,16 @@ def _merge_text_blocks(blocks: List[TextBlock]) -> List[TextBlock]:
     merged: List[TextBlock] = [ordered[0]]
     for block in ordered[1:]:
         prev = merged[-1]
+        # 页眉/页脚不与正文或彼此（不同 role）合并
+        if (prev.role or block.role) and prev.role != block.role:
+            merged.append(block)
+            continue
         if block.y0 <= prev.y1 + 8 and block.page == prev.page:
             prev.text = f"{prev.text}\n{block.text}".strip()
             prev.y1 = max(prev.y1, block.y1)
             prev.source_items = list(prev.source_items) + list(block.source_items)
+            if prev.role is None and block.role:
+                prev.role = block.role
         else:
             merged.append(block)
     return merged

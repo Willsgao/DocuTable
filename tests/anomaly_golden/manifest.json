@@ -10,6 +10,7 @@
     "abnormal_p43_split.json",
     "abnormal_missing_header.json",
     "abnormal_numeric_merge.json",
+    "abnormal_numeric_text_glue.json",
     "abnormal_header_misalign.json",
     "abnormal_c02_row.json"
   ]

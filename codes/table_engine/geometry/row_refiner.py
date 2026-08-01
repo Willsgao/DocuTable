@@ -1420,4 +1420,60 @@ def refine_clustered_rows(rows: List[dict]) -> List[dict]:
     rows = _rollup_exposure_category_blocks(rows)
 
     rows = [_collapse_intra_row_same_x_items(r) for r in rows]
+    rows = _merge_corner_label_into_period_header_row(rows)
     return rows
+
+
+_CORNER_HEADER_LABELS = frozenset({"品种", "项目", "类别", "类型", "科目"})
+
+
+def _row_is_period_header_only(row: dict) -> bool:
+    items = row.get("items") or []
+    texts = [str(it.get("text", "")).strip() for it in items if str(it.get("text", "")).strip()]
+    if len(texts) < 1:
+        return False
+    return all(is_report_period_cell(t) for t in texts) and len(texts) >= 1
+
+
+def _row_is_corner_header_label_only(row: dict) -> bool:
+    items = row.get("items") or []
+    texts = [str(it.get("text", "")).strip() for it in items if str(it.get("text", "")).strip()]
+    return len(texts) == 1 and texts[0] in _CORNER_HEADER_LABELS
+
+
+def _merge_corner_label_into_period_header_row(rows: List[dict]) -> List[dict]:
+    """双层表头：报告期行与紧邻的「品种/项目」角标合并为一行，避免角标单独成行导致报告期看起来像丢了。"""
+    if len(rows) < 2:
+        return rows
+    out: List[dict] = []
+    i = 0
+    while i < len(rows):
+        cur = rows[i]
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        if (
+            nxt is not None
+            and _row_is_period_header_only(cur)
+            and _row_is_corner_header_label_only(nxt)
+        ):
+            merged_items = list(nxt.get("items") or []) + list(cur.get("items") or [])
+            merged = _build_row_dict(merged_items)
+            if cur.get("row_phase"):
+                merged["row_phase"] = cur.get("row_phase")
+            out.append(merged)
+            i += 2
+            continue
+        if (
+            nxt is not None
+            and _row_is_corner_header_label_only(cur)
+            and _row_is_period_header_only(nxt)
+        ):
+            merged_items = list(cur.get("items") or []) + list(nxt.get("items") or [])
+            merged = _build_row_dict(merged_items)
+            if nxt.get("row_phase"):
+                merged["row_phase"] = nxt.get("row_phase")
+            out.append(merged)
+            i += 2
+            continue
+        out.append(cur)
+        i += 1
+    return out

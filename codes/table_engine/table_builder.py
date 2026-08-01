@@ -68,6 +68,10 @@ def build_table_from_scope(scope: TableScope) -> Optional[StructuredTable]:
         return None
 
     rows = refine_clustered_rows(rows)
+    from codes.table_engine.geometry.cell_numeric_repair import (
+        seed_expand_glued_items_for_grid,
+    )
+    rows = seed_expand_glued_items_for_grid(rows)
     ctx = LayoutContext(
         page=scope.page_number,
         scope_y0=scope.scope_y0,

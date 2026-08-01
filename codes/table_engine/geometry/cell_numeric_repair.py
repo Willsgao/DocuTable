@@ -200,23 +200,102 @@ def _infer_pct_reason_col_indices(
     return n - 2, n - 1
 
 
+def seed_expand_glued_items_for_grid(rows: List[dict]) -> List[dict]:
+    """建表推列前：不依赖列界，按 bbox 切开粘连表头/百分比+原因，暴露真实列锚点。
+
+    解决：liteparse 将「2024…2023…增减幅度」或「一季度…四季度」粘成一项时列数被低估，
+    后续 expand_compound_* 把多段表头挤进同一列（如三/四季度粘在末列）。
+    """
+    from codes.table_engine.geometry.numeric import (
+        is_quarter_column_header_text,
+        split_percent_point_change_text,
+        split_percent_trailing_text,
+        split_quarter_header_compound_text,
+        split_report_date_header_compound_text,
+    )
+
+    if not rows:
+        return rows
+
+    out_rows: List[dict] = []
+    for row in rows:
+        items = list(row.get("items") or [])
+        if not items:
+            out_rows.append(row)
+            continue
+        new_items: List[dict] = []
+        changed = False
+        for it in items:
+            t = str(it.get("text", "")).strip()
+            x0 = float(it.get("x0", 0))
+            x1 = float(it.get("x1", x0))
+            parts: List[str] = []
+            header_parts = split_report_date_header_compound_text(t)
+            if len(header_parts) >= 3:
+                parts = header_parts
+            else:
+                quarter_parts = [
+                    p
+                    for p in split_quarter_header_compound_text(t)
+                    if is_quarter_column_header_text(p)
+                ]
+                if len(quarter_parts) >= 2:
+                    # 「项目」若粘在同格则保留；独立「项目」item 仍留在原处
+                    if "项目" in t and "项目" not in quarter_parts:
+                        parts = ["项目"] + quarter_parts
+                    else:
+                        parts = quarter_parts
+                else:
+                    ppc = split_percent_point_change_text(t)
+                    if ppc:
+                        parts = [ppc[0], ppc[1]]
+                    else:
+                        pr = split_percent_trailing_text(t)
+                        if pr:
+                            parts = [pr[0], pr[1]]
+            if len(parts) < 2 or x1 <= x0 + 8:
+                new_items.append(it)
+                continue
+            changed = True
+            width = x1 - x0
+            n = len(parts)
+            base_id = str(it.get("item_index", "") or "")
+            for i, text in enumerate(parts):
+                seg0 = x0 + width * i / n
+                segi = x0 + width * (i + 1) / n
+                mid = (seg0 + segi) / 2.0
+                new_it = dict(it)
+                new_it["text"] = text
+                new_it["x0"] = mid - 4.0
+                new_it["x1"] = mid + 4.0
+                if base_id:
+                    new_it["item_index"] = f"{base_id}#g{i}"
+                new_items.append(new_it)
+        if not changed:
+            out_rows.append(row)
+            continue
+        new_row = dict(row)
+        new_row["items"] = sorted(
+            new_items,
+            key=lambda d: (float(d.get("y0", 0)), float(d.get("x0", 0))),
+        )
+        out_rows.append(new_row)
+    return out_rows
+
+
 def expand_compound_report_date_header_row_items(
     row_items: Sequence[dict],
     col_ranges: List[Tuple[float, float]],
 ) -> List[dict]:
-    """OCR 将「2024…2023…增减幅度」粘成一格 → 按列界拆成独立 item。"""
+    """OCR 将「2024…2023…增减幅度」或「2023年 增减幅度 变化原因」粘成一格 → 按坐标拆开。"""
     from codes.table_engine.geometry.numeric import (
-        is_report_date_header_part_text,
         split_report_date_header_compound_text,
     )
 
-    if not row_items or len(col_ranges) < 4:
+    if not row_items or len(col_ranges) < 3:
         return list(row_items)
 
-    vcols = _infer_value_col_indices(col_ranges, None)
-    if len(vcols) < 3:
-        vcols = list(range(1, min(len(col_ranges), 4)))
-
+    n_cols = len(col_ranges)
     out: List[dict] = []
     for it in row_items:
         t = str(it.get("text", "")).strip()
@@ -224,33 +303,128 @@ def expand_compound_report_date_header_row_items(
         if len(parts) < 3:
             out.append(it)
             continue
+        if "项目" in t and "项目" not in parts:
+            parts = ["项目"] + parts
 
-        date_parts = [p for p in parts if is_report_date_header_part_text(p) and "年" in p]
-        metric_parts = [p for p in parts if p not in date_parts]
-        assignments: List[Tuple[str, int]] = []
-        if "项目" in t:
-            assignments.append(("项目", 0))
-        for i, dp in enumerate(date_parts):
-            ci = vcols[i] if i < len(vcols) else vcols[-1]
-            assignments.append((dp, ci))
-        for mp in metric_parts:
-            ci = vcols[len(date_parts)] if len(date_parts) < len(vcols) else vcols[-1]
-            assignments.append((mp, ci))
+        x0 = float(it.get("x0", 0))
+        x1 = float(it.get("x1", 0))
+        if "项目" in parts and x0 > 80:
+            parts = [p for p in parts if p != "项目"]
+            if len(parts) < 3:
+                out.append(it)
+                continue
 
-        for text, ci in assignments:
-            lo, hi = col_ranges[ci]
-            mid = (lo + hi) / 2.0
-            span = min(42.0, max(14.0, (hi - lo) * 0.42))
+        # 优先按列角色落位（5 列变化原因表：日期→1/2，增减→3，原因→4）
+        role_targets = _header_part_col_targets(parts, n_cols)
+        if role_targets is not None:
+            for i, (text, ci) in enumerate(zip(parts, role_targets)):
+                lo, hi = col_ranges[ci]
+                mid = (lo + hi) / 2.0
+                span = min(42.0, max(12.0, (hi - lo) * 0.4))
+                new_it = dict(it)
+                new_it["text"] = text
+                new_it["x0"] = mid - span
+                new_it["x1"] = mid + span
+                base_id = str(it.get("item_index", "") or "")
+                if base_id:
+                    new_it["item_index"] = f"{base_id}#h{i}"
+                out.append(new_it)
+            continue
+
+        if x1 <= x0 + 8:
+            vcols = list(range(1, n_cols))
+            n = len(parts)
+            start = max(0, len(vcols) - n)
+            for i, text in enumerate(parts):
+                ci = vcols[min(start + i, len(vcols) - 1)]
+                lo, hi = col_ranges[ci]
+                mid = (lo + hi) / 2.0
+                span = min(42.0, max(14.0, (hi - lo) * 0.42))
+                new_it = dict(it)
+                new_it["text"] = text
+                new_it["x0"] = mid - span
+                new_it["x1"] = mid + span
+                out.append(new_it)
+            continue
+
+        width = x1 - x0
+        n = len(parts)
+        for i, text in enumerate(parts):
+            seg0 = x0 + width * i / n
+            segi = x0 + width * (i + 1) / n
+            mid = (seg0 + segi) / 2.0
             new_it = dict(it)
             new_it["text"] = text
-            new_it["x0"] = mid - span
-            new_it["x1"] = mid + span
+            new_it["x0"] = mid - 4.0
+            new_it["x1"] = mid + 4.0
+            base_id = str(it.get("item_index", "") or "")
+            if base_id:
+                new_it["item_index"] = f"{base_id}#h{i}"
             out.append(new_it)
 
     return sorted(
         out,
         key=lambda d: (float(d.get("y0", 0)), float(d.get("x0", 0))),
     )
+
+
+def _header_part_col_targets(
+    parts: Sequence[str],
+    n_cols: int,
+) -> Optional[List[int]]:
+    """报告期+增减/原因粘连片段 → 目标列号；无法可靠映射时返回 None。"""
+    from codes.table_engine.geometry.column_anchors import is_report_period_cell
+    from codes.table_engine.geometry.numeric import is_report_date_header_part_text
+
+    if n_cols < 4 or len(parts) < 3:
+        return None
+    if any(p == "项目" or str(p).startswith("项目") for p in parts):
+        return None
+
+    dates: List[int] = []
+    metrics: List[int] = []
+    for i, p in enumerate(parts):
+        t = str(p).strip()
+        # 增减/原因须先于 is_report_date_header_part_text（后者会误收「增减幅度」）
+        if (
+            t in ("增减幅度", "增减", "变化幅度", "变化原因", "主要原因")
+            or "增减" in t
+            or "原因" in t
+        ):
+            metrics.append(i)
+        elif is_report_period_cell(t) or is_report_date_header_part_text(t):
+            dates.append(i)
+        else:
+            return None
+    if len(dates) < 2 or not metrics:
+        return None
+
+    targets = [1] * len(parts)
+    # 日期从 col1 起顺序落
+    for k, di in enumerate(dates):
+        targets[di] = min(1 + k, n_cols - 2)
+    # 增减 → 倒数第二（有原因列时）或日期后一列；原因 → 末列
+    next_ci = max(targets) + 1
+    for mi in metrics:
+        t = str(parts[mi]).strip()
+        if "原因" in t:
+            targets[mi] = n_cols - 1
+        elif "增减" in t or "幅度" in t:
+            targets[mi] = n_cols - 2 if n_cols >= 5 else min(next_ci, n_cols - 1)
+            next_ci = max(next_ci, targets[mi] + 1)
+        else:
+            targets[mi] = min(next_ci, n_cols - 1)
+            next_ci += 1
+    # 避免两日期挤同一列
+    used = {}
+    for i, ci in enumerate(targets):
+        if i not in dates:
+            continue
+        while ci in used and used[ci] in dates and ci + 1 < n_cols - (1 if n_cols >= 5 else 0):
+            ci += 1
+        targets[i] = ci
+        used[ci] = i
+    return targets
 
 
 def expand_change_table_mixed_row_items(
@@ -400,6 +574,69 @@ def expand_value_text_glued_row_items(
     )
 
 
+def expand_percent_point_change_glued_row_items(
+    row_items: Sequence[dict],
+    col_ranges: List[Tuple[float, float]],
+) -> List[dict]:
+    """「18.78% 下降 0.97 个百分点」跨列粘连 → 数值列 + 增减列（不走变化原因落列）。"""
+    from codes.table_engine.geometry.column_anchors import col_index_by_x0, col_index_by_x1
+    from codes.table_engine.geometry.numeric import split_percent_point_change_text
+
+    if not row_items or len(col_ranges) < 4:
+        return list(row_items)
+
+    n = len(col_ranges)
+    label_hi = col_ranges[0][1] if col_ranges else 150.0
+    out: List[dict] = []
+    for it in row_items:
+        t = str(it.get("text", "")).strip()
+        split = split_percent_point_change_text(t)
+        if split is None:
+            out.append(it)
+            continue
+        x0 = float(it.get("x0", 0))
+        x1 = float(it.get("x1", x0))
+        if x0 < label_hi - 8.0:
+            out.append(it)
+            continue
+        pct, change = split
+        val_ci = col_index_by_x0(x0, col_ranges)
+        if val_ci <= 0:
+            val_ci = 1
+        # 增减列：宽框右缘 / 中点，且须在数值列右侧；5 列年报表避免落到末年列
+        mid_x = x0 + max(8.0, (x1 - x0) * 0.62)
+        chg_ci = col_index_by_x0(mid_x, col_ranges)
+        if chg_ci <= val_ci:
+            chg_by_x1 = col_index_by_x1(x1, col_ranges)
+            chg_ci = chg_by_x1 if chg_by_x1 > val_ci else val_ci + 1
+        if n >= 5 and chg_ci >= n - 1 and val_ci <= n - 3:
+            chg_ci = n - 2
+        chg_ci = min(max(chg_ci, val_ci + 1), n - 1)
+        if chg_ci == val_ci:
+            chg_ci = min(val_ci + 1, n - 1)
+
+        def _place(text: str, ci: int, base: dict) -> dict:
+            lo, hi = col_ranges[ci]
+            mid = (lo + hi) / 2.0
+            span = min(36.0, max(10.0, (hi - lo) * 0.4))
+            new_it = dict(base)
+            new_it["text"] = text
+            new_it["x0"] = mid - span
+            new_it["x1"] = mid + span
+            base_id = str(base.get("item_index", "") or "")
+            if base_id:
+                tag = "ppc0" if text == pct else "ppc1"
+                new_it["item_index"] = f"{base_id}#{tag}"
+            return new_it
+
+        out.extend([_place(pct, val_ci, it), _place(change, chg_ci, it)])
+
+    return sorted(
+        out,
+        key=lambda d: (float(d.get("y0", 0)), float(d.get("x0", 0))),
+    )
+
+
 def expand_percent_reason_glued_row_items(
     row_items: Sequence[dict],
     col_ranges: List[Tuple[float, float]],
@@ -407,7 +644,10 @@ def expand_percent_reason_glued_row_items(
     value_cols: Optional[List[int]] = None,
 ) -> List[dict]:
     """百分比与变化原因粘连 → 分列到「增减幅度」与「变化原因」。"""
-    from codes.table_engine.geometry.numeric import split_percent_trailing_text
+    from codes.table_engine.geometry.numeric import (
+        split_percent_point_change_text,
+        split_percent_trailing_text,
+    )
 
     if not row_items or len(col_ranges) < 4:
         return list(row_items)
@@ -424,6 +664,10 @@ def expand_percent_reason_glued_row_items(
     out: List[dict] = []
     for it in row_items:
         t = str(it.get("text", "")).strip()
+        # 百分点跨列粘连已由 expand_percent_point_change_glued_row_items 处理
+        if split_percent_point_change_text(t) is not None:
+            out.append(it)
+            continue
         split = split_percent_trailing_text(t)
         if split is None:
             out.append(it)

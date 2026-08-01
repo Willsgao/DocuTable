@@ -92,6 +92,15 @@ def _assign_item_to_columns(
         )
     ):
         ci = 0
+    elif is_value_column_header_text(
+        text, x0=x0, mid_label_x0s=mid_label_x0s,
+    ):
+        # 账面余额/占比等：按中心落列，禁止挤进项目列
+        mid = (x0 + x1) / 2.0 if x1 > x0 else x0
+        from codes.table_engine.geometry.column_anchors import col_index_by_x0
+        ci = col_index_by_x0(mid, col_ranges)
+        if ci <= 0 and n_cols > 1:
+            ci = 1
     elif layout_id and uses_pillar_row_assignment(layout_id):
         ci = layout_col_index(x0, x1, text, col_ranges, layout_id)
     elif _is_value_like_text(text) and not _ROW_NUMBER_RE.match(text):
@@ -203,10 +212,16 @@ def _cell_text_from_items(items: List[dict]) -> str:
         return ""
     if len(items) == 1:
         return str(items[0].get("text", "")).strip()
-    ordered = sorted(
-        items,
-        key=lambda it: (float(it.get("y0", 0)), float(it.get("x0", 0))),
-    )
+    # 同行微抖动（地区/金额 y 差 1～2pt）优先按 x0，避免拼成「金额 地区」
+    ys = [float(it.get("y0", 0)) for it in items]
+    y_span = (max(ys) - min(ys)) if ys else 0.0
+    if y_span <= 4.0:
+        ordered = sorted(items, key=lambda it: float(it.get("x0", 0)))
+    else:
+        ordered = sorted(
+            items,
+            key=lambda it: (float(it.get("y0", 0)), float(it.get("x0", 0))),
+        )
     texts: List[str] = []
     seen: Set[str] = set()
     for it in ordered:
@@ -223,17 +238,20 @@ def _cell_text_from_items(items: List[dict]) -> str:
 _YEAR_ONLY_HEADER_RE = re.compile(r"^(?:19|20)\d{2}\s*年$")
 _SHORT_VALUE_COL_HEADER = frozenset({
     "占比", "比重", "比例", "数额", "代码", "金额", "期数",
+    "变化原因", "主要原因", "账面余额", "账面价值", "公允价值",
 })
 
 
 def _is_annual_header_value_column_text(text: str) -> bool:
-    """年报表头数值区列标：报告期、增减列、占比列等。"""
+    """年报表头数值区列标：报告期、增减列、占比/变化原因列等。"""
     from codes.table_engine.geometry.numeric import is_report_date_header_part_text
 
     t = str(text or "").strip()
     if not t or t == "项目":
         return False
     if t in _SHORT_VALUE_COL_HEADER:
+        return True
+    if "变化原因" in t or "主要原因" in t:
         return True
     if is_report_period_cell(t) or is_report_date_header_part_text(t):
         return True
@@ -296,14 +314,23 @@ def _try_assign_annual_header_band_row(
     n_cols: int,
     col_ranges: List[Tuple[float, float]],
 ) -> bool:
-    """年报表头带：项目固定 col0，报告期按 x0 顺序落 col1..。"""
+    """年报表头带：项目固定 col0，报告期/增减/变化原因按 x0 落列。
+
+    先拆 OCR 粘连列表头，再按坐标落格——禁止把多列表头塞进同一格。
+    """
     if n_cols < 2 or not row_items:
         return False
-    ordered = sorted(row_items, key=lambda it: float(it.get("x0", 0)))
+    from codes.table_engine.geometry.cell_numeric_repair import (
+        expand_compound_report_date_header_row_items,
+    )
+    from codes.table_engine.scope.header_scope import is_annual_report_column_header_row
+
+    # 即使传入 raw，也先按列界拆开粘连表头（如「2023年 增减幅度 变化原因」）
+    expanded = expand_compound_report_date_header_row_items(row_items, col_ranges)
+    ordered = sorted(expanded, key=lambda it: float(it.get("x0", 0)))
     cells = [str(it.get("text", "")).strip() for it in ordered if str(it.get("text", "")).strip()]
     if not cells:
         return False
-    from codes.table_engine.scope.header_scope import is_annual_report_column_header_row
 
     if not is_annual_report_column_header_row(cells):
         return False
@@ -321,34 +348,107 @@ def _try_assign_annual_header_band_row(
         return False
     if project_it is not None:
         col_items[0].append(project_it)
-    for pit in period_items:
-        text = str(pit.get("text", "")).strip()
-        x0 = float(pit.get("x0", 0))
-        x1 = float(pit.get("x1", 0))
-        ci = col_index_by_anchor(x0, x1, text, col_ranges)
-        if ci <= 0 and n_cols > 1:
-            ci = 1
-        if 0 <= ci < n_cols:
+
+    date_items = [
+        it for it in period_items
+        if is_report_period_cell(str(it.get("text", "")).strip())
+    ]
+    metric_items = [it for it in period_items if it not in date_items]
+
+    def _assign_dates_sequential(dates: List[dict]) -> None:
+        """多报告期按 x 序落入连续列，避免拆段后仍挤同一列。"""
+        max_date_ci = n_cols - 2 if n_cols >= 5 else n_cols - 1
+        if metric_items and n_cols >= 5:
+            max_date_ci = n_cols - 3
+        for i, pit in enumerate(dates):
+            ci = min(1 + i, max(1, max_date_ci))
             col_items[ci].append(pit)
+
+    def _assign_metrics() -> None:
+        for pit in metric_items:
+            text = str(pit.get("text", "")).strip()
+            if "原因" in text and n_cols >= 4:
+                ci = n_cols - 1
+            elif ("增减" in text or "幅度" in text) and n_cols >= 5:
+                ci = n_cols - 2
+            else:
+                x0 = float(pit.get("x0", 0))
+                x1 = float(pit.get("x1", 0))
+                ci = col_index_by_anchor(x0, x1, text, col_ranges)
+                if ci <= 0:
+                    ci = min(1 + len(date_items), n_cols - 1)
+            if 0 <= ci < n_cols:
+                col_items[ci].append(pit)
+
+    if len(date_items) >= 2 and n_cols >= 4:
+        # 先按锚点试分；若两日期撞列（种子均分 x 常见），再顺序重排
+        trial: List[List[dict]] = [[] for _ in range(n_cols)]
+        for pit in date_items:
+            text = str(pit.get("text", "")).strip()
+            x0 = float(pit.get("x0", 0))
+            x1 = float(pit.get("x1", 0))
+            ci = col_index_by_anchor(x0, x1, text, col_ranges)
+            if ci <= 0:
+                ci = 1
+            ci = min(max(ci, 1), n_cols - 1)
+            trial[ci].append(pit)
+        collided = any(len(bucket) >= 2 for bucket in trial)
+        seeded = any(
+            "#g" in str(it.get("item_index", "")) or "#h" in str(it.get("item_index", ""))
+            for it in date_items
+        )
+        if collided or (seeded and len(date_items) == 2):
+            _assign_dates_sequential(date_items)
+        else:
+            for ci, bucket in enumerate(trial):
+                col_items[ci].extend(bucket)
+        _assign_metrics()
+    else:
+        for pit in period_items:
+            text = str(pit.get("text", "")).strip()
+            x0 = float(pit.get("x0", 0))
+            x1 = float(pit.get("x1", 0))
+            ci = col_index_by_anchor(x0, x1, text, col_ranges)
+            if ci <= 0 and n_cols > 1:
+                ci = 1
+            if 0 <= ci < n_cols:
+                col_items[ci].append(pit)
+
     assigned_ids = {
         str(it.get("item_index", ""))
         for bucket in col_items
         for it in bucket
         if str(it.get("item_index", ""))
     }
+    assigned_texts = {
+        str(it.get("text", "")).strip()
+        for bucket in col_items
+        for it in bucket
+        if str(it.get("text", "")).strip()
+    }
+    # 占比允许两列重复；其余拆段文本若已落格则跳过
+    allow_dup = frozenset({"占比", "比重", "比例", "12 月 31 日"})
     for it in ordered:
         iid = str(it.get("item_index", ""))
-        if not iid or iid in assigned_ids:
-            continue
         text = str(it.get("text", "")).strip()
         if not text:
+            continue
+        if iid and iid in assigned_ids:
+            continue
+        if text in assigned_texts and text not in allow_dup:
             continue
         x0 = float(it.get("x0", 0))
         x1 = float(it.get("x1", 0))
         ci = col_index_by_anchor(x0, x1, text, col_ranges)
+        if "原因" in text and n_cols >= 4:
+            ci = n_cols - 1
+        elif ("增减" in text or text.endswith("幅度")) and n_cols >= 5:
+            ci = n_cols - 2
         if 0 <= ci < n_cols:
             col_items[ci].append(it)
-            assigned_ids.add(iid)
+            if iid:
+                assigned_ids.add(iid)
+            assigned_texts.add(text)
     return True
 
 

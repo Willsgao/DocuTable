@@ -194,6 +194,8 @@ class TextBlock:
     y1: float
     text: str
     source_items: List[str] = field(default_factory=list)
+    # page_header / page_footer：页眉页脚独立块；None=正文叙述
+    role: Optional[str] = None
 
 
 @dataclass

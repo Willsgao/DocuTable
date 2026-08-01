@@ -41,10 +41,27 @@ def _cell_row_bounds(table: StructuredTable) -> list[tuple[float, float]]:
     return [(y0 + i * step, y0 + (i + 1) * step) for i in range(n)]
 
 
+def _cell_source_items_matrix(table: StructuredTable) -> list[list[list[str]]]:
+    """与 dense data 同形：每格对应 source item_index 列表（空格为 []）。"""
+    n_cols = table.grid.col_count
+    out: list[list[list[str]]] = []
+    for row in table.rows:
+        row_ids: list[list[str]] = []
+        for ci in range(n_cols):
+            cell = row[ci] if ci < len(row) else None
+            if cell is None or not str(cell.text).strip():
+                row_ids.append([])
+            else:
+                row_ids.append([str(s) for s in (cell.source_items or []) if str(s)])
+        out.append(row_ids)
+    return out
+
+
 def to_legacy_table(table: StructuredTable, *, table_id: int = 0) -> dict:
     data = table.iter_rows_dense()
     col_bounds = _grid_col_bounds(table)
     row_bounds = _cell_row_bounds(table)
+    cell_sources = _cell_source_items_matrix(table)
     return {
         "type": "table",
         "page": table.page,
@@ -74,11 +91,23 @@ def to_legacy_table(table: StructuredTable, *, table_id: int = 0) -> dict:
         "metadata": dict(table.metadata),
         "_col_bounds": col_bounds,
         "_row_bounds": row_bounds,
+        # 溯源：与 data 同形，供 UI/守恒校验；空非空格应尽量非空
+        "_cell_source_items": cell_sources,
     }
 
 
 def to_legacy_text(block: TextBlock, *, entry_id: int = 0) -> dict:
     text = block.text.strip()
+    role = getattr(block, "role", None)
+    if role == "page_header":
+        category = "页眉"
+        segment = "table_engine_page_header"
+    elif role == "page_footer":
+        category = "页脚"
+        segment = "table_engine_page_footer"
+    else:
+        category = "文本段落"
+        segment = "table_engine_text"
     return {
         "type": "text",
         "page": block.page,
@@ -90,9 +119,10 @@ def to_legacy_text(block: TextBlock, *, entry_id: int = 0) -> dict:
         "cols": 0,
         "confidence": 0.75,
         "extractor": "table_engine",
-        "segment_source": "table_engine_text",
+        "segment_source": segment,
         "parse_status": "success" if text else "empty",
-        "table_category": "文本段落",
+        "table_category": category,
+        "text_role": role or "",
         "is_real_table": False,
         "is_complete": False,
         "has_header": False,
@@ -140,4 +170,50 @@ def verify_legacy_table_matches_structured(table: StructuredTable, legacy: dict)
         return False
     if legacy.get("cols") != table.grid.col_count:
         return False
-    return True
+    src = legacy.get("_cell_source_items")
+    if not isinstance(src, list) or len(src) != len(table.rows):
+        return False
+    expected = _cell_source_items_matrix(table)
+    return src == expected
+
+
+def legacy_nonempty_cells_missing_source(legacy: dict) -> list[tuple[int, int, str]]:
+    """非空 data 格却无 source_items → 溯源断链（人工改格高危）。"""
+    data = legacy.get("data") or []
+    src = legacy.get("_cell_source_items") or []
+    bad: list[tuple[int, int, str]] = []
+    for ri, row in enumerate(data):
+        src_row = src[ri] if ri < len(src) else []
+        for ci, cell in enumerate(row):
+            text = str(cell or "").strip()
+            if not text:
+                continue
+            ids = src_row[ci] if ci < len(src_row) else []
+            if not ids:
+                bad.append((ri, ci, text[:40]))
+    return bad
+
+
+def audit_legacy_source_coverage(legacy: dict) -> dict:
+    """返回溯源覆盖统计，供 UI/验证脚本使用。"""
+    data = legacy.get("data") or []
+    nonempty = 0
+    with_src = 0
+    for ri, row in enumerate(data):
+        src_row = (legacy.get("_cell_source_items") or [None] * len(data))
+        src_row = src_row[ri] if ri < len(src_row) else []
+        for ci, cell in enumerate(row):
+            if not str(cell or "").strip():
+                continue
+            nonempty += 1
+            ids = src_row[ci] if ci < len(src_row) else []
+            if ids:
+                with_src += 1
+    missing = legacy_nonempty_cells_missing_source(legacy)
+    return {
+        "nonempty_cells": nonempty,
+        "with_source": with_src,
+        "missing_source": len(missing),
+        "coverage": (with_src / nonempty) if nonempty else 1.0,
+        "missing_samples": missing[:12],
+    }

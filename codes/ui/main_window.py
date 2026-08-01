@@ -125,6 +125,9 @@ class MainWindow(QMainWindow):
         # Tab3: AI优化
         self._init_ai_tab()
 
+        # Tab3b: 格式纠错（独立模块，不改动 AI优化 流程）
+        self._init_format_corrector_tab()
+
         # Tab4: 历史记录
         self.history_tab = QWidget()
         self._init_history_tab()
@@ -381,6 +384,13 @@ class MainWindow(QMainWindow):
         self.ai_correction_tab = AICorrectionTab(main_window=self)
         self.ai_correction_tab.apply_requested.connect(self._on_ai_correction_apply)
         self.tabs.addTab(self.ai_correction_tab, "🔍 AI优化")
+
+    def _init_format_corrector_tab(self):
+        """初始化独立「格式纠错」Tab（不修改 AI优化 / ai_correction 逻辑）"""
+        from codes.ui.format_corrector_tab import FormatCorrectorTab
+
+        self.format_corrector_tab = FormatCorrectorTab(main_window=self)
+        self.tabs.addTab(self.format_corrector_tab, "🧩 格式纠错")
 
     def _on_ai_correction_apply(self, accepted_results, confirm_status):
         """AI优化 Tab 中用户点击应用修改（委托给 table_compare_manager）"""

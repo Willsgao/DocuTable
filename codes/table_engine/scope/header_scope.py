@@ -148,7 +148,11 @@ def row_has_reporting_date(cells: List[str]) -> bool:
         t = str(c).strip()
         if not t or _ROW_NUMBER_RE.match(t):
             continue
-        if is_year_cell(t) or is_month_day_cell(t):
+        if is_year_cell(t) or is_month_day_cell(t) or is_report_period_cell(t):
+            return True
+        if _cell_is_header_date_token(t):
+            return True
+        if re.search(r"(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月", t):
             return True
         if re.search(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", t):
             return True
@@ -187,11 +191,17 @@ _NUMBERED_NOTE_ITEM_RE = re.compile(r"^[12][\.．、]\s*[\u4e00-\u9fff]")
 
 
 def _cell_is_header_date_token(text: str) -> bool:
-    """表头日期格：短 token；长叙述里〔2010〕等引用年份不算。"""
+    """表头日期格：短 token 或完整报告期；长叙述里〔2010〕等引用年份不算。"""
     t = str(text or "").strip()
-    if not t or len(t) > 28:
+    if not t or len(t) > 36:
         return False
-    if is_year_cell(t) or is_month_day_cell(t):
+    if is_year_cell(t) or is_month_day_cell(t) or is_report_period_cell(t):
+        return True
+    # 允许「2024 年 12 月 31 日」等 OCR 空格
+    if re.fullmatch(
+        r"(?:19|20)\d{2}\s*年(?:\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?)?",
+        t,
+    ):
         return True
     return bool(re.fullmatch(r"(?:19|20)\d{2}年?", t))
 
@@ -480,7 +490,7 @@ def _large_gap_above_region(page: PageSource, region: RegionBox, *, gap_pt: floa
 
 
 def _scope_y0_expands_for_row(cells: List[str]) -> bool:
-    """scope 上扩：年报表头 + pillar 列标，不含单独报告期（避免页眉误扩）。"""
+    """scope 上扩：年报表头 + pillar 列标；完整报告期行可扩，纯页眉年份不扩。"""
     if _cells_look_like_narrative_prose(cells):
         return False
     if is_entity_scope_header_cells(cells):
@@ -509,17 +519,27 @@ def _scope_y0_expands_for_row(cells: List[str]) -> bool:
         return True
     if is_annual_report_unit_row(cells):
         return True
-    return False
-
-
+    # 双层表头上层：仅报告期（须含月日，避免把「2024年年度报告」页眉扩进来）
+    if is_date_only_header_row(cells):
+        joined = "".join(cells)
+        if "月" in joined and row_has_reporting_date(cells):
+            return True
     return False
 
 
 _ANNUAL_HEADER_WRAP_SUFFIXES = frozenset({"增减", "末增减", "期增减", "比上年同期"})
+# 完整数值列表头：不能当折行尾片并进报告期单元格
+_ANNUAL_HEADER_FULL_COL_LABELS = frozenset({
+    "增减幅度", "增减变动", "增减变化", "变化原因", "主要原因",
+    "占比", "比重", "比例", "金额", "数额", "代码", "期数",
+})
 
 
 def is_annual_header_wrap_subrow(row_items: Sequence[SourceItem]) -> bool:
-    """年报表头折行次行：增减尾片、月日片等，无数值列金额。"""
+    """年报表头折行次行：增减尾片、月日片等，无数值列金额。
+
+    注意：``增减幅度`` / ``变化原因`` 是独立列标，不是折行尾片。
+    """
     if row_is_footnote_prose_row(row_items):
         return False
     cells = _row_cells(row_items)
@@ -527,12 +547,15 @@ def is_annual_header_wrap_subrow(row_items: Sequence[SourceItem]) -> bool:
         return False
     if any(is_numeric_data_cell(c) for c in cells):
         return False
+    if any(c in _ANNUAL_HEADER_FULL_COL_LABELS for c in cells):
+        return False
     for c in cells:
-        if is_report_date_header_part_text(c):
-            continue
         if c in _ANNUAL_HEADER_WRAP_SUFFIXES:
             continue
         if "比上年同期" in c or "比上年度" in c:
+            # 整列为表头时不算折行；短尾「比上年同期」已在 suffixes
+            if len(c) > 10:
+                return False
             continue
         if is_month_day_cell(c):
             continue
@@ -549,12 +572,14 @@ def row_is_annual_header_wrap_fragment_row(cells: List[str]) -> bool:
     non_empty = [str(c).strip() for c in cells if str(c).strip()]
     if not non_empty:
         return False
+    if any(c in _ANNUAL_HEADER_FULL_COL_LABELS for c in non_empty):
+        return False
     for c in non_empty:
-        if is_report_date_header_part_text(c):
-            continue
         if c in _ANNUAL_HEADER_WRAP_SUFFIXES:
             continue
         if "比上年同期" in c or "比上年度" in c:
+            if len(c) > 10:
+                return False
             continue
         if is_month_day_cell(c):
             continue
@@ -678,7 +703,12 @@ def is_pre_table_header_band_row(row_items: Sequence[SourceItem]) -> bool:
         return True
     if is_annual_header_wrap_subrow(row_items):
         return True
+    if is_date_only_header_row(cells) and row_has_reporting_date(cells):
+        return True
     if row_has_reporting_date(cells):
+        return True
+    # 双层表头左上角：品种/项目
+    if len(cells) == 1 and cells[0] in ("品种", "项目", "类别", "类型", "科目"):
         return True
     return False
 

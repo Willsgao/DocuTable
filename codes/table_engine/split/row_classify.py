@@ -160,7 +160,19 @@ def row_is_annual_subsection_caption_row(row: List[str]) -> bool:
     cells = [str(c).strip() for c in row if str(c).strip()]
     if not cells:
         return False
-    if not _ANNUAL_SUBSECTION_CAPTION_RE.match(cells[0]):
+    # 兼容特殊括号、前导空白，以及整行拼在一格的情况
+    joined = " ".join(cells)
+    probe = cells[0].lstrip() + (" " + joined[len(cells[0]):] if len(cells) > 1 else "")
+    probe = (
+        probe.replace("﹙", "（")
+        .replace("﹚", "）")
+        .replace("︵", "（")
+        .replace("︶", "）")
+    )
+    if not (
+        _ANNUAL_SUBSECTION_CAPTION_RE.match(probe)
+        or _ANNUAL_SUBSECTION_CAPTION_RE.match(joined.lstrip())
+    ):
         return False
     if row_has_body_value_data(row):
         return False

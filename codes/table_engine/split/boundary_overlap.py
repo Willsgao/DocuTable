@@ -321,8 +321,18 @@ def should_merge_wrapped_label_rows(prev: List[str], cur: List[str]) -> bool:
     prev_label = str(prev[0] or "").strip()
     if not prev_label:
         return False
+    cur_label = str(cur[0] or "").strip()
     tail_has = row_has_value_data(cur)
     head_has = row_has_value_data(prev)
+    # 「合计/小计」带完整数值 = 独立汇总行（如 债券 + 合计 数值相同），禁止当折行尾片合并
+    if (
+        cur_label in ("合计", "小计")
+        and tail_has
+        and head_has
+        and row_has_body_value_data(cur)
+        and row_has_body_value_data(prev)
+    ):
+        return False
     if tail_has and head_has:
         if row_is_label_suffix_tail(cur):
             fa, fb = row_value_fingerprint(prev), row_value_fingerprint(cur)

@@ -1,23 +1,23 @@
 # 复制本文件为 anomaly-change-scope.txt 后填写（每次修改任务一份）
 # verify 会据此检查改动范围
 
-task: 表头缺失单独归类，非质量异常，可续表合并
+task: 数值与文本混在一起的单元格是重点可疑对象，要严格审核
 
 allowed:
   - codes/v2_steps/table_anomaly_rules.py
-  - codes/v2_steps/table_anomaly_bridge.py
-  - codes/v2_steps/anomaly_change_guard.py
-  - codes/ui/table_compare_manager.py
   - docs/正常表契约.md
   - tests/anomaly_golden/**
   - _test_step1_anomaly_detect.py
 
 forbidden:
+  - codes/ui/**
   - codes/pdf_extractor/**
+  - codes/v2_steps/table_anomaly_bridge.py
 
 must_pass:
   - golden
   - unit
 
 notes: |
-  C01 单独归类 missing_header；UI 蓝标非红标；bridge 写 table_category
+  新增 R10：金额型数值与中文/英文文本同格粘连 → needs_review + strict_review
+  覆盖「19,079,642 成都」「3,901,885 其他地区」类分列失败；不误伤地址中的短整数。

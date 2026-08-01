@@ -219,6 +219,20 @@ def is_entity_scope_label_text(text: str) -> bool:
     return str(text or "").strip() in _ENTITY_SCOPE_LABELS
 
 
+_KNOWN_VALUE_COL_HEADERS = frozenset({
+    "账面余额", "账面价值", "公允价值", "摊余成本",
+    "占比", "比重", "比例", "金额", "数额", "代码", "期数",
+    "增减幅度", "变化幅度", "变化原因", "主要原因",
+    # 地区分布等：即使 x 偏左也必须当数值列，勿与「地区」并入标签列
+    "营业收入", "营业利润", "营业支出", "营业外收入", "营业外支出",
+    "比去年增减", "较上年增减", "同比增减", "增减",
+})
+# 亦可作行标签（季度指标表「项目」列）；仅在数值带才当列表头
+_AMBIGUOUS_VALUE_OR_ROW_LABELS = frozenset({
+    "营业收入", "营业利润", "营业支出", "营业外收入", "营业外支出",
+})
+
+
 def is_value_column_header_text(
     text: str,
     *,
@@ -230,6 +244,16 @@ def is_value_column_header_text(
     t = str(text or "").strip()
     if not t:
         return False
+    # 已知数值列表头：即使 x 落在项目列右缘，也不得当项目列标签
+    if t in _KNOWN_VALUE_COL_HEADERS:
+        # 季报指标表行标签「营业收入」在标签带，不得挤进数值列与金额粘连
+        if (
+            t in _AMBIGUOUS_VALUE_OR_ROW_LABELS
+            and x0 is not None
+            and float(x0) < value_x_min - _VALUE_BAND_X0_SLACK
+        ):
+            return False
+        return True
     if is_stage_column_header_text(t) or is_entity_scope_label_text(t):
         return True
     if is_quarter_column_header_text(t):

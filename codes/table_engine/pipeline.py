@@ -11,6 +11,11 @@ from codes.table_engine.config import DEFAULT_PILLAR_CACHE, TableEngineConfig, d
 from codes.table_engine.models import BuildReport, Document, DocumentEntry, PageSource, StructuredTable, TextBlock
 from codes.table_engine.conservation.item_conservation import apply_item_conservation
 from codes.table_engine.scope.gap_capture import _collect_gap_items, _split_description_and_narrative, plan_page_scopes
+from codes.table_engine.scope.page_chrome import (
+    apply_page_chrome_to_entries,
+    ensure_page_chrome_separated,
+    extract_page_chrome,
+)
 from codes.table_engine.source.liteparse_loader import load_liteparse_document
 from codes.table_engine.split.content_partition import (
     apply_content_partition,
@@ -26,6 +31,7 @@ from codes.table_engine.split.structure_split import (
     apply_cell_decomposition,
     apply_structure_split,
     apply_sibling_compound_header_repair,
+    dedupe_subset_overlapping_tables,
 )
 from codes.table_engine.scope.header_supplement import (
     supplement_scope_missing_body_above,
@@ -93,49 +99,63 @@ def _dedupe_overlapping_text_entries(entries: List[DocumentEntry]) -> List[Docum
 
 
 def _build_pure_text_page(page: PageSource) -> List[DocumentEntry]:
-    """非 table 页：输出整页正文（跳过页眉）。"""
-    gap_items = _collect_gap_items(page, 65.0, page.page_height or 800.0)
+    """非 table 页：页眉/页脚独立块 + 正文。"""
+    chrome_blocks, chrome_ids = extract_page_chrome(page)
+    gap_items = _collect_gap_items(
+        page, 65.0, page.page_height or 800.0, exclude_item_ids=chrome_ids,
+    )
     if not gap_items:
-        gap_items = [it for it in page.items if it.bbox.y0 > 65.0]
+        gap_items = [
+            it for it in page.items
+            if it.bbox.y0 > 65.0 and str(it.item_index) not in chrome_ids
+        ]
     _, _, narrative = _split_description_and_narrative(gap_items)
     if not narrative:
         narrative = gap_items
-    if not narrative:
-        return []
-    text = "\n".join(
-        line for line in (
-            " ".join(
-                it.text.strip()
-                for it in sorted(
-                    [x for x in narrative if abs(x.y_mid - y) < 4],
-                    key=lambda z: z.x0,
+    blocks = list(chrome_blocks)
+    if narrative:
+        text = "\n".join(
+            line for line in (
+                " ".join(
+                    it.text.strip()
+                    for it in sorted(
+                        [x for x in narrative if abs(x.y_mid - y) < 4],
+                        key=lambda z: z.x0,
+                    )
+                    if it.text.strip()
                 )
-                if it.text.strip()
+                for y in sorted({round(it.y_mid, 1) for it in narrative})
             )
-            for y in sorted({round(it.y_mid, 1) for it in narrative})
+            if line.strip()
         )
-        if line.strip()
-    )
-    if not text.strip():
-        return []
-    y0 = min(it.bbox.y0 for it in narrative)
-    y1 = max(it.bbox.y1 for it in narrative)
-    block = TextBlock(
-        page=page.page_number,
-        y0=y0,
-        y1=y1,
-        text=text,
-        source_items=[it.item_index for it in narrative],
-    )
-    return [
-        DocumentEntry(
-            kind="text",
-            page=page.page_number,
-            y0=y0,
-            y1=y1,
-            text_block=block,
+        if text.strip():
+            y0 = min(it.bbox.y0 for it in narrative)
+            y1 = max(it.bbox.y1 for it in narrative)
+            blocks.append(
+                TextBlock(
+                    page=page.page_number,
+                    y0=y0,
+                    y1=y1,
+                    text=text,
+                    source_items=[it.item_index for it in narrative],
+                )
+            )
+    blocks = ensure_page_chrome_separated(page, blocks)
+    entries: List[DocumentEntry] = []
+    for i, block in enumerate(sorted(blocks, key=lambda b: (b.y0, b.y1))):
+        if not block.text.strip():
+            continue
+        entries.append(
+            DocumentEntry(
+                kind="text",
+                page=page.page_number,
+                y0=block.y0,
+                y1=block.y1,
+                text_block=block,
+                entry_id=i,
+            )
         )
-    ]
+    return entries
 
 
 def build_page(page: PageSource, *, with_entries: bool = True) -> PageBuildResult:
@@ -167,9 +187,12 @@ def build_page(page: PageSource, *, with_entries: bool = True) -> PageBuildResul
     entries: List[DocumentEntry] = []
     if with_entries:
         gap_texts = filter_description_captions(tables, list(plan.gap_texts))
+        gap_texts = ensure_page_chrome_separated(page, gap_texts)
         entries = build_page_entries(tables=tables, gap_texts=gap_texts)
+        entries = apply_page_chrome_to_entries(entries, page)
         entries = apply_structure_split(entries, page)
         entries = apply_adjacent_table_boundary_repair(entries)
+        entries = dedupe_subset_overlapping_tables(entries)
         entries = apply_fragment_rejoin(entries)
         entries = apply_trailing_header_reattach(entries)
         entries = apply_leading_header_reattach(entries, page)
@@ -181,9 +204,11 @@ def build_page(page: PageSource, *, with_entries: bool = True) -> PageBuildResul
         entries = apply_grid_prune(entries, page)
         entries = apply_item_conservation(entries, page, warnings)
         entries = apply_adjacent_table_boundary_repair(entries)
+        entries = dedupe_subset_overlapping_tables(entries)
         entries = apply_sibling_compound_header_repair(entries)
         entries = apply_item_conservation(entries, page, warnings)
         entries = apply_adjacent_table_boundary_repair(entries)
+        entries = dedupe_subset_overlapping_tables(entries)
         entries = apply_grid_prune(entries, page)
         entries = apply_content_partition(entries, page, warnings=warnings)
         entries = apply_cell_decomposition(entries)

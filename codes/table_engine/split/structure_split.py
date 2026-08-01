@@ -23,6 +23,7 @@ from codes.table_engine.models import DocumentEntry, PageSource, StructuredTable
 from codes.table_engine.scope.header_scope import (
     has_letter_column_header_row,
     is_annual_report_column_header_row,
+    is_annual_report_unit_row,
     is_rmb_unit_lead_row,
     row_has_pillar_table_caption,
 )
@@ -54,6 +55,8 @@ from codes.table_engine.split.boundary_overlap import (
     should_merge_reason_column_wrap_pair,
     address_wrap_column_index,
     should_merge_address_column_wrap_pair,
+    tables_x_overlap,
+    tables_y_overlap,
 )
 from codes.table_engine.split.table_text_split import (
     find_first_serial_block_end,
@@ -566,15 +569,47 @@ def _body_structure_break_allowed(rows: List[List[str]], break_at: int) -> bool:
     return False
 
 
+def _rows_have_new_table_signal_after(rows: List[List[str]], caption_i: int) -> bool:
+    """小节标题之后是否像新表开始（单位/报告期表头/并表列标等）。"""
+    for j in range(caption_i + 1, min(caption_i + 8, len(rows))):
+        cells = _row_cells(rows[j])
+        if not cells:
+            continue
+        joined = " ".join(cells)
+        if is_rmb_unit_lead_row(cells) or is_annual_report_unit_row(cells):
+            return True
+        if is_annual_report_column_header_row(cells):
+            return True
+        if "项目" in joined and (
+            "12 月 31 日" in joined
+            or "12月31日" in joined
+            or "年" in joined
+        ):
+            return True
+        if "并表" in joined or "非并表" in joined:
+            return True
+        if row_is_annual_subsection_caption_row(rows[j]):
+            break
+    # 标题后仍有内容行 → 即使表头识别弱也允许拆（避免两表粘死）
+    return caption_i + 1 < len(rows)
+
+
 def find_annual_subsection_caption_break(rows: List[List[str]]) -> int:
-    """年报（四）（五）类小节标题：表体后、下一张表前 → 拆分起点。"""
+    """年报（四）（五）类小节标题：表体后、下一张表前 → 拆分起点。
+
+    注意：两表被误并时，整表 last_body 可能落在后表，不能要求
+    caption_row > last_body；只要上方已有表体、下方还有内容即切开。
+    """
     for i, row in enumerate(rows):
         if i < 2:
             continue
         if not row_is_annual_subsection_caption_row(row):
             continue
-        if any(_is_main_data_row(rows[j]) for j in range(i)):
-            return i
+        if not any(_is_main_data_row(rows[j]) for j in range(i)):
+            continue
+        if not _rows_have_new_table_signal_after(rows, i):
+            continue
+        return i
     return -1
 
 
@@ -586,16 +621,20 @@ def find_structure_break_row(
     if len(rows) < 4:
         return -1
 
-    from codes.table_engine.split.row_classify import find_last_body_value_row
-
-    last_body = find_last_body_value_row(rows)
     subsec_break = find_annual_subsection_caption_break(rows)
-    if (
-        subsec_break >= 0
-        and last_body >= 0
-        and subsec_break > last_body
-    ):
+    # 硬规则：年报（四）（五）等小节标题强制拆分，不受「后表也有数值」影响，
+    # 也不受 region_continuation_merged / 相似报告期表头过滤抑制。
+    if subsec_break >= 0 and subsec_break < len(rows) - 1:
         return subsec_break
+
+    # 硬规则：表体后再出现「项目+报告期」同类表头 → 新表，禁止当续表压掉
+    repeated_hdr = find_repeated_annual_column_header_break(rows)
+    if repeated_hdr >= 2 and repeated_hdr < len(rows) - 1:
+        return repeated_hdr
+
+    repeated_band = find_repeated_header_band_break(rows)
+    if repeated_band >= 2 and repeated_band < len(rows) - 1:
+        return repeated_band
 
     last_serial = find_last_serial_data_row(rows)
     first_block_end = find_first_serial_block_end(rows)
@@ -608,7 +647,6 @@ def find_structure_break_row(
     body_break = find_body_structure_break(rows)
     candidates = [
         body_break if _body_structure_break_allowed(rows, body_break) else -1,
-        find_annual_subsection_caption_break(rows),
         find_repeated_annual_column_header_break(rows),
         find_note_section_caption_break(rows),
         find_next_table_section_caption_break(rows),
@@ -992,6 +1030,103 @@ def _repair_boundary_overlap_pair(
     return new_upper, new_lower
 
 
+def _row_fingerprint(row: List[str]) -> Tuple[str, ...]:
+    return tuple(str(c or "").strip() for c in row)
+
+
+def _table_rows_are_prefix(short_rows: List[List[str]], long_rows: List[List[str]]) -> bool:
+    """短表行是否为长表行前缀（去空白后逐行相等）。"""
+    if not short_rows or len(short_rows) > len(long_rows):
+        return False
+    for a, b in zip(short_rows, long_rows):
+        if _row_fingerprint(a) != _row_fingerprint(b):
+            return False
+    return True
+
+
+def _y_range_nested_or_heavy_overlap(
+    a: StructuredTable,
+    b: StructuredTable,
+    *,
+    min_overlap_ratio: float = 0.85,
+) -> bool:
+    """短表 Y 范围被长表覆盖，或两者高度重叠。"""
+    lo = max(float(a.y0), float(b.y0))
+    hi = min(float(a.y1), float(b.y1))
+    overlap = max(0.0, hi - lo)
+    if overlap <= 0:
+        return False
+    ha = max(1.0, float(a.y1) - float(a.y0))
+    hb = max(1.0, float(b.y1) - float(b.y0))
+    # 嵌套：短边几乎完全落在长边内
+    if overlap / min(ha, hb) >= min_overlap_ratio:
+        return True
+    return False
+
+
+def dedupe_subset_overlapping_tables(
+    entries: List[DocumentEntry],
+) -> List[DocumentEntry]:
+    """同页去重：短表内容是长表前缀且 Y 重叠 → 丢弃短表（避免同一段进两张表）。
+
+    典型：结构分裂/补挂后留下「仅表头+首行」碎片，与完整 2023 年表表并存。
+    """
+    if not entries:
+        return entries
+
+    tables = [
+        (i, e)
+        for i, e in enumerate(entries)
+        if e.kind == "table" and e.table is not None
+    ]
+    drop: set[int] = set()
+    for ai, (i, ea) in enumerate(tables):
+        if i in drop:
+            continue
+        ta = ea.table
+        assert ta is not None
+        rows_a = dense_rows(ta)
+        if not rows_a:
+            continue
+        for j, eb in tables[ai + 1 :]:
+            if j in drop:
+                continue
+            tb = eb.table
+            assert tb is not None
+            if int(ea.page) != int(eb.page):
+                continue
+            if not tables_x_overlap(ta, tb):
+                continue
+            if not (
+                tables_y_overlap(ta, tb)
+                or _y_range_nested_or_heavy_overlap(ta, tb)
+            ):
+                continue
+            rows_b = dense_rows(tb)
+            if not rows_b:
+                continue
+            # 内容前缀子集 → 丢短的
+            if _table_rows_are_prefix(rows_a, rows_b) and len(rows_a) < len(rows_b):
+                drop.add(i)
+                break
+            if _table_rows_are_prefix(rows_b, rows_a) and len(rows_b) < len(rows_a):
+                drop.add(j)
+                continue
+            # 同源 items：短表 scope 被长表完全覆盖
+            sa = set(str(x) for x in (ta.metadata.get("scope_source_items") or []) if x)
+            sb = set(str(x) for x in (tb.metadata.get("scope_source_items") or []) if x)
+            if sa and sb:
+                if sa < sb and _y_range_nested_or_heavy_overlap(ta, tb):
+                    drop.add(i)
+                    break
+                if sb < sa and _y_range_nested_or_heavy_overlap(tb, ta):
+                    drop.add(j)
+
+    if not drop:
+        return entries
+    return [e for i, e in enumerate(entries) if i not in drop]
+
+
 def apply_adjacent_table_boundary_repair(
     entries: List[DocumentEntry],
 ) -> List[DocumentEntry]:
@@ -1015,6 +1150,20 @@ def apply_adjacent_table_boundary_repair(
             continue
         if idx_upper in removed_idx or idx_lower in removed_idx:
             continue
+
+        # 嵌套/子集重叠：直接丢掉短表，避免同一段内容进两张表
+        tu, tl = out[idx_upper].table, out[idx_lower].table
+        if tu is not None and tl is not None:
+            ru, rl = dense_rows(tu), dense_rows(tl)
+            if (
+                tables_y_overlap(tu, tl) or _y_range_nested_or_heavy_overlap(tu, tl)
+            ) and tables_x_overlap(tu, tl):
+                if _table_rows_are_prefix(ru, rl) and len(ru) < len(rl):
+                    removed_idx.add(idx_upper)
+                    continue
+                if _table_rows_are_prefix(rl, ru) and len(rl) < len(ru):
+                    removed_idx.add(idx_lower)
+                    continue
 
         new_u, new_l = _repair_boundary_overlap_pair(out[idx_upper], out[idx_lower])
         if new_u is not None:

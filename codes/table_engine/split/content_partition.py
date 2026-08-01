@@ -233,6 +233,9 @@ def apply_content_partition(
         if entry.kind != "text" or entry.text_block is None:
             out.append(entry)
             continue
+        if getattr(entry.text_block, "role", None) in ("page_header", "page_footer"):
+            out.append(entry)
+            continue
 
         block = _dedupe_text_block(
             entry.text_block, exact, numeric, table_src, row_lines, value_fps,
@@ -334,6 +337,9 @@ def filter_description_captions(
 
     filtered: List[TextBlock] = []
     for block in gap_texts:
+        if getattr(block, "role", None) in ("page_header", "page_footer"):
+            filtered.append(block)
+            continue
         lines = [ln.strip() for ln in block.text.split("\n") if ln.strip()]
         kept = [ln for ln in lines if _normalize_text(ln) not in desc_norms]
         if not kept:

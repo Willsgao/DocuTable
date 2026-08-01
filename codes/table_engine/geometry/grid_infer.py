@@ -326,7 +326,72 @@ def _is_period_like_header_text(text: str) -> bool:
         return True
     if _is_metric_column_header_text(t):
         return True
+    if t in ("增减幅度", "增减变动", "增减变化", "变化原因", "主要原因", "占比", "比重", "比例", "金额"):
+        return True
+    if "增减幅度" in t or t in ("增减", "末增减"):
+        return True
     return bool(re.search(r"(?:19|20)\d{2}年", t) and len(t) <= 12)
+
+
+_REGION_DIM_HEADERS = frozenset({
+    "地区", "区域", "分部", "地域", "省市", "机构",
+})
+
+
+def _is_region_dim_header_text(text: str) -> bool:
+    t = str(text or "").strip()
+    return t in _REGION_DIM_HEADERS
+
+
+def _is_distinct_header_label_text(text: str) -> bool:
+    """可独立成列的表头标签（含项目列）。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if t == "项目" or t.startswith("项目"):
+        return True
+    if _is_region_dim_header_text(t):
+        return True
+    if is_value_column_header_text(t):
+        return True
+    return _is_period_like_header_text(t)
+
+
+def _ranges_from_distinct_header_items(
+    rows: List[dict],
+    x_lo: float,
+    x_hi: float,
+    *,
+    scan: int = 12,
+) -> List[Tuple[float, float]]:
+    """用表头行各独立标签的 x 坐标生成列界（变化原因表 5 列等）。"""
+    best_items: List[dict] = []
+    for row in rows[:scan]:
+        items = [
+            it for it in (row.get("items") or [])
+            if _is_distinct_header_label_text(str(it.get("text", "")).strip())
+        ]
+        if len(items) > len(best_items):
+            best_items = items
+    if len(best_items) < 4:
+        return []
+    ordered = sorted(best_items, key=lambda it: float(it.get("x0", 0)))
+    centers = [item_column_anchor(it) for it in ordered]
+    # 相邻中心过近则丢弃（同列碎片）
+    deduped: List[float] = []
+    for c in centers:
+        if not deduped or abs(c - deduped[-1]) >= 18.0:
+            deduped.append(c)
+    if len(deduped) < 4:
+        return []
+    lines = [float(x_lo)]
+    for i in range(len(deduped) - 1):
+        lines.append((deduped[i] + deduped[i + 1]) / 2.0)
+    lines.append(float(x_hi))
+    ranges = [(lines[i], lines[i + 1]) for i in range(len(lines) - 1)]
+    if min(hi - lo for lo, hi in ranges) < 16.0:
+        return []
+    return ranges
 
 
 def _all_layout_items(rows: List[dict]) -> List[dict]:
@@ -378,19 +443,14 @@ def _ranges_merge_distinct_headers(
         buckets: dict[int, List[str]] = {}
         for it in row.get("items") or []:
             t = str(it.get("text", "")).strip()
-            if not (
-                _is_period_like_header_text(t)
-                or _is_subcolumn_header_text(t)
-                or is_stage_column_header_text(t)
-                or is_value_column_header_text(t, x0=float(it.get("x0", 0)))
-            ):
+            if not _is_distinct_header_label_text(t):
                 continue
-            ci = col_index_by_anchor(
-                float(it.get("x0", 0)),
-                float(it.get("x1", 0)),
-                t,
-                col_ranges,
-            )
+            # 与表头落列一致：用中心，避免季度等「数值带右缘锚点」把末列判到下一列
+            # 从而漏检「三季度+四季度」同列
+            x0 = float(it.get("x0", 0))
+            x1 = float(it.get("x1", 0))
+            mid = (x0 + x1) / 2.0 if x1 > x0 else x0
+            ci = col_index_by_x0(mid, col_ranges)
             buckets.setdefault(ci, []).append(t)
         for texts in buckets.values():
             if len(set(texts)) >= 2:
@@ -560,16 +620,33 @@ def _ranges_from_numeric_gutters(
     for row in body:
         for it in row.get("items") or []:
             t = str(it.get("text", "")).strip()
-            if is_numeric_data_cell(t) and float(it.get("x0", 0)) > 140:
+            # 地区分布表首个金额列常在 x≈130（营业收入下），勿用 140 阈值
+            if is_numeric_data_cell(t) and float(it.get("x0", 0)) > 100:
                 num_x0.append(float(it.get("x0", 0)))
-    if not num_x0:
+    # 数值列表头（营业收入等）即使偏左，也要把标签列右界压到其左侧
+    value_header_x0: List[float] = []
+    for row in rows[:10]:
+        for it in row.get("items") or []:
+            t = str(it.get("text", "")).strip()
+            if not t:
+                continue
+            x0 = float(it.get("x0", 0))
+            if is_value_column_header_text(t, x0=x0) and x0 < 220:
+                value_header_x0.append(x0)
+    if not num_x0 and not value_header_x0:
         return []
 
-    label_hi = min(num_x0) - 8.0
+    label_hi = min(num_x0) - 8.0 if num_x0 else (min(value_header_x0) - 8.0)
+    if value_header_x0:
+        label_hi = min(label_hi, min(value_header_x0) - 8.0)
     label_lo = x_lo
     # 列检测前拆分 liteparse 合并的「机构名+地址」复合 item
     col_body = _copy_body_with_name_addr_splits(body)
-    lead_xs = _infer_label_lead_column(col_body, splits)
+    # 用数值列表头 x 参与 lead 推断，避免「地区|营业收入」整段被当成标签区
+    lead_anchor_xs = list(splits)
+    if value_header_x0:
+        lead_anchor_xs = sorted(set(lead_anchor_xs + value_header_x0))
+    lead_xs = _infer_label_lead_column(col_body, lead_anchor_xs)
     if lead_xs:
         label_lo = min(label_lo, min(lead_xs) - 12.0)
 
@@ -939,12 +1016,14 @@ def refine_col_ranges_by_coordinates(
         return col_ranges
 
     expected = _expected_value_col_count(rows)
+    target_total = _expected_total_col_count(rows)
     violations = _merged_numeric_violations(rows, col_ranges)
     needs_refine = (
         _ranges_merge_distinct_headers(col_ranges, rows)
         or _stage_column_merge_violations(rows, col_ranges) > 0
         or _value_column_header_merge_violations(rows, col_ranges) > 0
         or (expected >= 4 and expected + 1 > len(col_ranges))
+        or (target_total >= 5 and len(col_ranges) < target_total)
         or _change_table_mixed_cell_violations(rows, col_ranges) > 0
         or violations > 0
     )
@@ -962,13 +1041,19 @@ def refine_col_ranges_by_coordinates(
         anchor_ranges = _ranges_from_anchor_centers(rows, anchor_xs, all_items, x_lo, x_hi)
         if anchor_ranges:
             candidates.append(anchor_ranges)
+    header_ranges = _ranges_from_distinct_header_items(rows, x_lo, x_hi)
+    if header_ranges:
+        candidates.append(header_ranges)
 
+    min_width = 18.0 if target_total >= 5 else 25.0
     best = col_ranges
     best_score = _score_col_ranges(best, rows)
     for cand in candidates:
         if cand == col_ranges:
             continue
-        if len(cand) > len(col_ranges) and min(hi - lo for lo, hi in cand) < 25.0:
+        if not cand or min(hi - lo for lo, hi in cand) < min_width:
+            continue
+        if len(cand) > len(col_ranges) and min(hi - lo for lo, hi in cand) < min_width:
             continue
         sc = _score_col_ranges(cand, rows)
         if sc > best_score:
@@ -1180,6 +1265,12 @@ def pick_best_col_ranges_for_rows(
     grid = infer_constraint_grid(rows, x_lo, x_hi)
     if grid and len(grid.col_ranges) >= 2:
         candidates.append(grid.col_ranges)
+    header_ranges = _ranges_from_distinct_header_items(rows, x_lo, x_hi)
+    if header_ranges:
+        candidates.append(header_ranges)
+        candidates.append(
+            refine_col_ranges_by_coordinates(rows, list(header_ranges), x_lo, x_hi),
+        )
     if not candidates:
         return list(seed_ranges or [])
     return max(candidates, key=lambda c: _score_col_ranges(c, rows))

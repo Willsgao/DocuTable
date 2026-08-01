@@ -139,7 +139,7 @@ def row_bounds_for_anomaly(
 
 
 # 报告版本：契约规则变更时递增，触发缓存补检
-ANOMALY_REPORT_VERSION = 6
+ANOMALY_REPORT_VERSION = 8  # R10 + 缓存表就地拆列修复
 
 
 def _empty_anomaly_report() -> Dict[str, Any]:
@@ -220,9 +220,24 @@ def ensure_anomaly_reports(
                 table["_anomaly"] = _empty_anomaly_report()
                 continue
 
+            # 金额+文本粘连：先就地拆列，再质检（缓存旧表也能立刻修好）
+            force_this = force
+            try:
+                from codes.v2_steps.table_glue_repair import (
+                    repair_table_numeric_text_glue,
+                )
+
+                glue_notes = repair_table_numeric_text_glue(table)
+                if glue_notes:
+                    force_this = True
+                    for n in glue_notes:
+                        print(f"  [GlueRepair] {n}")
+            except Exception as exc:
+                print(f"  [GlueRepair] skip: {exc}")
+
             existing = table.get("_anomaly") or {}
             if (
-                not force
+                not force_this
                 and existing.get("version") == ANOMALY_REPORT_VERSION
                 and "needs_review" in existing
             ):

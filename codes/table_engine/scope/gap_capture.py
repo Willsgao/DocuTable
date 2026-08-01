@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 from codes.table_engine.geometry.item_bridge import source_items_to_dicts
 from codes.table_engine.geometry.row_dict import cluster_items_by_y
@@ -44,6 +44,12 @@ from codes.table_engine.split.boundary_overlap import (
     gap_has_narrative_text,
     region_pair_has_boundary_overlap,
     row_is_wrapped_label_continuation_tail,
+)
+from codes.table_engine.scope.page_chrome import (
+    ensure_page_chrome_separated,
+    extract_page_chrome,
+    filter_items_without_chrome,
+    items_look_like_page_chrome,
 )
 
 Y_MARGIN_BELOW = 30.0
@@ -95,12 +101,21 @@ def _regions_overlap_x(a: RegionBox, b: RegionBox, margin: float = 10.0) -> bool
     return not (a.x1 < b.x0 - margin or b.x1 < a.x0 - margin)
 
 
-def _gap_has_table_caption(items: Sequence[SourceItem]) -> bool:
+def _gap_has_new_table_boundary(items: Sequence[SourceItem]) -> bool:
+    """间隙含新表边界：披露表题、年报（二）（三）小节、新单位+列标表头。"""
     if not items:
         return False
     dicts = source_items_to_dicts(list(items))
     rows = cluster_items_by_y(dicts, use_dynamic_threshold=True)
+    index_map = {it.item_index: it for it in items}
     for row in rows:
+        row_items = [
+            index_map[d["item_index"]]
+            for d in row.get("items", [])
+            if d.get("item_index") in index_map
+        ]
+        if not row_items:
+            continue
         cells = [
             str(d.get("text", "")).strip()
             for d in row.get("items", [])
@@ -108,7 +123,14 @@ def _gap_has_table_caption(items: Sequence[SourceItem]) -> bool:
         ]
         if row_has_pillar_table_caption(cells):
             return True
+        if _gap_row_is_subsection_heading(row_items):
+            return True
     return False
+
+
+def _gap_has_table_caption(items: Sequence[SourceItem]) -> bool:
+    """兼容旧名：间隙是否构成新表边界（含年报小节标题）。"""
+    return _gap_has_new_table_boundary(items)
 
 
 def _gap_has_value_data_items(items: Sequence[SourceItem]) -> bool:
@@ -176,7 +198,8 @@ def _gap_is_period_header_bridge(gap_items: Sequence[SourceItem]) -> bool:
     """间隙为下一报告期表头折行（如 2023年 + 列标），非表后叙述。"""
     if not _gap_has_period_section_header(gap_items):
         return False
-    if _gap_has_table_caption(gap_items):
+    # （二）（三）等新小节 + 其表头中的年份，不是同表「跨期折行桥」
+    if _gap_has_new_table_boundary(gap_items):
         return False
     text = _items_to_text(gap_items)
     if re.search(r"(下表|如下|包括|分别为)", text):
@@ -197,7 +220,7 @@ def _gap_is_intra_table_continuation(
     gap_items: Sequence[SourceItem],
 ) -> bool:
     """间隙为空行/节标题/折行续片、下块无新表头 → 同一张表续片。"""
-    if _gap_has_table_caption(gap_items):
+    if _gap_has_new_table_boundary(gap_items):
         return False
     if _gap_is_period_header_bridge(gap_items):
         return True
@@ -252,6 +275,10 @@ def _merge_continuation_regions(
         )
         if _gap_has_table_caption(gap_items):
             break
+        # 下一块已是完整新表头（如「2024/2023/增减/2022」）→ 绝不当续表吞并
+        # 否则 boundary_overlap 会把 max_gap 放到 180，误并两张独立表并弄丢右列
+        if _region_top_starts_with_fresh_header(page, nxt):
+            break
         if _gap_is_period_header_bridge(gap_items):
             period_bridge_merge = True
         if _gap_is_intra_table_continuation(page, merged, nxt, gap_items):
@@ -305,13 +332,17 @@ def _collect_gap_items(
     *,
     x_lo: Optional[float] = None,
     x_hi: Optional[float] = None,
+    exclude_item_ids: Optional[Set[str]] = None,
 ) -> List[SourceItem]:
     if gap_y1 - gap_y0 < 2.0:
         return []
     lo = x_lo if x_lo is not None else 0.0
     hi = x_hi if x_hi is not None else page.page_width
+    skip = exclude_item_ids or set()
     out: List[SourceItem] = []
     for it in page.items:
+        if skip and str(it.item_index) in skip:
+            continue
         cy = it.bbox.cy
         if gap_y0 - 2 <= cy < gap_y1:
             if lo - 5 <= it.bbox.cx <= hi + 5:
@@ -391,14 +422,21 @@ def _split_items_into_ordered_text_blocks(
     if current:
         clusters.append(current)
 
-    return [
-        _make_text_block(page_num, cluster)
-        for cluster in clusters
-        if cluster
-    ]
+    blocks: List[TextBlock] = []
+    for cluster in clusters:
+        if not cluster:
+            continue
+        # role 交由 ensure_page_chrome_separated 统一标注，避免中间正文误标页脚
+        blocks.append(_make_text_block(page_num, cluster, role=None))
+    return blocks
 
 
-def _make_text_block(page_num: int, items: Sequence[SourceItem]) -> TextBlock:
+def _make_text_block(
+    page_num: int,
+    items: Sequence[SourceItem],
+    *,
+    role: Optional[str] = None,
+) -> TextBlock:
     text = _items_to_text(items)
     y0 = min(it.bbox.y0 for it in items)
     y1 = max(it.bbox.y1 for it in items)
@@ -408,6 +446,7 @@ def _make_text_block(page_num: int, items: Sequence[SourceItem]) -> TextBlock:
         y1=y1,
         text=text,
         source_items=[it.item_index for it in items],
+        role=role,
     )
 
 
@@ -425,9 +464,15 @@ def _is_narrative_gap_text(text: str) -> bool:
     return False
 
 
-def _is_page_chrome_items(items: Sequence[SourceItem]) -> bool:
+def _is_page_chrome_items(
+    items: Sequence[SourceItem],
+    *,
+    page_height: float = 800.0,
+) -> bool:
     if not items:
         return False
+    if items_look_like_page_chrome(items, page_height=page_height):
+        return True
     joined = "".join(str(it.text or "") for it in items)
     if any(m in joined for m in _ANNUAL_REPORT_CHROME_MARKERS):
         return True
@@ -1356,15 +1401,173 @@ def _relocate_orphan_wrap_pre_header(
     return pre_header
 
 
+def _region_rows_have_body_values_before(
+    rows: Sequence[dict],
+    before_idx: int,
+) -> bool:
+    """切分点上方已有表体数值（避免把页首小节误切）。"""
+    for row in rows[:before_idx]:
+        cells = [
+            str(d.get("text", "")).strip()
+            for d in row.get("items") or []
+            if str(d.get("text", "")).strip()
+        ]
+        if row_has_body_value_data(cells):
+            return True
+    return False
+
+
+def _row_looks_like_fresh_annual_header(cells: List[str]) -> bool:
+    """新表表头：单位行 / 项目+报告期列 / 粘连报告期+增减。"""
+    if not cells:
+        return False
+    if is_rmb_unit_lead_row(cells) or is_annual_report_unit_row(cells):
+        return True
+    if is_annual_report_column_header_row(cells):
+        return True
+    joined = " ".join(cells)
+    if "项目" in joined and (
+        "增减幅度" in joined
+        or "主要原因" in joined
+        or "变化原因" in joined
+        or "12 月 31 日" in joined
+        or "12月31日" in joined
+    ):
+        return True
+    if "并表" in joined or "非并表" in joined:
+        return True
+    return False
+
+
+def _split_merged_region_by_subsection(
+    page: PageSource,
+    region: RegionBox,
+) -> List[RegionBox]:
+    """单 region 内跨「（二）…」新小节 + 新表头时切开（liteparse 常误并上下表）。
+
+    上块止于小节标题；下块从新表头起；标题与单位行留在间隙供 pre_header/叙述。
+    若下方暂未识别到表头，仍在小节处切开（避免（四）（五）两表粘死）。
+    """
+    items = _collect_gap_items(
+        page,
+        region.y0 - 2.0,
+        region.y1 + 2.0,
+        x_lo=region.x0 - 10,
+        x_hi=region.x1 + 10,
+    )
+    if len(items) < 8:
+        return [region]
+
+    dicts = source_items_to_dicts(items)
+    rows = cluster_items_by_y(dicts, use_dynamic_threshold=True)
+    if len(rows) < 6:
+        return [region]
+
+    index_map = {it.item_index: it for it in items}
+    cut_points: List[Tuple[float, float]] = []  # (upper_end_y, lower_start_y)
+
+    for i, row in enumerate(rows):
+        row_items = [
+            index_map[d["item_index"]]
+            for d in row.get("items") or []
+            if d.get("item_index") in index_map
+        ]
+        if not row_items or not _gap_row_is_subsection_heading(row_items):
+            continue
+        if not _region_rows_have_body_values_before(rows, i):
+            continue
+
+        y_heading = min(it.bbox.y0 for it in row_items)
+        y_header: Optional[float] = None
+        scan_y1 = y_heading + 160.0
+        for j in range(i + 1, min(i + 12, len(rows))):
+            nxt = [
+                index_map[d["item_index"]]
+                for d in rows[j].get("items") or []
+                if d.get("item_index") in index_map
+            ]
+            if not nxt:
+                continue
+            y0 = min(it.bbox.y0 for it in nxt)
+            if y0 > scan_y1:
+                break
+            cells = [str(it.text).strip() for it in nxt if str(it.text).strip()]
+            if _row_looks_like_fresh_annual_header(cells):
+                y_header = y0
+                break
+        if y_header is None:
+            # 硬切：上块止于小节，下块从下一有内容行开始
+            for j in range(i + 1, min(i + 12, len(rows))):
+                nxt = [
+                    index_map[d["item_index"]]
+                    for d in rows[j].get("items") or []
+                    if d.get("item_index") in index_map
+                ]
+                if nxt:
+                    y_header = min(it.bbox.y0 for it in nxt)
+                    break
+        if y_header is None or y_header <= y_heading + 4.0:
+            continue
+        cut_points.append((y_heading, y_header))
+
+    if not cut_points:
+        return [region]
+
+    pieces: List[RegionBox] = []
+    cursor = region.y0
+    for upper_end, lower_start in cut_points:
+        if upper_end - cursor >= 36.0:
+            pieces.append(
+                RegionBox(
+                    x0=region.x0,
+                    y0=cursor,
+                    x1=region.x1,
+                    y1=upper_end,
+                    confidence=region.confidence,
+                )
+            )
+        cursor = lower_start
+    if region.y1 - cursor >= 36.0:
+        pieces.append(
+            RegionBox(
+                x0=region.x0,
+                y0=cursor,
+                x1=region.x1,
+                y1=region.y1,
+                confidence=region.confidence,
+            )
+        )
+    return pieces if len(pieces) >= 2 else [region]
+
+
+def _expand_regions_split_by_subsection(
+    page: PageSource,
+    regions: List[Tuple[int, RegionBox]],
+) -> List[Tuple[int, RegionBox]]:
+    """预处理：把误并的大 region 按年报小节切开。"""
+    out: List[Tuple[int, RegionBox]] = []
+    for region_index, region in regions:
+        parts = _split_merged_region_by_subsection(page, region)
+        for pi, part in enumerate(parts):
+            # 一律 region*1000+片段号：避免「region0 拆出的片段1」与「原 region1」撞号
+            # （撞号会导致 seen_regions 跳过整张 liteparse 表，如 P29（五）利息净收入）
+            out.append((region_index * 1000 + pi, part))
+    out.sort(key=lambda pair: pair[1].y0)
+    return out
+
+
 def plan_page_scopes(page: PageSource) -> PageScopePlan:
     """为页内每个逻辑表规划 TableScope（含 gap 表头回补）。"""
     if not page.table_regions:
         return PageScopePlan()
 
+    _, chrome_ids = extract_page_chrome(page)
+
     regions = sorted(
         enumerate(page.table_regions),
         key=lambda pair: pair[1].y0,
     )
+    regions = _expand_regions_split_by_subsection(page, regions)
     build_targets: List[
         Tuple[int, RegionBox, List[SourceItem], str, List[SourceItem], bool]
     ] = []
@@ -1579,8 +1782,64 @@ def plan_page_scopes(page: PageSource) -> PageScopePlan:
             if _desc_items:
                 _append_gap_narrative_blocks(gap_texts, page.page_number, list(_desc_items))
 
+    # 对照 liteparse：每个原始 table_region 必须被至少一个 scope 覆盖，否则补建
+    scopes = _ensure_liteparse_regions_covered(page, scopes)
+
+    # 页眉/页脚独立拆出（含原先被 page_height-25 裁掉的页脚）
+    gap_texts = ensure_page_chrome_separated(page, gap_texts)
+    if chrome_ids:
+        # 避免页眉 items 被吸进首张表 scope
+        for scope in scopes:
+            scope.items = filter_items_without_chrome(scope.items, chrome_ids)
+            if scope.pre_header_items:
+                scope.pre_header_items = filter_items_without_chrome(
+                    scope.pre_header_items, chrome_ids,
+                )
+
     return PageScopePlan(
         scopes=scopes,
         gap_texts=gap_texts,
         headerless_absorbed_item_ids=headerless_absorbed_ids,
     )
+
+
+def _y_overlap_ratio(a: RegionBox, b: RegionBox) -> float:
+    """相对较小框高度的 Y 向重叠比例。"""
+    hi = min(a.y1, b.y1)
+    lo = max(a.y0, b.y0)
+    ov = max(0.0, hi - lo)
+    denom = max(1.0, min(a.y1 - a.y0, b.y1 - b.y0))
+    return ov / denom
+
+
+def _ensure_liteparse_regions_covered(
+    page: PageSource,
+    scopes: List[TableScope],
+) -> List[TableScope]:
+    """liteparse 检出的表区若未进入 scope，强制补上（防索引撞号/漏合并丢表）。"""
+    if not page.table_regions:
+        return scopes
+    out = list(scopes)
+    for ri, region in enumerate(page.table_regions):
+        if (region.y1 - region.y0) < 20.0:
+            continue
+        covered = any(
+            _y_overlap_ratio(region, s.region) >= 0.35
+            for s in out
+            if s.region is not None
+        )
+        if covered:
+            continue
+        print(
+            f"  [Scope] P{page.page_number} liteparse region{ri} "
+            f"y={region.y0:.0f}-{region.y1:.0f} 未被覆盖 → 补建 scope"
+        )
+        out.append(
+            build_table_scope(
+                page,
+                region,
+                region_index=ri * 1000 + 999,
+            )
+        )
+    out.sort(key=lambda s: float(s.region.y0 if s.region else 0))
+    return out

@@ -266,6 +266,20 @@ r_text_len = DETECT(data_text_len, [], [(0, 10)] * 3, [0, 60, 140, 400, 480])
 check("邻列有内容时长文本不误报", r_text_len["needs_review"] is False)
 
 
+# ---- 异常：金额+文本粘连 R10（重点严格审核）----
+print("\n>>> Test 19: 金额与文本粘连 R10")
+data_glue = [
+    ["地区 营业收入", "占比"],
+    ["19,079,642 成都", "83.02%"],
+    ["3,901,885 其他地区", "16.98%"],
+]
+r_glue = DETECT(data_glue, [], [(0, 10)] * 3, [0, 120, 200])
+check("粘连 needs_review", r_glue["needs_review"] is True)
+check("命中 R10", "R10_numeric_text_glue" in _rules(r_glue))
+check("strict_review", r_glue.get("strict_review") is True)
+check("评分不低于 0.85", float(r_glue.get("anomaly_score") or 0) >= 0.85)
+
+
 # Summary
 print("\n" + "=" * 60)
 print(f"结果: {passed} PASS, {failed} FAIL")

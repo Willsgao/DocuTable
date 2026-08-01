@@ -30,6 +30,16 @@ _PERCENT_TRAILING_TEXT_RE = re.compile(
 _PERCENT_TRAILING_TEXT_SEARCH_RE = re.compile(
     r"(-?[\d,，]+\.?\d*%)\s*([\u4e00-\u9fff].+)$",
 )
+# 近三年指标等：「上年数值% + 上升/下降…个百分点」跨列粘连（非变化原因说明）
+_PERCENT_POINT_CHANGE_RE = re.compile(
+    r"^(-?[\d,，]+\.?\d*%)\s*"
+    r"((?:上升|下降|增加|减少|变动|提高|降低|扩大|收窄)"
+    r"[\s　]*[\d,，.]+[\s　]*个百分点.*)$"
+)
+_PERCENT_POINT_PHRASE_RE = re.compile(
+    r"(?:上升|下降|增加|减少|变动|提高|降低|扩大|收窄)"
+    r"[\s　]*[\d,，.]+[\s　]*个百分点"
+)
 # 表体「增减幅度」后常见说明用语；纯名词短语（如「风险权重」）多为标签内嵌 %
 _CHANGE_REASON_HINTS = (
     "减少", "增加", "变动", "上升", "下降", "计提", "扩大", "收缩", "调整",
@@ -82,7 +92,7 @@ _CHANGE_METRIC_HEADER_MARKERS = ("增减幅度", "增减变动", "增减变化")
 
 
 def is_report_date_header_part_text(text: str) -> bool:
-    """报告期列表头片段（含增减列标）。"""
+    """报告期列表头片段（含增减幅度列标；不含独立「变化原因」列——避免被当折行尾片）。"""
     t = str(text or "").strip()
     if not t:
         return False
@@ -92,22 +102,32 @@ def is_report_date_header_part_text(text: str) -> bool:
 
 
 def split_report_date_header_compound_text(text: str) -> List[str]:
-    """OCR 将多列报告期+增减粘成一格 → 独立片段。"""
+    """OCR 将多列报告期+增减/变化原因粘成一格 → 独立片段。
+
+    同时支持：
+    - 双报告期：``2024年 … 2023年 … 增减幅度``
+    - 单报告期粘连：``2023 年 增减幅度 变化原因``
+    """
     t = str(text or "").strip()
-    if not t or len(t) < 12:
+    if not t or len(t) < 8:
         return []
     dates = _FULL_REPORT_DATE_PART_RE.findall(t)
-    if len(dates) < 2:
-        return []
-    out = list(dates)
+    metrics: List[str] = []
     for marker in _CHANGE_METRIC_HEADER_MARKERS:
         if marker in t:
-            out.append(marker)
+            metrics.append(marker)
             break
     for extra in ("主要原因", "变化原因"):
-        if extra in t and extra not in out:
-            out.append(extra)
-    return out if len(out) >= 3 else []
+        if extra in t and extra not in metrics:
+            metrics.append(extra)
+
+    if len(dates) >= 2:
+        out = list(dates) + metrics
+        return out if len(out) >= 3 else []
+    # 单日期 + 至少两个列表头（如 增减幅度 + 变化原因）
+    if len(dates) == 1 and len(metrics) >= 2:
+        return list(dates) + metrics
+    return []
 
 
 def is_report_date_header_compound_text(text: str) -> bool:
@@ -175,15 +195,57 @@ def looks_like_change_reason_description_not_label(text: str) -> bool:
     """表体「主要原因」说明（须末列），非「项目」列标签。
 
     须含变化原因常见动词/宾语（增加、计提、清算…），避免把会计科目行项目误判。
+    「下降 0.97 个百分点」类增减列文字不属变化原因。
     """
     t = str(text or "").strip()
     if len(t) < 5 or not re.search(r"[\u4e00-\u9fff]", t):
+        return False
+    if "百分点" in t and _PERCENT_POINT_PHRASE_RE.search(t):
         return False
     if any(t.startswith(p) for p in _STATEMENT_LINE_LABEL_PREFIXES):
         return False
     if "计入" in t and ("综合收益" in t or "当期损益" in t):
         return False
     return any(h in t for h in _REASON_COLUMN_ACTION_HINTS)
+
+
+def split_percent_point_change_text(text: str) -> tuple[str, str] | None:
+    """数值% 与「上升/下降…个百分点」跨列粘连 → (上年数值%, 增减文字)。
+
+    例：「18.78% 下降 0.97 个百分点」。与变化原因「-41.49%代理业务…」分流。
+    """
+    t = str(text or "").strip()
+    if not t or "百分点" not in t:
+        return None
+    m = _PERCENT_POINT_CHANGE_RE.match(t)
+    if not m:
+        return None
+    pct, change = m.group(1).strip(), m.group(2).strip()
+    if not pct.endswith("%"):
+        return None
+    if not _PERCENT_POINT_PHRASE_RE.search(change):
+        return None
+    # 末尾若还粘着下一年数值%，只剥到百分点短语为止，留给其它规则
+    trail = re.search(
+        r"^((?:上升|下降|增加|减少|变动|提高|降低|扩大|收窄)"
+        r"[\s　]*[\d,，.]+[\s　]*个百分点)\s+(-?[\d,，]+\.?\d*%)$",
+        change,
+    )
+    if trail:
+        change = trail.group(1).strip()
+    return pct, change
+
+
+def is_percent_point_change_glued_text(text: str) -> bool:
+    return split_percent_point_change_text(text) is not None
+
+
+def looks_like_percent_point_change_phrase(text: str) -> bool:
+    """是否为「下降 0.97 个百分点」类增减列文字（非变化原因长说明）。"""
+    t = str(text or "").strip()
+    if not t or "百分点" not in t:
+        return False
+    return bool(_PERCENT_POINT_PHRASE_RE.search(t))
 
 
 def is_percent_glued_to_reason_text(text: str) -> bool:
@@ -194,10 +256,14 @@ def is_percent_glued_to_reason_text(text: str) -> bool:
 def split_percent_trailing_text(text: str) -> tuple[str, str] | None:
     """百分比与变化原因粘连（如「-41.49%代理业务支出减少」「30.69% 拆放同业款项增加」）→ (百分比, 说明)。
 
-    不拆：标签内嵌 %（适用1250%风险权重）、叙述句中 %、整数倍率+短名词短语。
+    不拆：标签内嵌 %（适用1250%风险权重）、叙述句中 %、整数倍率+短名词短语、
+    「数值% + …百分点」（见 split_percent_point_change_text）。
     """
     t = str(text or "").strip()
     if not t:
+        return None
+    # 百分点增减跨列粘连：不得走变化原因落列
+    if split_percent_point_change_text(t) or looks_like_percent_point_change_phrase(t):
         return None
     m = _PERCENT_TRAILING_TEXT_RE.match(t)
     if not m:
@@ -215,6 +281,8 @@ def split_percent_trailing_text(text: str) -> tuple[str, str] | None:
     pct, reason = m.group(1).strip(), m.group(2).strip()
     if len(reason) < 2:
         return None
+    if looks_like_percent_point_change_phrase(reason):
+        return None
     if not _percent_token_looks_like_table_change_metric(pct):
         return None
     if not _trailing_text_looks_like_change_reason(reason):
@@ -227,10 +295,15 @@ def peel_trailing_percent_reason(text: str) -> tuple[str, str, str] | None:
     t = str(text or "").strip()
     if not t:
         return None
+    # 整串是百分点跨列粘连时，不按变化原因剥离
+    if split_percent_point_change_text(t):
+        return None
     candidates = list(_PERCENT_TRAILING_TEXT_SEARCH_RE.finditer(t))
     for cand in reversed(candidates):
         pct, reason = cand.group(1).strip(), cand.group(2).strip()
         if len(reason) < 2:
+            continue
+        if looks_like_percent_point_change_phrase(reason):
             continue
         if not _percent_token_looks_like_table_change_metric(pct):
             continue
@@ -246,6 +319,8 @@ def has_percent_glued_to_chinese_text(text: str) -> bool:
     t = str(text or "").strip()
     if not t or "%" not in t or not re.search(r"[\u4e00-\u9fff]", t):
         return False
+    if split_percent_point_change_text(t):
+        return True
     if split_percent_trailing_text(t):
         return True
     return bool(_PERCENT_TRAILING_TEXT_SEARCH_RE.search(t))

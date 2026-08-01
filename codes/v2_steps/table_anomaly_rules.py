@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 # R07  word_crosses_columns
 # R08  header_data_misalign
 # R09  interior_singleton
+# R10  numeric_text_glue  （金额+文本同格，重点严格审核）
 
 # ---- 契约类违规 ----
 # C01  missing_header / no_header_band  → 单独归类 missing_header，非质量异常
@@ -43,11 +44,31 @@ _PLACEHOLDERS = frozenset({
     "\u2026", "...", "N/A", "n/a", "NA", "na",
 })
 _NUM_TOKEN_RE = re.compile(r"^[\d,.\-()（）%％]+$")
+# 金额型：千分位，或 ≥4 位数字（含可选小数/百分号/括号负号）
+_AMOUNT_TOKEN_RE = re.compile(
+    r"^[\(（\-]?"
+    r"(?:"
+    r"\d{1,3}(?:,\d{3})+(?:\.\d+)?"
+    r"|\d{4,}(?:\.\d+)?"
+    r")"
+    r"[%％]?"
+    r"[\)）]?$"
+)
+# 无空格粘连：金额紧贴汉字/字母
+_AMOUNT_GLUED_TEXT_RE = re.compile(
+    r"^[\(（\-]?[\d,]{4,}(?:\.\d+)?[%％]?[\)）]?"
+    r"[\u4e00-\u9fffA-Za-z].+"
+    r"|"
+    r"^[\u4e00-\u9fffA-Za-z].+?"
+    r"[\(（\-]?[\d,]{4,}(?:\.\d+)?[%％]?[\)）]?$"
+)
+_CJK_OR_ALPHA_RE = re.compile(r"[\u4e00-\u9fffA-Za-z]")
 _INDEX_PREFIX_RE = re.compile(r"^\s*\d{1,4}\s+\S")
 _SHORT_INDEX_RE = re.compile(r"^\d{1,4}$")
 _SHORT_CODE_MAX_LEN = 3
 _NUMERIC_COL_SHORT_TEXT_MAX_RATIO = 0.12
 _COL_NUMERIC_DOMINANT = 0.6
+_STRICT_REVIEW_RULE_IDS = frozenset({"R10_numeric_text_glue"})
 _COL_TEXT_DOMINANT = 0.6
 _VALUE_COL_FILL_EXPECT = 0.65
 _PERIOD_YEAR_RE = re.compile(r"(?:19|20)\d{2}\s*年")
@@ -909,6 +930,89 @@ def _rule_merged_numeric(
     return issues
 
 
+def _is_amount_token(token: str) -> bool:
+    t = str(token or "").strip()
+    if not t:
+        return False
+    return bool(_AMOUNT_TOKEN_RE.match(t))
+
+
+def _is_text_label_token(token: str) -> bool:
+    t = str(token or "").strip()
+    if not t or _NUM_TOKEN_RE.match(t):
+        return False
+    if _is_report_period_text(t):
+        return False
+    return bool(_CJK_OR_ALPHA_RE.search(t))
+
+
+def _is_glue_label_token(token: str) -> bool:
+    """短实体标签（地区名/科目名），排除长地址与门牌碎片。"""
+    t = str(token or "").strip()
+    if not _is_text_label_token(t):
+        return False
+    # 「号/层/栋…」门牌续写、E2 类楼号 → 不当事项标签
+    if re.match(r"^[号层楼室弄巷路街栋幢座附之单]", t):
+        return False
+    if re.match(r"^[A-Za-z]\d+[A-Za-z]?$", t):
+        return False
+    if t in ("单元", "号楼", "附号"):
+        return False
+    cjk_n = len(re.findall(r"[\u4e00-\u9fff]", t))
+    # 长地址句不当粘连标签；短标签如「成都」「其他地区」「合计」
+    if cjk_n > 12 or len(t) > 20:
+        return False
+    if cjk_n >= 1:
+        return True
+    return bool(re.search(r"[A-Za-z]{2,}", t))
+
+
+def _looks_like_numeric_text_glue(text: str) -> bool:
+    """金额型数值与文本同格（分列失败重点可疑）。"""
+    t = str(text or "").strip()
+    if not t or _is_report_period_text(t):
+        return False
+    tokens = t.split()
+    if len(tokens) >= 2:
+        amounts = [tk for tk in tokens if _is_amount_token(tk)]
+        labels = [tk for tk in tokens if _is_glue_label_token(tk)]
+        if not amounts or not labels:
+            return False
+        # 有千分位金额 → 强信号；否则要求短标签且整格不太长（避免地址）
+        if any("," in a for a in amounts):
+            return True
+        return len(t) <= 36 and any(len(lb) <= 12 for lb in labels)
+    # 无空格：19,079,642成都 / 成都19,079,642
+    if _CJK_OR_ALPHA_RE.search(t) and _AMOUNT_GLUED_TEXT_RE.match(t):
+        if "," in t and len(t) <= 40:
+            return True
+        if re.search(r"\d{4,}[号层楼室栋幢]", t):
+            return False
+        return len(t) <= 28
+    return False
+
+
+def _rule_numeric_text_glue(
+    table: Sequence[Sequence[str]], ctx: TableContext,
+) -> List[TableIssue]:
+    """R10：金额与文本粘连 → 重点严格审核。"""
+    issues: List[TableIssue] = []
+    for r in range(ctx.data_start, len(table)):
+        if _skip_row(ctx, r):
+            continue
+        for c in range(ctx.n_cols):
+            t = _cell_text(table, r, c)
+            if not t or not _looks_like_numeric_text_glue(t):
+                continue
+            issues.append(TableIssue(
+                rule_id="R10_numeric_text_glue",
+                row=r, col=c,
+                message="金额型数值与文本同格粘连，分列可疑，须严格审核",
+                snippet=t[:40],
+            ))
+    return issues
+
+
 def _rule_text_in_numeric(
     table: Sequence[Sequence[str]], ctx: TableContext,
 ) -> List[TableIssue]:
@@ -1030,6 +1134,7 @@ _RULES: List[Callable[..., List[TableIssue]]] = [
     _rule_stacked_long_text,
     _rule_merged_numeric,
     _rule_text_in_numeric,
+    _rule_numeric_text_glue,
 ]
 
 
@@ -1079,6 +1184,7 @@ def issues_to_report(
     header_missing, has_quality, anomaly_class, quality_issues = _classify_issue_buckets(
         issues,
     )
+    strict_review = any(i.rule_id in _STRICT_REVIEW_RULE_IDS for i in quality_issues)
     report: Dict[str, Any] = {
         "is_normal_table": not has_quality,
         "has_anomalies": has_quality,
@@ -1086,6 +1192,7 @@ def issues_to_report(
         "anomaly_class": anomaly_class,
         "anomaly_score": 0.0,
         "needs_review": has_quality,
+        "strict_review": strict_review,
         "empty_cols": [],
         "empty_rows": [],
         "length_outliers": [],
@@ -1131,6 +1238,13 @@ def issues_to_report(
             report["merged_values"].append(
                 (issue.row, issue.col, issue.snippet[:40], len(issue.snippet.split()))
             )
+        elif rid == "R10_numeric_text_glue":
+            report["mixed_type_cells"].append(
+                (issue.row, issue.col, issue.snippet[:30], "numeric", "mixed")
+            )
+            report["merged_values"].append(
+                (issue.row, issue.col, issue.snippet[:40], len(issue.snippet.split()))
+            )
         elif rid in ("R06_ghost_column", "C01_missing_header", "C01_no_header_band", "R08_header_data_misalign"):
             if issue.col >= 0:
                 report["empty_cols"].append((issue.col, 1.0))
@@ -1149,4 +1263,6 @@ def issues_to_report(
             report["empty_rows"].append((issue.row, 0.17))
 
     report["anomaly_score"] = min(len(quality_issues) / 10.0, 1.0)
+    if strict_review:
+        report["anomaly_score"] = max(float(report["anomaly_score"]), 0.85)
     return report

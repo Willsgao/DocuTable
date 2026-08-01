@@ -21,12 +21,14 @@ from codes.table_engine.geometry.numeric import (
     is_merged_numeric_cell,
     is_percent_glued_to_reason_text,
     looks_like_change_reason_description_not_label,
+    looks_like_percent_point_change_phrase,
     peel_trailing_percent_reason,
     split_amount_percent_reason_text,
     split_amount_percent_text,
     split_label_trailing_amount,
     split_numeric_tokens,
     split_percent_amount_reason_text,
+    split_percent_point_change_text,
     split_percent_trailing_text,
     split_quarter_header_compound_text,
     split_report_date_header_compound_text,
@@ -58,6 +60,8 @@ def is_merged_multi_field_cell(text: str) -> bool:
     t = str(text or "").strip()
     if not t:
         return False
+    if split_percent_point_change_text(t):
+        return True
     if split_amount_percent_reason_text(t):
         return True
     if split_percent_amount_reason_text(t):
@@ -114,6 +118,12 @@ def extract_cell_fragments(text: str) -> Optional[CellFragments]:
     t = str(text or "").strip()
     if not t:
         return None
+
+    # 百分点增减跨列：上年数值% + 增减文字（非变化原因）
+    ppc = split_percent_point_change_text(t)
+    if ppc:
+        pct, change = ppc
+        return CellFragments(amount_prior=pct, reason=change)
 
     triple = split_amount_percent_reason_text(t)
     if triple:
@@ -194,6 +204,7 @@ def decompose_row_items(
         expand_compound_report_date_header_row_items,
         expand_label_numeric_glued_row_items,
         expand_merged_numeric_row_items,
+        expand_percent_point_change_glued_row_items,
         expand_percent_reason_glued_row_items,
         expand_value_text_glued_row_items,
     )
@@ -211,6 +222,8 @@ def decompose_row_items(
         items, col_ranges, value_cols=value_cols,
     )
     items = expand_value_text_glued_row_items(items, col_ranges)
+    # 百分点增减跨列须先于变化原因落列，避免误入 pct/reason 列
+    items = expand_percent_point_change_glued_row_items(items, col_ranges)
     items = expand_percent_reason_glued_row_items(
         items, col_ranges, value_cols=value_cols,
     )
@@ -538,8 +551,18 @@ def _apply_fragments_to_row(
             row, ci, frags.label,
             row_idx=row_idx, table=table, source_items=src_ids,
         )
+    if frags.amount_prior:
+        ci = roles.get("amount_prior", roles.get("amount_current", source_ci))
+        written_cols.add(ci)
+        _set_matrix_cell(
+            row, ci, frags.amount_prior,
+            row_idx=row_idx, table=table, source_items=src_ids,
+        )
     if frags.amount:
         ci = roles.get("amount_prior", roles.get("amount_current", source_ci))
+        # 已有 amount_prior 时，amount 落当年列
+        if frags.amount_prior:
+            ci = roles.get("amount_current", source_ci)
         written_cols.add(ci)
         _set_matrix_cell(
             row, ci, frags.amount,
@@ -553,7 +576,11 @@ def _apply_fragments_to_row(
             row_idx=row_idx, table=table, source_items=src_ids,
         )
     if frags.reason:
-        ci = roles["reason"]
+        # 「下降…个百分点」落增减列；变化原因说明仍落末列
+        if looks_like_percent_point_change_phrase(frags.reason) and not frags.percent:
+            ci = roles.get("percent", roles.get("reason", source_ci))
+        else:
+            ci = roles["reason"]
         written_cols.add(ci)
         _set_matrix_cell(
             row, ci, frags.reason,

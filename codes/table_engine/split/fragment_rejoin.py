@@ -21,6 +21,11 @@ def _row_cells(row: List[str]) -> List[str]:
     return [str(c).strip() for c in row if str(c).strip()]
 
 
+_ANNUAL_SUBSECTION_RE = re.compile(
+    r"^[（(][一二三四五六七八九十\d]+[)）]\s*[\u4e00-\u9fff]"
+)
+
+
 def _text_is_section_gap(block: TextBlock) -> bool:
     """间隙文本为表内节标题折行，非表后叙述段落。"""
     lines = [ln.strip() for ln in block.text.split("\n") if ln.strip()]
@@ -36,10 +41,23 @@ def _text_is_section_gap(block: TextBlock) -> bool:
     return True
 
 
+def _text_is_annual_subsection_caption(block: TextBlock) -> bool:
+    """（四）（五）等新表小节标题：禁止 fragment_rejoin 把两张独立表粘回。"""
+    text = str(block.text or "").strip()
+    if not text:
+        return False
+    first = text.split("\n", 1)[0].strip()
+    first = first.replace("﹙", "（").replace("﹚", "）")
+    return bool(_ANNUAL_SUBSECTION_RE.match(first))
+
+
 def _text_is_merge_spacer(block: TextBlock) -> bool:
     """间隙为整行空白，或表内节标题折行（非表后叙述）。"""
     if not str(block.text or "").strip():
         return True
+    # 年报（五）类标题是新表边界，绝不能当「表内节标题」拼回去
+    if _text_is_annual_subsection_caption(block):
+        return False
     return _text_is_section_gap(block)
 
 

@@ -55,6 +55,8 @@ def _category_list_badge(table: dict) -> str:
         "数据表(缺表头)": "📊 ",
         "文本列表": "📋 ",
         "文本段落": "📝 ",
+        "页眉": "📑 ",
+        "页脚": "📑 ",
         "非表格": "❌ ",
         "目录": "⚠ ",
         "非标准表格": "⚠ ",
@@ -172,6 +174,8 @@ def _get_anomaly_summary(table: dict) -> dict:
     empty_rows = anomaly.get("empty_rows", [])
     length_outliers = anomaly.get("length_outliers", [])
     merged_values = anomaly.get("merged_values", [])
+    strict_review = bool(anomaly.get("strict_review", False))
+    rule_ids = list(anomaly.get("rule_ids") or [])
 
     return {
         "needs_review": needs_review,
@@ -180,6 +184,8 @@ def _get_anomaly_summary(table: dict) -> dict:
         "is_normal_table": anomaly.get("is_normal_table", not needs_review),
         "has_anomalies": has_anomalies,
         "anomaly_score": anomaly_score,
+        "strict_review": strict_review,
+        "rule_ids": rule_ids,
         "reasons": reasons,
         "cross_boundary": cross_boundary,
         "mixed_cells": mixed_cells,
@@ -209,7 +215,7 @@ def _table_matches_type_filter(table: dict, filter_text: str) -> bool:
     if filter_text == "📋 文本列表":
         return category == "文本列表"
     if filter_text == "📝 文本段落":
-        return _is_text_entry(table) and category in ("", "文本段落")
+        return _is_text_entry(table) and category in ("", "文本段落", "页眉", "页脚")
     if filter_text == "⚠ 非标准":
         return category in NONSTANDARD_CATEGORIES
     if filter_text == "❌ 非表格":
@@ -592,6 +598,26 @@ class TableCompareManager(QObject):
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
         btn_layout.addWidget(self.rules_repair_btn)
+
+        # 独立格式纠错（缺表头跨页 / 空行空列 / 合并 / 文表）— 不改动旧 AI优化流程
+        self.format_correct_btn = QPushButton("🧩 格式纠错")
+        self.format_correct_btn.setToolTip(
+            "对全部已提取表格做格式纠偏（界面一键执行，无需命令行）：\n"
+            "• 缺表头 → 跨页续表候选\n"
+            "• 连续空行/空列 → 对照 liteparse 检查分割\n"
+            "• 跨页表尽量合并（不丢数据、不改顺序）\n"
+            "• 文表边界标记\n"
+            "不改正 OCR；与「AI优化」流程相互独立"
+        )
+        self.format_correct_btn.setFocusPolicy(Qt.NoFocus)
+        self.format_correct_btn.clicked.connect(self.on_format_correct_clicked)
+        self.format_correct_btn.setStyleSheet("""
+            QPushButton { background-color: #1ABC9C; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #16A085; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.format_correct_btn)
 
         # 规则修复前后切换/撤销按钮（默认隐藏，修复完成后才显示）
         self.rules_repair_toggle_btn = QPushButton("↩️ 撤销修复")
@@ -1398,10 +1424,20 @@ class TableCompareManager(QObject):
             title_str = f" {title}" if title else ""
             # LLM 生成的标题加星号标记
             llm_mark = "✨" if table.get('llm_title') else ""
-            # 建议合并标记（同页拆分检测）
+            # 建议合并 / 格式纠错已合并标记
             merge_mark = ""
             merge_tooltip = ""
-            if table.get('_suggest_merge_to') is not None:
+            if table.get("_format_corrector_merged") or table.get("_cross_page_merged"):
+                merge_mark = "🔗合"
+                pages = table.get("_merged_from_pages") or []
+                merge_tooltip = "格式纠错：已合并跨页/相邻表"
+                if pages:
+                    merge_tooltip += f"（页 {pages}）"
+            elif table.get("_format_hidden") or table.get("_format_merged_into") is not None:
+                into = table.get("_format_merged_into")
+                merge_mark = "↪"
+                merge_tooltip = f"格式纠错：内容已并入表#{into}（本条为空占位，请点前表查看合并结果）"
+            elif table.get('_suggest_merge_to') is not None:
                 merge_mark = "🔗"
                 reason = table.get('_merge_reason', '疑似被拆分的同一表格')
                 merge_tooltip = f"建议合并到上一个表格（{reason}）"
@@ -1928,15 +1964,21 @@ class TableCompareManager(QObject):
                 # 优先级: 类型混杂 > 长度异常 > 空行 > 空列
                 highlighted = set()  # (r, c) tuples already colored
 
-                # ① 类型混杂单元格 → 红底（最高优先级）
+                # ① 类型混杂 / 数值+文本粘连 → 红底（最高优先级，须严格审核）
                 for (r, c, text, dom, ct) in anomaly["mixed_cells"]:
                     if r < rows and c < cols and (r, c) not in highlighted:
                         item = self.table_widget.item(r, c)
                         if item:
                             item.setBackground(QColor("#FADBD8"))
-                            item.setToolTip(
-                                f"🔴 类型混杂: 本列应为「{dom}」而此格为「{ct}」\n"
-                                f"内容: {text}\n→ 疑似跨列合并，请人工检查")
+                            if "R10_numeric_text_glue" in anomaly.get("rule_ids", []):
+                                item.setToolTip(
+                                    f"🔴〔严格审核〕数值与文本同格粘连\n"
+                                    f"内容: {text}\n"
+                                    f"→ 分列失败重点对象，请核对是否应拆成两列")
+                            else:
+                                item.setToolTip(
+                                    f"🔴 类型混杂: 本列应为「{dom}」而此格为「{ct}」\n"
+                                    f"内容: {text}\n→ 疑似跨列合并，请人工检查")
                             highlighted.add((r, c))
 
                 # ② 长度异常 → 橙底
@@ -2004,7 +2046,8 @@ class TableCompareManager(QObject):
             reasons_brief = "；".join(
                 r.split("，")[0][:40] for r in anomaly["reasons"][:2]
             )
-            tip = (f"🔴〔异常检测〕评分 {anomaly['anomaly_score']:.0%} | "
+            strict = "⚠严格审核 | " if anomaly.get("strict_review") else ""
+            tip = (f"🔴〔异常检测〕{strict}评分 {anomaly['anomaly_score']:.0%} | "
                    f"{reasons_brief} | " + tip)
         elif anomaly.get("header_missing"):
             tip = "📊〔表头缺失〕可续表/跨页合并 | " + tip
@@ -4175,6 +4218,177 @@ class TableCompareManager(QObject):
         self.main_window.status_bar.showMessage(
             f"✅ LLM结构修复完成: {result.original_row_count}行→{result.repaired_row_count}行"
         )
+
+    def refresh_after_format_correction(self, focus_index=None):
+        """格式纠错写回 tables 后刷新对比预览，并跳到合并后的前表。"""
+        try:
+            self.apply_table_filter(preserve_selection=focus_index)
+        except Exception:
+            try:
+                self.apply_table_filter()
+            except Exception:
+                pass
+        # 切到对比预览 Tab
+        try:
+            preview_tab = getattr(self.main_window, "preview_tab", None)
+            if preview_tab is not None:
+                idx = self.main_window.tabs.indexOf(preview_tab)
+                if idx >= 0:
+                    self.main_window.tabs.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def on_format_correct_clicked(self):
+        """对比预览一键：格式纠错（独立模块，界面执行）。"""
+        if not self.main_window.processed_results:
+            QMessageBox.warning(
+                self.main_window, "无数据",
+                "请先处理 PDF 并提取表格，再使用格式纠错。",
+            )
+            return
+
+        tables = list(self.main_window.processed_results.get("tables") or [])
+        if not tables:
+            QMessageBox.warning(self.main_window, "无表格", "当前没有可纠错的表格数据。")
+            return
+
+        box = QMessageBox(self.main_window)
+        box.setWindowTitle("格式纠错")
+        box.setIcon(QMessageBox.Question)
+        box.setText(
+            f"将对全部 {len(tables)} 张已提取表格扫描格式问题。\n\n"
+            "推荐：打开工作台 → 预览合并前/后 → 接受 → 再应用。\n"
+            "这样可先看效果，避免直接写错。\n"
+            "约束：不改顺序、不丢非空内容、不改正 OCR。"
+        )
+        btn_workbench = box.addButton("打开工作台（可预览）", QMessageBox.AcceptRole)
+        btn_auto = box.addButton("直接自动应用高置信（不推荐）", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is None or clicked.text() == "取消":
+            return
+
+        use_llm = False
+        # 可选：若用户按住 Shift，启用 LLM
+        if bool(QApplication.keyboardModifiers() & Qt.ShiftModifier):
+            use_llm = True
+
+        pdf = getattr(self.main_window, "current_file", None) or ""
+        from codes.format_corrector import FormatCorrectorEngine
+        from codes.format_corrector.liteparse_bridge import load_liteparse_dict
+
+        self.format_correct_btn.setEnabled(False)
+        self.format_correct_btn.setText("🧩 纠错中...")
+        self.main_window.status_bar.showMessage("格式纠错扫描中…")
+        QApplication.processEvents()
+
+        try:
+            engine = FormatCorrectorEngine(
+                pdf, use_llm=use_llm, auto_apply=False, pre_structure_split=True
+            )
+            liteparse = load_liteparse_dict(pdf) if pdf else None
+            report = engine.run_on_tables(tables, liteparse)
+            # 结构预拆分写回，避免「前表」内仍夹重复表头/（五）
+            working = engine.last_working_tables
+            if working is not None:
+                self.main_window.processed_results["tables"] = working
+                self.main_window.processed_results["total_tables"] = len(working)
+                self.main_window.processed_results["_format_structure_presplit"] = True
+                tables = working
+                try:
+                    self.apply_table_filter()
+                except Exception:
+                    pass
+
+            # 同步到格式纠错 Tab
+            fc_tab = getattr(self.main_window, "format_corrector_tab", None)
+            if fc_tab is not None:
+                fc_tab.use_llm_cb.setChecked(use_llm)
+                fc_tab.load_report(report)
+
+            if clicked == btn_workbench:
+                # 切到工作台，不自动应用
+                if fc_tab is not None:
+                    idx = self.main_window.tabs.indexOf(fc_tab)
+                    if idx >= 0:
+                        self.main_window.tabs.setCurrentIndex(idx)
+                self.main_window.status_bar.showMessage(
+                    f"格式纠错：已扫描 {report.summary.get('task_count', 0)} 项，请在工作台预览后接受"
+                )
+                QMessageBox.information(
+                    self.main_window,
+                    "扫描完成",
+                    f"共 {report.summary.get('task_count', 0)} 项任务"
+                    f"（高置信 {report.summary.get('high_confidence', 0)}）。\n\n"
+                    "请在工作台：点任务 → 看「合并后预览」→「接受此项」→「应用已接受」。\n"
+                    f"类型分布: {report.summary.get('by_type', {})}",
+                )
+                return
+
+            # 自动应用高置信
+            new_tables, report = engine.apply(
+                tables,
+                report,
+                only_auto=True,
+                liteparse_data=liteparse,
+            )
+            self.main_window.processed_results["tables"] = new_tables
+            self.main_window.processed_results["total_tables"] = len(new_tables)
+            self.main_window.processed_results["_format_corrector_applied"] = True
+            if fc_tab is not None:
+                fc_tab.load_report(report)
+                fc_tab.write_back_cb.setChecked(True)
+
+            if pdf:
+                try:
+                    engine.write_back_mid_cache(
+                        new_tables, payload=self.main_window.processed_results
+                    )
+                except Exception as e:
+                    QMessageBox.warning(self.main_window, "写回缓存失败", str(e))
+
+            self.has_unsaved_changes = True
+            self._schedule_auto_save()
+
+            applied_tasks = [t for t in report.tasks if t.status.value == "applied"]
+            applied = len(applied_tasks)
+            merge_keeps = [
+                int((t.proposal or {}).get("keep_index", t.table_index))
+                for t in applied_tasks
+                if t.task_type.value == "cross_page_merge"
+            ]
+            focus = merge_keeps[0] if merge_keeps else None
+            self.refresh_after_format_correction(focus_index=focus)
+
+            self.main_window.status_bar.showMessage(
+                f"格式纠错完成：应用 {applied}/{report.summary.get('task_count', 0)} 项"
+            )
+            tip_merge = ""
+            if merge_keeps:
+                tip_merge = (
+                    f"\n\n合并结果请在「对比预览」看带「🔗合」标记的前表"
+                    f"（已自动跳转）。后表显示「↪」为空占位，内容已并入前表。"
+                )
+            else:
+                tip_merge = (
+                    "\n\n本次未自动合并任何表（可能没有高置信 cross_page_merge）。"
+                    "请到「格式纠错」勾选 merge 任务后点「应用勾选任务」。"
+                )
+            QMessageBox.information(
+                self.main_window,
+                "格式纠错完成",
+                f"已自动应用高置信项：{applied} 条。\n"
+                f"任务总数：{report.summary.get('task_count', 0)}\n"
+                f"类型：{report.summary.get('by_type', {})}"
+                f"{tip_merge}\n\n"
+                f"（按住 Shift 点击本按钮可启用 LLM 裁判）",
+            )
+        except Exception as e:
+            QMessageBox.critical(self.main_window, "格式纠错失败", str(e))
+        finally:
+            self.format_correct_btn.setEnabled(True)
+            self.format_correct_btn.setText("🧩 格式纠错")
 
     def on_rules_repair_clicked(self):
         """规则修复 — 自底向上分层表头结构修复（纯规则，零LLM调用）"""

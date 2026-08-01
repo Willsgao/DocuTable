@@ -1,0 +1,14 @@
+{
+  "id": "abnormal_numeric_text_glue",
+  "contract": "R10",
+  "description": "金额与地区名同格粘连（分列失败重点可疑）",
+  "data": [
+    ["地区 营业收入", "占比", "比去年增减"],
+    ["19,079,642 成都", "83.02%", "535,270"],
+    ["3,901,885 其他地区", "16.98%", "744,068"]
+  ],
+  "expect": {
+    "needs_review": true,
+    "rule_ids_any": ["R10_numeric_text_glue"]
+  }
+}
