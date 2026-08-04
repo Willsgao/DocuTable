@@ -111,7 +111,13 @@ class SettingsManager:
             f"提取器: <b>{version_map_ui.get(saved_ver, saved_ver.upper())}</b>"
         )
         self.mw.status_bar.showMessage("配置已保存")
-        QMessageBox.information(self.mw, "成功", "配置已保存！下次点击「开始处理」时生效。")
+        QMessageBox.information(
+            self.mw,
+            "成功",
+            "配置已保存。\n\n"
+            "· DeepSeek API：立即用于「LLM 结构修复 / AI 命名」\n"
+            "· 豆包等提取相关项：下次点击「开始处理」时生效",
+        )
 
 
 class SettingsDialog(QDialog):

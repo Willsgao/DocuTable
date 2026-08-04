@@ -280,6 +280,161 @@ check("strict_review", r_glue.get("strict_review") is True)
 check("评分不低于 0.85", float(r_glue.get("anomaly_score") or 0) >= 0.85)
 
 
+# ---- 错误类型目录 + 按类型规则修 ----
+print("\n>>> Test 20: error_types / invariants / typed_repair")
+from codes.table_repair.error_types import (
+    ERROR_TYPES,
+    ERROR_BY_ID,
+    GLOBAL_PRINCIPLES,
+    build_typed_llm_instructions,
+    catalog_as_markdown,
+    errors_from_checklist_findings,
+    partition_errors,
+)
+from codes.table_repair.invariants import strip_title_rows, locate_data_zone
+from codes.table_repair.typed_repair import apply_typed_rule_fixes, run_typed_repair_on_table
+
+check("错误类型目录非空", len(ERROR_TYPES) >= 8)
+check("含 H_TITLE / H_ALIGN / N_LOSS", {"H_TITLE", "H_ALIGN", "N_LOSS"} <= set(ERROR_BY_ID))
+check("全局原则非空", len(GLOBAL_PRINCIPLES) >= 4)
+md = catalog_as_markdown()
+check("catalog markdown 含全局原则", "数据区列界是真理" in md and "H_TITLE" in md)
+
+title_grid = [
+    ["XX银行股份有限公司2024年资本管理信息披露报告", "", "", ""],
+    ["项目", "期末余额", "上年末余额", ""],
+    ["核心一级资本", "1000", "900", ""],
+    ["一级资本", "1100", "1000", ""],
+]
+stripped, removed, notes = strip_title_rows(title_grid)
+check("strip_title 去掉标题行", len(stripped) == 3 and len(removed) >= 1)
+zone = locate_data_zone(stripped)
+check("数据区从金额行起", zone.start_row >= 1 and zone.end_row > zone.start_row)
+
+errs = [ERROR_BY_ID["H_TITLE"]]
+fixed_grid, fix_notes, fixed_ids = apply_typed_rule_fixes(title_grid, errs)
+check("typed 规则修 H_TITLE", "H_TITLE" in fixed_ids and len(fixed_grid) < len(title_grid))
+
+findings = [
+    {"check_id": "H05", "passed": False, "fix_status": "needs_fix"},
+    {"check_id": "H04", "passed": False, "fix_status": "needs_llm"},
+    {"check_id": "N02", "passed": False, "fix_status": "needs_human"},
+]
+mapped = errors_from_checklist_findings(findings)
+ids = {e.error_id for e in mapped}
+check("findings 映射含 H_TITLE/H_ALIGN/N_LOSS", {"H_TITLE", "H_ALIGN", "N_LOSS"} <= ids)
+parts = partition_errors(mapped)
+check("partition human 含 N_LOSS", any(e.error_id == "N_LOSS" for e in parts["human"]))
+instr = build_typed_llm_instructions(parts["llm"])
+check("typed LLM 指令含对齐任务", "H_ALIGN" in instr and "禁止" in instr)
+
+tbl = {"type": "table", "page": 1, "data": title_grid, "rows": 4, "cols": 4}
+res = run_typed_repair_on_table(
+    tbl,
+    findings=[{"check_id": "H05", "passed": False, "fix_status": "needs_fix"}],
+    run_llm=False,
+    apply=False,
+)
+check("仅规则修成功且去掉标题", res.success and len(res.repaired_table or []) <= 3)
+
+
+# ---- 表分流：目录不进结构纠错 ----
+print("\n>>> Test 21: table_kind 目录/数据分流")
+from codes.table_repair.table_kind import classify_table_kind, should_run_structure_repair
+from codes.table_repair.validator import amounts_invented
+from codes.format_corrector.candidates import _table_has_any_error
+
+toc_data = [
+    ["财务报表与监管风险暴露间的联系......................................................14", ""],
+    ["..................14", "4.1 财务数据和监管数据间差异的原因......................................................14"],
+    ["薪酬.........................................................................................................15", ""],
+    ["..................15", "5.1 薪酬政策..........................................................................................15"],
+    ["信用风险.....................................................................................................17", ""],
+    ["..................17", ""],
+    ["..................18", ""],
+]
+toc_kind = classify_table_kind(toc_data)
+check("目录识别为 toc", toc_kind.kind == "toc")
+toc_table = {
+    "type": "table",
+    "data": toc_data,
+    "_anomaly": {"needs_review": True, "rule_ids": ["C01_no_header_band"]},
+    "repair_status": "llm_candidate",
+}
+ok_toc, _, summary_toc = _table_has_any_error(toc_table)
+check("目录不进结构AI", ok_toc is False and str(summary_toc).startswith("skip_toc"))
+
+data_tbl = [
+    ["项目", "期末余额", "上年末"],
+    ["核心一级资本", "1,000,000", "900,000"],
+    ["一级资本", "1,100,000", "1,000,000"],
+    ["总资本", "1,200,000", "1,100,000"],
+]
+check("指标表识别为 data", classify_table_kind(data_tbl).kind == "data")
+check(
+    "指标表可结构修",
+    should_run_structure_repair({"type": "table", "data": data_tbl}),
+)
+# 章节号不计入补造
+before_sec = [["标题", ""], ["", "财务数据"]]
+after_sec = [["标题", ""], ["4.1 财务数据", "财务数据"]]
+inv = amounts_invented(before_sec, after_sec)
+check("章节号4.1不报补造", "4.1" not in inv)
+
+
+# ---- 还原主链外壳（不破坏旧行为）----
+print("\n>>> Test 22: reconstruct 主链快照")
+from codes.reconstruct import run_table_reconstruct, RECONSTRUCT_VERSION
+
+rec_tbl = {
+    "type": "table",
+    "page": 1,
+    "data": [
+        ["项目", "金额"],
+        ["资产", "1,000,000"],
+        ["负债", "800,000"],
+    ],
+}
+snap = run_table_reconstruct(rec_tbl, run_llm=False)
+check("写入 _reconstruct", isinstance(rec_tbl.get("_reconstruct"), dict))
+check("快照 version", snap.get("version") == RECONSTRUCT_VERSION)
+check("未开放入库", snap.get("accepted_for_ingest") is False)
+check("有 table_kind", bool(snap.get("table_kind")))
+check("策略含 liteparse", "liteparse" in str(snap.get("policy") or ""))
+check("有 policy_trace", bool(snap.get("policy_trace")))
+
+# 粘连应在数据主体阶段被规则拆开
+glue_tbl = {
+    "type": "table",
+    "page": 2,
+    "data": [
+        ["地区 营业收入", "占比"],
+        ["19,079,642 成都", "83.02%"],
+        ["3,901,885 其他地区", "16.98%"],
+    ],
+}
+from codes.reconstruct.data_body import prepare_data_body
+gb = prepare_data_body(glue_tbl)
+check("粘连阶段执行", isinstance(glue_tbl.get("_data_body"), dict))
+# 拆后不应再保留整格「金额+中文」
+still_glued = any(
+    "19,079,642" in str(c) and "成都" in str(c)
+    for r in (glue_tbl.get("data") or [])
+    if isinstance(r, list)
+    for c in r
+)
+check("金额文本粘连已拆开", not still_glued or gb["meta"].get("glue_fixed") is True)
+if gb["meta"].get("glue_fixed"):
+    check("粘连拆开后无同格混写", not still_glued)
+
+toc_rec = {
+    "type": "table",
+    "data": toc_data,
+}
+snap_toc = run_table_reconstruct(toc_rec, run_llm=False)
+check("目录 stage 为 skipped", snap_toc.get("stage") == "skipped_non_data")
+
+
 # Summary
 print("\n" + "=" * 60)
 print(f"结果: {passed} PASS, {failed} FAIL")

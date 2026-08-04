@@ -122,11 +122,14 @@ class MainWindow(QMainWindow):
         self._init_preview_tab()
         self.tabs.addTab(self.preview_tab, "👁 对比预览")
 
-        # Tab3: AI优化
+        # Tab3: AI优化界面已隐藏（逻辑保留，避免旧缓存/后台调用报错）
         self._init_ai_tab()
 
-        # Tab3b: 格式纠错（独立模块，不改动 AI优化 流程）
+        # Tab3b: 格式纠错（独立模块）
         self._init_format_corrector_tab()
+
+        # Tab3c: 人工修复队列（LLM 提案 / 需人工收口）
+        self._init_human_repair_tab()
 
         # Tab4: 历史记录
         self.history_tab = QWidget()
@@ -378,12 +381,12 @@ class MainWindow(QMainWindow):
         self.pdf_loading_label = pm.pdf_loading_label
 
     def _init_ai_tab(self):
-        """初始化 AI优化 Tab"""
+        """初始化 AI优化模块（不加入 Tab 栏，界面不再展示）。"""
         from codes.ui.ai_correction_dialog import AICorrectionTab
 
         self.ai_correction_tab = AICorrectionTab(main_window=self)
         self.ai_correction_tab.apply_requested.connect(self._on_ai_correction_apply)
-        self.tabs.addTab(self.ai_correction_tab, "🔍 AI优化")
+        # 用户确认该界面无用：不 addTab，避免占主导航
 
     def _init_format_corrector_tab(self):
         """初始化独立「格式纠错」Tab（不修改 AI优化 / ai_correction 逻辑）"""
@@ -391,6 +394,25 @@ class MainWindow(QMainWindow):
 
         self.format_corrector_tab = FormatCorrectorTab(main_window=self)
         self.tabs.addTab(self.format_corrector_tab, "🧩 格式纠错")
+
+    def _init_human_repair_tab(self):
+        """初始化人工修复队列 Tab。"""
+        from codes.ui.human_repair_tab import HumanRepairTab
+
+        self.human_repair_tab = HumanRepairTab(main_window=self)
+        self.tabs.addTab(self.human_repair_tab, "🛠 人工队列")
+
+    def open_human_repair_queue(self, table_index=None):
+        """切换到人工队列；可选定位某表。"""
+        tab = getattr(self, "human_repair_tab", None)
+        if tab is None:
+            return
+        idx = self.tabs.indexOf(tab)
+        if idx >= 0:
+            self.tabs.setCurrentIndex(idx)
+        tab.refresh_queue()
+        if table_index is not None:
+            tab.focus_table(int(table_index))
 
     def _on_ai_correction_apply(self, accepted_results, confirm_status):
         """AI优化 Tab 中用户点击应用修改（委托给 table_compare_manager）"""
@@ -557,16 +579,23 @@ class MainWindow(QMainWindow):
 
         config_tab_layout.addWidget(config_group)
 
-        # DeepSeek API 配置（表格命名）
-        ds_group = QGroupBox("🤖 DeepSeek 表格命名配置")
+        # DeepSeek API：须在本页手动填写并保存后，LLM 结构修复/命名等才会调用
+        ds_group = QGroupBox("🤖 DeepSeek API（LLM 结构修复 / AI 命名）")
         ds_layout = QVBoxLayout(ds_group)
+        ds_hint = QLabel(
+            "请手动填写 API Key、端点与模型，点击下方「保存配置」后生效。"
+            "未配置时不会调用 LLM。"
+        )
+        ds_hint.setWordWrap(True)
+        ds_hint.setStyleSheet("color: #666; margin-bottom: 4px;")
+        ds_layout.addWidget(ds_hint)
 
         # DeepSeek API Key
         ds_api_key_layout = QHBoxLayout()
         ds_api_key_layout.addWidget(QLabel("DeepSeek API Key:"))
         self.ds_api_key_input = QLineEdit()
         self.ds_api_key_input.setText(self.config.get("deepseek_api_key", ""))
-        self.ds_api_key_input.setPlaceholderText("输入 DeepSeek API Key（用于AI表格命名）")
+        self.ds_api_key_input.setPlaceholderText("必填：在此粘贴 Key（结构修复 / AI 命名）")
         self.ds_api_key_input.setEchoMode(QLineEdit.Password)
         ds_api_key_layout.addWidget(self.ds_api_key_input)
 

@@ -242,7 +242,8 @@ def ensure_anomaly_reports(
                 and "needs_review" in existing
             ):
                 apply_anomaly_table_category(table, existing)
-                if existing.get("needs_review"):
+                _run_problem_repair_router(table, liteparse_data)
+                if (table.get("_anomaly") or existing).get("needs_review"):
                     flagged += 1
                 continue
 
@@ -258,19 +259,72 @@ def ensure_anomaly_reports(
             report["version"] = ANOMALY_REPORT_VERSION
             table["_anomaly"] = report
             apply_anomaly_table_category(table, report)
+            _run_problem_repair_router(table, liteparse_data)
+            report = table.get("_anomaly") or report
             if report.get("needs_review"):
                 flagged += 1
                 print(
                     f"  [Anomaly] P{table.get('page')} "
                     f"表标记异常 score={report.get('anomaly_score', 0):.2f} "
-                    f"rules={report.get('rule_ids', [])}"
+                    f"rules={report.get('rule_ids', [])} "
+                    f"repair={table.get('repair_status', 'none')}"
                 )
             elif report.get("header_missing"):
                 print(
                     f"  [Anomaly] P{table.get('page')} "
                     f"表头缺失（单独归类） rules={report.get('rule_ids', [])}"
                 )
+            pr = table.get("_problem_report") or {}
+            if pr.get("problem_tags") or table.get("repair_status") not in (
+                None, "", "none",
+            ):
+                print(
+                    f"  [RepairRouter] P{table.get('page')} "
+                    f"tags={pr.get('problem_tags', [])} "
+                    f"status={table.get('repair_status')} "
+                    f"actions={((pr.get('evidence') or {}).get('router_actions') or [])[:2]}"
+                )
     return flagged
+
+
+def _run_problem_repair_router(
+    table: Dict[str, Any],
+    liteparse_data: Optional[Dict[str, Any]],
+) -> None:
+    """问题初判 + 规则优先修复；优先走还原主链，失败则回退旧 router。"""
+
+    def _redetect(t: Dict[str, Any]) -> None:
+        lp_page = None
+        if liteparse_data:
+            lp_page = _get_liteparse_page_for_anomaly(
+                liteparse_data, t.get("page"),
+            )
+        new_report = detect_anomalies_for_table(t, liteparse_page=lp_page)
+        new_report["version"] = ANOMALY_REPORT_VERSION
+        t["_anomaly"] = new_report
+        apply_anomaly_table_category(t, new_report)
+
+    # 新主链外壳（内核仍是 table_repair.pipeline）；多写 _reconstruct
+    try:
+        from codes.reconstruct.pipeline import run_table_reconstruct
+
+        run_table_reconstruct(
+            table,
+            redetect_anomaly=_redetect,
+            run_llm=False,
+            llm_apply=False,
+            liteparse_data=liteparse_data,
+        )
+        return
+    except Exception as exc:
+        print(f"  [Reconstruct] fallback to router: {exc}")
+
+    try:
+        from codes.table_repair.router import run_repair_router_on_table
+
+        run_repair_router_on_table(table, redetect_anomaly=_redetect)
+    except Exception as exc:
+        print(f"  [RepairRouter] skip: {exc}")
 
 
 def _get_liteparse_page_for_anomaly(

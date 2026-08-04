@@ -336,14 +336,177 @@ def build_candidate_tasks(
     tables: List[dict],
     liteparse_data: Optional[dict] = None,
 ) -> List[FormatTask]:
-    """构建四类候选任务。"""
+    """构建候选任务：边界/合并类 + 全部质检错误表的 AI 结构纠错。"""
     tasks: List[FormatTask] = []
     tasks.extend(_header_cross_page_tasks(tables, liteparse_data))
     tasks.extend(_empty_split_tasks(tables, liteparse_data))
     tasks.extend(_cross_page_merge_tasks(tables, liteparse_data, tasks))
     tasks.extend(_text_table_tasks(tables))
     tasks = _resolve_bidirectional_merge_conflicts(tasks, tables)
+    # 结构类：只消费主链（_reconstruct / repair_status / _llm_proposal），不再「凡有错就 AI」
+    tasks.extend(_structure_ai_repair_tasks(tables, existing=tasks))
     return [_attach_location(t, tables) for t in tasks]
+
+
+def _table_has_any_error(table: dict) -> Tuple[bool, List[str], str]:
+    """是否视为「有错误」的表（质检/清单）。
+
+    仅作辅助诊断；结构 AI 入队请用 `_main_chain_needs_review`。
+    目录/非数据表一律不算入队对象。
+    """
+    if not _is_real_table(table):
+        return False, [], ""
+    try:
+        from codes.table_repair.table_kind import attach_table_kind, should_run_structure_repair
+
+        kind = attach_table_kind(table)
+        if not should_run_structure_repair(table):
+            return False, [], f"skip_{kind.kind}:{';'.join(kind.reasons[:2])}"
+    except Exception:
+        pass
+    reasons: List[str] = []
+    an = table.get("_anomaly") or {}
+    if an.get("needs_review"):
+        rules = [str(r) for r in (an.get("rule_ids") or [])]
+        reasons.append("needs_review:" + (",".join(rules[:6]) if rules else "yes"))
+    if an.get("header_missing"):
+        reasons.append("header_missing")
+    st = str(table.get("repair_status") or "")
+    if st in (
+        "llm_candidate", "human_needed", "llm_proposed",
+        "rule_fixed",
+    ):
+        if st != "rule_fixed":
+            reasons.append(f"repair_status:{st}")
+    cl = table.get("_repair_checklist") or {}
+    summary = cl.get("summary") or {}
+    failed_ids = list(summary.get("failed_ids") or [])
+    if int(summary.get("failed") or 0) > 0 or failed_ids:
+        reasons.append("checklist:" + ",".join(str(x) for x in failed_ids[:8]))
+    elif st == "rule_fixed":
+        pass
+    cat = str(table.get("table_category") or "")
+    if "异常" in cat and "needs_review" not in "".join(reasons):
+        reasons.append(f"category:{cat}")
+
+    if not reasons:
+        return False, [], ""
+    return True, reasons, "; ".join(reasons)
+
+
+def _main_chain_needs_structure_review(table: dict) -> Tuple[bool, List[str], str]:
+    """是否应由格式纠错 Tab 展示「主链结构提案」。
+
+    只认还原主链结果，不因红点/清单单独开第二套 AI 决策。
+    """
+    if not _is_real_table(table):
+        return False, [], ""
+    try:
+        from codes.table_repair.table_kind import attach_table_kind, should_run_structure_repair
+
+        kind = attach_table_kind(table)
+        if not should_run_structure_repair(table):
+            return False, [], f"skip_{kind.kind}:{';'.join(kind.reasons[:2])}"
+    except Exception:
+        pass
+
+    snap = table.get("_reconstruct") or {}
+    status = str(table.get("repair_status") or "")
+    stage = str(snap.get("stage") or "")
+    prop = table.get("_llm_proposal") or {}
+    has_prop = bool(
+        isinstance(prop, dict)
+        and prop.get("repaired_table")
+        and not prop.get("applied")
+    )
+
+    reasons: List[str] = []
+    if status == "skipped_non_data" or stage == "skipped_non_data":
+        return False, [], "skip_non_data"
+
+    if status == "llm_proposed" or (has_prop and prop.get("success", True)):
+        reasons.append("main_chain:llm_proposed")
+    if status == "llm_candidate":
+        reasons.append("main_chain:llm_candidate")
+    if status == "human_needed" or stage == "needs_human":
+        reasons.append("main_chain:human_needed")
+    if has_prop and "main_chain:llm_proposed" not in reasons:
+        reasons.append("main_chain:has_proposal")
+
+    # 规则已修好且无待审提案 → 不进结构 AI 队列
+    if status in ("rule_fixed", "none") and stage in ("structure_ok", "rules_done", ""):
+        if not has_prop and status != "llm_candidate":
+            return False, [], ""
+
+    if not reasons:
+        return False, [], ""
+    return True, reasons, "; ".join(reasons)
+
+
+def _structure_ai_repair_tasks(
+    tables: List[dict],
+    *,
+    existing: Optional[List[FormatTask]] = None,
+) -> List[FormatTask]:
+    """主链需要人审/LLM 提案的数据表 → 生成结构任务（只展示，不另做决策）。"""
+    out: List[FormatTask] = []
+    existing = existing or []
+    for i, t in enumerate(tables):
+        ok, reasons, summary = _main_chain_needs_structure_review(t)
+        if not ok:
+            if str(summary).startswith("skip_"):
+                t["repair_status"] = t.get("repair_status") or "skipped_non_data"
+                t.setdefault("_repair_notes", []).append(f"structure_ai_skip:{summary}")
+            continue
+        other = [
+            x.task_type.value for x in existing
+            if x.table_index == i and x.task_type != TaskType.STRUCTURE_AI_REPAIR
+        ]
+        snap = t.get("_reconstruct") or {}
+        prop = t.get("_llm_proposal") or {}
+        status = str(t.get("repair_status") or "")
+        conf = Confidence.MEDIUM
+        if status == "human_needed" or "human_needed" in "".join(reasons):
+            conf = Confidence.LOW
+        elif prop.get("repaired_table") and prop.get("success", True):
+            conf = Confidence.HIGH
+        elif status == "llm_candidate":
+            conf = Confidence.MEDIUM
+
+        out.append(
+            FormatTask(
+                task_id=f"struct-ai-{i}",
+                task_type=TaskType.STRUCTURE_AI_REPAIR,
+                table_index=i,
+                page=_page_of(t),
+                status=TaskStatus.CANDIDATE,
+                confidence=conf,
+                reason=f"主链待审结构项：{summary}",
+                evidence={
+                    "error_reasons": reasons,
+                    "source": "reconstruct_main_chain",
+                    "table_kind": (
+                        (t.get("_table_kind") or {}).get("kind")
+                        or snap.get("table_kind")
+                    ),
+                    "reconstruct_stage": snap.get("stage"),
+                    "rule_ids": list((t.get("_anomaly") or {}).get("rule_ids") or []),
+                    "repair_status": status,
+                    "checklist_failed": list(
+                        ((t.get("_repair_checklist") or {}).get("summary") or {})
+                        .get("failed_ids") or []
+                    ),
+                    "also_format_tasks": other,
+                },
+                proposal={
+                    "action": "ai_structure_repair",
+                    "auto_apply": False,
+                    "from_main_chain": True,
+                    "awaiting_llm": status == "llm_candidate" and not prop.get("repaired_table"),
+                },
+            )
+        )
+    return out
 
 
 _CONF_RANK = {

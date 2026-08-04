@@ -230,6 +230,12 @@ def _table_matches_type_filter(table: dict, filter_text: str) -> bool:
         return manual_mark == "non_table"
     if filter_text == "🔴 异常表格":
         return _get_anomaly_summary(table).get("needs_review", False)
+    if filter_text == "🛠 待修复":
+        return table.get("repair_status") in (
+            "human_needed", "llm_candidate", "llm_proposed",
+        )
+    if filter_text == "✅ 规则已修":
+        return table.get("repair_status") == "rule_fixed"
     return True
 
 
@@ -371,6 +377,8 @@ class TableCompareManager(QObject):
             "🔧 人工表格",
             "🚫 人工非表格",
             "🔴 异常表格",
+            "🛠 待修复",
+            "✅ 规则已修",
         ])
         self.table_type_filter.setToolTip(
             "筛选左侧列表条目：\n"
@@ -379,6 +387,8 @@ class TableCompareManager(QObject):
             "· 文本段落：分割后的说明/叙述文本（非表格矩阵）\n"
             "· 非表格：兜底分类为假表、人工标为非表格\n"
             "· 异常表格：合并/空列/类型混杂等质量异常（红标 🔴）\n"
+            "· 待修复：需人工/待 LLM/有提案（可到「🛠 人工队列」审）\n"
+            "· 规则已修：路由器规则修复成功（✅）\n"
             "提示：选中表后状态栏显示分类；悬停列表项可看 tooltip"
         )
         self.table_type_filter.currentIndexChanged.connect(self.on_table_type_filter_changed)
@@ -566,7 +576,7 @@ class TableCompareManager(QObject):
             "• 合并被错误拆分的文本（如断裂的指标名）\n"
             "• 展开合并单元格并填充空值\n"
             "• 纯语义驱动，容忍列偏移\n"
-            "⚠ 仅处理当前显示的表格，需已配置 DeepSeek API"
+            "⚠ 须先在「配置」页手动填写 DeepSeek API 并保存；未配置不会调用 LLM"
         )
         self.llm_repair_btn.setFocusPolicy(Qt.NoFocus)
         self.llm_repair_btn.clicked.connect(self.on_llm_repair_clicked)
@@ -607,7 +617,7 @@ class TableCompareManager(QObject):
             "• 连续空行/空列 → 对照 liteparse 检查分割\n"
             "• 跨页表尽量合并（不丢数据、不改顺序）\n"
             "• 文表边界标记\n"
-            "不改正 OCR；与「AI优化」流程相互独立"
+            "不改正 OCR；独立于旧 AI 纠错流程"
         )
         self.format_correct_btn.setFocusPolicy(Qt.NoFocus)
         self.format_correct_btn.clicked.connect(self.on_format_correct_clicked)
@@ -618,6 +628,24 @@ class TableCompareManager(QObject):
             QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
         """)
         btn_layout.addWidget(self.format_correct_btn)
+
+        # 人工修复队列（审 LLM 提案 / 需人工表）
+        self.human_queue_btn = QPushButton("🛠 人工队列")
+        self.human_queue_btn.setToolTip(
+            "打开人工队列（收口用，不是全量人工检查）：\n"
+            "· 仅含：AI 提案待审、必须人工的表\n"
+            "· 不含：仅标记为「可再让 AI 试」的候选表\n"
+            "接受/拒绝后写回对比预览。"
+        )
+        self.human_queue_btn.setFocusPolicy(Qt.NoFocus)
+        self.human_queue_btn.clicked.connect(self.on_human_queue_clicked)
+        self.human_queue_btn.setStyleSheet("""
+            QPushButton { background-color: #2E86C1; color: white; padding: 2px 10px; border-radius: 4px;
+                          font-weight: bold; font-size: 11px; }
+            QPushButton:hover { background-color: #2874A6; }
+            QPushButton:disabled { background-color: #BDC3C7; color: #ecf0f1; }
+        """)
+        btn_layout.addWidget(self.human_queue_btn)
 
         # 规则修复前后切换/撤销按钮（默认隐藏，修复完成后才显示）
         self.rules_repair_toggle_btn = QPushButton("↩️ 撤销修复")
@@ -1508,6 +1536,16 @@ class TableCompareManager(QObject):
             elif anomaly_summary.get("header_missing"):
                 anomaly_badge = " 📊"
 
+            repair_status = str(table.get("repair_status") or "")
+            repair_badge = {
+                "human_needed": " 🛠",
+                "llm_candidate": " 🛠",
+                "llm_proposed": " 🛠",
+                "rule_fixed": " ✅",
+                "llm_applied": " ✅",
+                "human_done": " ✅",
+            }.get(repair_status, "")
+
             category_tag = ""
             if (
                 table.get("table_category") == "数据表(缺表头)"
@@ -1518,7 +1556,7 @@ class TableCompareManager(QObject):
             item_text = (
                 f"{quality_icon}{confidence_badge}{status_icon} P{page}_{page_seq[page]} "
                 f"[{ext_tag}]{category_tag}{llm_mark}{merge_mark}{manual_mark_icon}"
-                f"{extracted_mark}{auto_scan_mark}{anomaly_badge}{title_str}"
+                f"{extracted_mark}{auto_scan_mark}{anomaly_badge}{repair_badge}{title_str}"
             )
             item = QListWidgetItem(item_text)
             item.setData(Qt.UserRole, idx)  # 保存原始索引
@@ -1558,6 +1596,14 @@ class TableCompareManager(QObject):
                     if "C01" in reason:
                         ab.append(f"  → {reason}")
                 tooltip_parts.extend(ab)
+            pr = table.get("_problem_report") or {}
+            if pr.get("problem_tags") or table.get("repair_status") not in ("", "none", None):
+                tooltip_parts.append(
+                    f"🛠 修复: status={table.get('repair_status')} "
+                    f"tags={pr.get('problem_tags', [])}"
+                )
+                for act in ((pr.get("evidence") or {}).get("router_actions") or [])[:3]:
+                    tooltip_parts.append(f"  → {act}")
             if manual_mark:
                 mark_labels = {"table": "人工表格（将纳入导出）", "non_table": "人工非表格（不导出）"}
                 tooltip_parts.append(f"人工标记: {mark_labels.get(manual_mark, manual_mark)}")
@@ -3893,6 +3939,19 @@ class TableCompareManager(QObject):
     def on_llm_repair_clicked(self):
         """LLM 语义结构修复 — 语义推理修复当前表格的结构问题"""
         from PyQt5.QtCore import QThread, pyqtSignal
+        from codes.pdf_extractor import load_config
+
+        # API 必须在「配置」页手动填写并保存
+        cfg = load_config()
+        if not str(cfg.get("deepseek_api_key") or "").strip():
+            QMessageBox.warning(
+                self.main_window,
+                "未配置 DeepSeek API",
+                "请先在「配置」页面填写 DeepSeek API Key（及端点/模型），\n"
+                "点击「💾 保存配置」后再使用 LLM 结构修复。\n\n"
+                "未配置时不会调用任何 LLM。",
+            )
+            return
 
         # 检查是否有数据
         if not self.main_window.processed_results:
@@ -3950,7 +4009,7 @@ class TableCompareManager(QObject):
             f"  2️⃣ 被错误拆分的文本合并（如断裂的指标名）\n"
             f"  3️⃣ 合并单元格展开填充（消除空值）\n\n"
             f"⚠ 此操作会调用 DeepSeek API。\n"
-            f"⚠ 修复后的数据将直接替换当前表格。\n\n"
+            f"⚠ 生成提案后可进入「人工队列」审阅，或立即应用。\n\n"
             f"是否继续？",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -3972,15 +4031,34 @@ class TableCompareManager(QObject):
                 self.context = context
 
             def run(self):
-                from codes.table_validator.llm_table_repair import (
-                    repair_table_with_llm, generate_repair_report
+                # 统一走 table_repair Facade：带 problem_tags 约束 + 禁补数校验
+                from codes.table_repair.llm_facade import repair_for_ui
+
+                table_obj = None
+                try:
+                    # 由外层闭包注入
+                    table_obj = getattr(self, "table_obj", None)
+                except Exception:
+                    table_obj = None
+                result = repair_for_ui(
+                    self.table_data,
+                    context=self.context,
+                    table=table_obj,
                 )
-                result = repair_table_with_llm(self.table_data, context=self.context)
-                if result.success:
-                    result._report = generate_repair_report(result)
                 self.finished_signal.emit(result)
 
         self._repair_worker = RepairWorker(current_data, context)
+        # 传入当前表 dict，便于 Facade 读取 _problem_report / tags
+        try:
+            tables = self.main_window.processed_results.get("tables", [])
+            idx = getattr(self, "current_table_index", None)
+            if idx is None:
+                item = self.table_list_widget.currentItem()
+                idx = item.data(Qt.UserRole) if item else None
+            if idx is not None and 0 <= int(idx) < len(tables):
+                self._repair_worker.table_obj = tables[int(idx)]
+        except Exception:
+            self._repair_worker.table_obj = None
         self._repair_worker.finished_signal.connect(self._on_llm_repair_finished)
         self._repair_worker.start()
 
@@ -4119,7 +4197,7 @@ class TableCompareManager(QObject):
         )
 
     def _on_llm_repair_finished(self, result):
-        """LLM 语义修复完成后的回调"""
+        """LLM 语义修复完成：默认进人工队列，也可立即应用。"""
         self.llm_repair_btn.setEnabled(True)
         self.llm_repair_btn.setText("🧠 LLM 结构修复")
         self.main_window.status_bar.showMessage("")
@@ -4127,54 +4205,76 @@ class TableCompareManager(QObject):
         if not result.success:
             QMessageBox.critical(self.main_window, "修复失败",
                                f"LLM 结构修复失败：\n{result.llm_error}")
+            # 失败也可能已写入 human_needed，刷新队列入口
+            try:
+                opener = getattr(self.main_window, "open_human_repair_queue", None)
+                if callable(opener):
+                    pass  # 不强制跳转
+            except Exception:
+                pass
             return
 
-        # 确认是否应用修复
         report = getattr(result, '_report', '')
-        brief = (f"修复完成 ✅\n\n"
+        brief = (f"已生成修复提案 ✅\n\n"
                  f"📊 {result.original_row_count}行 → {result.repaired_row_count}行\n"
                  f"🎯 置信度: {result.overall_confidence:.1%}\n"
                  f"🔧 修复操作: {len(result.repairs_applied)}处\n\n"
-                 f"点击「显示详情」查看完整推理过程。")
+                 f"推荐：先到「人工队列」对照审阅后再写回。")
+        if report:
+            brief += "\n\n—— 摘要 ——\n" + str(report)[:600]
 
         detail_box = QMessageBox(self.main_window)
         detail_box.setWindowTitle("LLM 结构修复结果")
         detail_box.setText(brief)
-        detail_box.setStandardButtons(
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Help
-        )
-        detail_box.button(QMessageBox.Yes).setText("✅ 应用修复")
-        detail_box.button(QMessageBox.No).setText("❌ 放弃")
-        detail_box.button(QMessageBox.Help).setText("📋 显示详情")
-        detail_box.setDefaultButton(QMessageBox.Yes)
+        btn_queue = detail_box.addButton("🛠 打开人工队列", QMessageBox.AcceptRole)
+        btn_apply = detail_box.addButton("✅ 立即应用", QMessageBox.ActionRole)
+        btn_discard = detail_box.addButton("❌ 放弃提案", QMessageBox.RejectRole)
+        detail_box.setDefaultButton(btn_queue)
+        detail_box.exec_()
+        clicked = detail_box.clickedButton()
 
-        # "显示详情"按钮点击时弹出完整报告，不关闭对话框
-        def on_button_clicked(btn):
-            if detail_box.buttonRole(btn) == QMessageBox.HelpRole:
-                detail_dialog = QMessageBox(self.main_window)
-                detail_dialog.setWindowTitle("修复详情报告")
-                detail_dialog.setText(report if report else "无详情")
-                detail_dialog.setStandardButtons(QMessageBox.Ok)
-                detail_dialog.exec_()
+        # 解析当前表 index
+        table_idx = None
+        try:
+            item = self.table_list_widget.currentItem()
+            table_idx = item.data(Qt.UserRole) if item else None
+            tables = self.main_window.processed_results.get("tables", [])
+            if table_idx is not None and 0 <= int(table_idx) < len(tables):
+                t = tables[int(table_idx)]
+                # 提案已由 repair_for_ui 写入 _llm_proposal
+                if t.get("repair_status") not in ("llm_proposed", "human_needed"):
+                    t["repair_status"] = "llm_proposed"
+        except Exception:
+            tables = []
 
-        detail_box.buttonClicked.connect(on_button_clicked)
-
-        # exec_() 在点击Yes/No后返回，Help不会关闭对话框
-        ret = detail_box.exec_()
-
-        if ret != QMessageBox.Yes:
+        if clicked == btn_discard:
+            try:
+                if table_idx is not None and 0 <= int(table_idx) < len(tables):
+                    from codes.table_repair.human_queue import reject_proposal_on_table
+                    reject_proposal_on_table(tables[int(table_idx)], status="human_needed")
+            except Exception:
+                pass
+            self.main_window.status_bar.showMessage("已放弃 LLM 提案")
             return
 
-        # 应用修复：将repaired_table写回
+        if clicked == btn_queue or clicked is None:
+            opener = getattr(self.main_window, "open_human_repair_queue", None)
+            if callable(opener):
+                opener(table_index=table_idx)
+            self.main_window.status_bar.showMessage("提案已进入人工队列，待审阅")
+            return
+
+        if clicked != btn_apply:
+            return
+
+        # —— 立即应用（旧路径）——
         repaired = result.repaired_table
         if not repaired:
             QMessageBox.warning(self.main_window, "空结果", "修复后的表格为空。")
             return
 
-        # 先保存当前状态到撤销栈 + 保存修复前快照（用于切换对比）
         self.save_current_table_state()
 
-        # 捕获修复前的原始数据（深拷贝 table_widget 内容）
         original_data = []
         for i in range(self.table_widget.rowCount()):
             row_data = []
@@ -4185,7 +4285,6 @@ class TableCompareManager(QObject):
         self._llm_original_data = original_data
         self._showing_llm_original = False
 
-        # 更新 table_widget 显示为修复后数据
         self.table_widget.blockSignals(True)
         self.table_widget.clear()
         rows = len(repaired)
@@ -4202,14 +4301,21 @@ class TableCompareManager(QObject):
         self.table_widget.resizeColumnsToContents()
         self.table_widget.blockSignals(False)
 
-        # 同步回 processed_results
         self._sync_ui_to_processed_results()
 
-        # 显示切换按钮，让用户可以对比修复前后
+        try:
+            item = self.table_list_widget.currentItem()
+            idx = item.data(Qt.UserRole) if item else None
+            tables = self.main_window.processed_results.get("tables", [])
+            if idx is not None and 0 <= int(idx) < len(tables):
+                from codes.table_repair.human_queue import apply_proposal_to_table
+                apply_proposal_to_table(tables[int(idx)], repaired, status="llm_applied")
+        except Exception:
+            pass
+
         self.llm_toggle_btn.setText("🔁 查看原始")
         self.llm_toggle_btn.setVisible(True)
 
-        # 更新统计提示
         self.stats_label.setText(
             f"🧠 LLM修复完成 | {result.original_row_count}行→{result.repaired_row_count}行 "
             f"| 置信度 {result.overall_confidence:.0%} | 点击「🔁 查看原始」对比"
@@ -4218,6 +4324,7 @@ class TableCompareManager(QObject):
         self.main_window.status_bar.showMessage(
             f"✅ LLM结构修复完成: {result.original_row_count}行→{result.repaired_row_count}行"
         )
+
 
     def refresh_after_format_correction(self, focus_index=None):
         """格式纠错写回 tables 后刷新对比预览，并跳到合并后的前表。"""
@@ -4237,6 +4344,27 @@ class TableCompareManager(QObject):
                     self.main_window.tabs.setCurrentIndex(idx)
         except Exception:
             pass
+
+    def on_human_queue_clicked(self):
+        """打开统一人工修复队列，定位当前表（若有）。"""
+        if not self.main_window.processed_results:
+            QMessageBox.warning(
+                self.main_window, "无数据",
+                "请先处理 PDF 并提取表格，再打开人工队列。",
+            )
+            return
+        idx = None
+        try:
+            item = self.table_list_widget.currentItem()
+            if item is not None:
+                idx = item.data(Qt.UserRole)
+        except Exception:
+            idx = None
+        opener = getattr(self.main_window, "open_human_repair_queue", None)
+        if callable(opener):
+            opener(table_index=idx)
+        else:
+            QMessageBox.information(self.main_window, "提示", "人工队列 Tab 未初始化。")
 
     def on_format_correct_clicked(self):
         """对比预览一键：格式纠错（独立模块，界面执行）。"""
@@ -5021,7 +5149,7 @@ class TableCompareManager(QObject):
         self.main_window.status_bar.showMessage(f"🔍 AI纠错: [{percent}%] {message}")
 
     def _on_ai_correction_finished(self, correction_results):
-        """AI 纠错完成 - 切换到 AI优化 Tab"""
+        """AI 纠错完成后写入后台模块（界面已隐藏）。"""
         self._enable_correction_buttons()
 
         # 一致性守卫：worker 对应的 PDF 与当前 PDF 不一致则丢弃
@@ -5035,27 +5163,19 @@ class TableCompareManager(QObject):
 
         stats = self._count_correction_stats(correction_results)
         self.main_window.status_bar.showMessage(
-            f"🔍 AI纠错完成: 高置信度{stats['high']} 中{stats['medium']} 需人工{stats['unresolvable']}"
+            f"AI纠错完成（界面已隐藏）: 高{stats['high']} 中{stats['medium']} 需人工{stats['unresolvable']}"
         )
 
-        # 将结果加载到 AI优化 Tab
+        # 结果写入后台模块（界面已隐藏，不再切 Tab）
         ai_tab = getattr(self.main_window, 'ai_correction_tab', None)
         if ai_tab:
             ai_tab.set_results(correction_results, self.main_window.processed_results)
 
-            # 传递实际发送的 Prompt 和 Token 消耗（供事后查看）
             if worker and hasattr(worker, 'engine') and worker.engine:
                 prompts = getattr(worker.engine, 'last_prompts', None)
                 usage = getattr(worker.engine, 'last_total_usage', None)
                 if prompts:
                     ai_tab.set_prompts(prompts[0], prompts[1], usage)
-
-            # 切换到 AI优化 Tab
-            tabs = self.main_window.tabs
-            for i in range(tabs.count()):
-                if tabs.tabText(i) == "🔍 AI优化":
-                    tabs.setCurrentIndex(i)
-                    break
 
         # 缓存结果（合并模式：不覆盖已有的其他表缓存）
         pdf_path = getattr(self.main_window, 'current_file', None)

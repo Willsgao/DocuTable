@@ -19,6 +19,7 @@ class TaskType(str, Enum):
     EMPTY_SPLIT = "empty_split"              # 连续空行/空列 → 分割可疑
     CROSS_PAGE_MERGE = "cross_page_merge"    # 跨页合并
     TEXT_TABLE_SPLIT = "text_table_split"    # 文表边界
+    STRUCTURE_AI_REPAIR = "structure_ai_repair"  # 主链结构提案审阅（非独立 AI 决策）
 
 
 class TaskStatus(str, Enum):

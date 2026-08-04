@@ -1,23 +1,30 @@
 # 复制本文件为 anomaly-change-scope.txt 后填写（每次修改任务一份）
 # verify 会据此检查改动范围
 
-task: 数值与文本混在一起的单元格是重点可疑对象，要严格审核
+task: 主链以liteparse字框为基准：切分后定数据主体再定表头，最后LLM
 
 allowed:
   - codes/v2_steps/table_anomaly_rules.py
-  - docs/正常表契约.md
-  - tests/anomaly_golden/**
+  - codes/v2_steps/table_anomaly_bridge.py
+  - codes/table_repair/**
+  - codes/reconstruct/**
+  - codes/format_corrector/**
+  - codes/ui/format_corrector_tab.py
+  - codes/ui/main_window.py
+  - codes/ui/settings_manager.py
+  - codes/ui/table_compare_manager.py
+  - codes/ui/human_repair_tab.py
   - _test_step1_anomaly_detect.py
+  - _test_format_structure_ai.py
+  - anomaly-change-scope.txt
 
 forbidden:
-  - codes/ui/**
   - codes/pdf_extractor/**
-  - codes/v2_steps/table_anomaly_bridge.py
 
 must_pass:
   - golden
   - unit
 
 notes: |
-  新增 R10：金额型数值与中文/英文文本同格粘连 → needs_review + strict_review
-  覆盖「19,079,642 成都」「3,901,885 其他地区」类分列失败；不误伤地址中的短整数。
+  reconstruct：liteparse 锚定 + data_body（粘连/同列）先于 checklist；LLM 殿后。
+  bridge/格式纠错传入 liteparse_data。

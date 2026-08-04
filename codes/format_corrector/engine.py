@@ -18,18 +18,19 @@ from .liteparse_bridge import (
 )
 from .llm_referee import refine_glue_with_llm, refine_merge_task_with_llm
 from .models import FormatCorrectionReport, FormatTask, TaskStatus, TaskType
+from .structure_ai_repair import apply_structure_ai_tasks, propose_structure_ai_repair
 from .structure_pre_split import expand_tables_with_structure_split
 from .text_boundary import apply_text_flags
 
 
 class FormatCorrectorEngine:
-    """独立格式纠错流程：
+    """格式纠错工作台（边界任务 + 主链结构提案审阅）：
 
-    0. 先用 TE 结构拆分切开粘连表（小节/重复表头）
-    1. 扫描可疑表（缺表头 / 空行空列 / 跨页 / 文表）
-    2. 生成提案（规则；可选 LLM 裁判）
-    3. 守恒校验
-    4. 可选应用（默认只自动应用高置信且守恒的空列/空行删除与跨页合并）
+    0. TE 结构预拆分 / 粘连拆列
+    1. 对每张表跑还原主链（规则优先；可选 LLM）→ 写入 _reconstruct
+    2. 扫描边界候选（跨页/空分割/文表）
+    3. 结构类任务只从主链快照/提案生成（不再「凡有错就 AI」）
+    4. 可选应用已接受项
     """
 
     def __init__(
@@ -69,11 +70,36 @@ class FormatCorrectorEngine:
             split_notes.extend(glue_notes)
         except Exception:
             pass
+
+        # —— 主链：规则修 + 可选 LLM（结构决策只在这里发生）——
+        reconstruct_notes: List[str] = []
+        try:
+            from codes.reconstruct.pipeline import run_table_reconstruct
+
+            n_run = 0
+            for t in tables:
+                if not isinstance(t, dict) or t.get("type") in ("text", "paragraph"):
+                    continue
+                run_table_reconstruct(
+                    t,
+                    run_llm=bool(self.use_llm),
+                    llm_apply=False,
+                    liteparse_data=liteparse_data,
+                )
+                n_run += 1
+            reconstruct_notes.append(
+                f"还原主链已跑 {n_run} 表（LLM={'开' if self.use_llm else '关'}；"
+                "以liteparse字框为源→数据主体→表头→可选LLM）；"
+                "结构任务仅展示主链结果"
+            )
+        except Exception as exc:
+            reconstruct_notes.append(f"还原主链跳过: {exc}")
+
         self.last_working_tables = tables
 
         tasks = build_candidate_tasks(tables, liteparse_data)
 
-        # 提案阶段
+        # 提案阶段（边界类可规则/LLM裁判；结构类只 hydrate 主链）
         proposed: List[FormatTask] = []
         for task in tasks:
             if task.task_type == TaskType.CROSS_PAGE_MERGE:
@@ -97,15 +123,20 @@ class FormatCorrectorEngine:
                 task = propose_empty_split(task, tables[task.table_index], liteparse_data)
                 if self.use_llm:
                     task = refine_glue_with_llm(task, tables[task.table_index])
-                    # 重新校验补丁
                     task = propose_empty_split(task, tables[task.table_index], liteparse_data)
             elif task.task_type == TaskType.HEADER_CROSS_PAGE:
                 task.status = TaskStatus.PROPOSED
             elif task.task_type == TaskType.TEXT_TABLE_SPLIT:
                 task.status = TaskStatus.PROPOSED
+            elif task.task_type == TaskType.STRUCTURE_AI_REPAIR:
+                idx = int(task.table_index)
+                tbl = tables[idx] if 0 <= idx < len(tables) else {}
+                task = propose_structure_ai_repair(
+                    task, tbl, use_llm=self.use_llm,
+                )
             proposed.append(task)
 
-        notes = list(split_notes)
+        notes = list(split_notes) + list(reconstruct_notes)
         notes.append(
             "仅生成提案，未写回" if not self.auto_apply else "将尝试自动应用高置信项"
         )
@@ -123,6 +154,32 @@ class FormatCorrectorEngine:
         )
         report.summary["working_table_count"] = len(tables)
         report.summary["structure_presplit_count"] = len(split_notes)
+        # 分流统计：目录/非数据表不进结构AI
+        try:
+            from codes.table_repair.table_kind import attach_table_kind
+
+            skip_toc = skip_non = data_n = 0
+            for t in tables:
+                k = attach_table_kind(t).kind
+                if k == "toc":
+                    skip_toc += 1
+                elif k == "non_data":
+                    skip_non += 1
+                else:
+                    data_n += 1
+            report.summary["table_kind"] = {
+                "data": data_n,
+                "toc_skipped": skip_toc,
+                "non_data_skipped": skip_non,
+            }
+            if skip_toc or skip_non:
+                notes.append(
+                    f"分流：数据表 {data_n}；跳过目录 {skip_toc}、非数据 {skip_non}"
+                    "（不进结构AI）"
+                )
+                report.notes = notes
+        except Exception:
+            pass
 
         if self.auto_apply:
             new_tables, report = self.apply(
@@ -191,6 +248,15 @@ class FormatCorrectorEngine:
             accepted_ids=text_ids if not only_auto else set(),
             remove_from_table=remove_text_rows,
         )
+        notes.extend(n3)
+
+        new_tables, tasks, n4 = apply_structure_ai_tasks(
+            new_tables,
+            tasks,
+            only_auto=only_auto,
+            accepted_ids=accepted_ids,
+        )
+        notes.extend(n4)
         # only_auto 时仍标记所有 text 任务
         if only_auto:
             new_tables, tasks, n3b = apply_text_flags(
@@ -200,8 +266,6 @@ class FormatCorrectorEngine:
                 remove_from_table=False,
             )
             notes.extend(n3b)
-        else:
-            notes.extend(n3)
 
         if compact_hidden:
             from .cross_page_merge import compact_hidden_tables

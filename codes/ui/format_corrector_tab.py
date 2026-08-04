@@ -24,8 +24,14 @@ from codes.format_corrector.models import TaskStatus, TaskType
 from codes.pdf_extractor.widgets import PDFPreviewWidget, ZoomableScrollArea
 
 
-def _fill_table_widget(widget: QTableWidget, data, *, highlight_from_row: int = -1):
-    """把二维数组填进 QTableWidget；highlight_from_row 起高亮（合并新增行）。
+def _fill_table_widget(
+    widget: QTableWidget,
+    data,
+    *,
+    highlight_from_row: int = -1,
+    highlight_cells=None,
+):
+    """把二维数组填进 QTableWidget；可高亮合并新增行或变更单元格。
 
     文本段落的 data 常为 str；若直接 iterate 会变成「一字一行」假表，这里先规范化。
     """
@@ -49,21 +55,81 @@ def _fill_table_widget(widget: QTableWidget, data, *, highlight_from_row: int = 
                 norm.append([str(row) if row is not None else ""])
         data = norm
 
+    hi_cells = set()
+    for c in highlight_cells or []:
+        if isinstance(c, (list, tuple)) and len(c) >= 2:
+            hi_cells.add((int(c[0]), int(c[1])))
+
     rows = len(data)
     cols = max((len(r) for r in data), default=0)
     widget.clear()
     widget.setRowCount(rows)
     widget.setColumnCount(cols)
     hi = QBrush(QColor("#FFF3CD"))
+    hi_chg = QBrush(QColor("#FDEBD0"))
     for ri, row in enumerate(data):
         for ci in range(cols):
             val = row[ci] if ci < len(row) else ""
             item = QTableWidgetItem("" if val is None else str(val))
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            if highlight_from_row >= 0 and ri >= highlight_from_row:
+            if (ri, ci) in hi_cells:
+                item.setBackground(hi_chg)
+            elif highlight_from_row >= 0 and ri >= highlight_from_row:
                 item.setBackground(hi)
             widget.setItem(ri, ci, item)
     widget.resizeColumnsToContents()
+
+
+def _format_structure_ai_detail(task, *, llm_checkbox_on: bool = False) -> str:
+    """结构AI任务：用人话说明「到底改了什么」，避免只丢 JSON。"""
+    prop = task.proposal or {}
+    ev = task.evidence or {}
+    change = prop.get("change_summary") or ev.get("change_summary") or {}
+    lines = [
+        f"【状态】{task.reason or ''}",
+        f"【错误类型】{', '.join(prop.get('error_ids') or ev.get('typed_error_ids') or []) or '（未识别）'}",
+        f"【置信度】{task.confidence.value} / evidence={ev.get('llm_confidence')}",
+    ]
+    if prop.get("awaiting_llm"):
+        if llm_checkbox_on:
+            lines.append(
+                "【提示】当前已勾选「启用 LLM」，但本条仍是「未调用」状态——"
+                "说明上次扫描时未启用。请再点一次「扫描可疑表」。"
+            )
+        else:
+            lines.append(
+                "【提示】尚未调用 LLM：请先勾选左上角「启用 LLM」，再点「扫描可疑表」。"
+                "（只勾选不重扫不会生成意见。）"
+            )
+    if prop.get("blocked_reason"):
+        lines.append(f"【拦截】{prop.get('blocked_reason')}")
+    if prop.get("llm_error"):
+        lines.append(f"【失败原因】{prop.get('llm_error')}")
+    reasoning = prop.get("reasoning_summary") or ev.get("reasoning_summary") or ""
+    if reasoning:
+        lines.append("【LLM说明】")
+        lines.append(str(reasoning).strip())
+    actions = prop.get("actions") or ev.get("typed_actions") or []
+    if actions:
+        lines.append("【执行动作】")
+        for a in actions[:12]:
+            lines.append(f"  · {a}")
+    n_chg = int(change.get("changed_cell_count") or 0)
+    lines.append(
+        f"【单元格变更】{n_chg} 处"
+        f"（行 {change.get('row_count_before')}→{change.get('row_count_after')}）"
+    )
+    for ln in (change.get("lines") or [])[:25]:
+        lines.append(f"  · {ln}")
+    if change.get("identical") and not prop.get("llm_error"):
+        lines.append("【注意】修复前后表格内容相同——可能只做了标注，或 LLM 未改格。")
+    report = prop.get("report_text") or ""
+    if report and report.strip() and report.strip() != reasoning.strip():
+        lines.append("【详细报告】")
+        lines.append(str(report).strip()[:1200])
+    lines.append("")
+    lines.append("对照右侧：「①修复前」vs「③AI提案」（橙底=变更格）。确认后点接受→应用。")
+    return "\n".join(lines)
 
 
 class FormatCorrectorTab(QWidget):
@@ -94,15 +160,21 @@ class FormatCorrectorTab(QWidget):
         root.addWidget(title)
 
         hint = QLabel(
-            "流程：扫描 → 左侧点任务 → 对照左侧 PDF 原页与右侧合并预览 → 接受/拒绝 →「应用已接受」。"
-            "未点应用前不会改对比预览。不改正 OCR。"
+            "流程：扫描 → 左侧点任务 → 对照 PDF 与右侧预览 → 接受/拒绝 →「应用已接受」。"
+            "扫描先跑还原主链（规则优先，可选 LLM），并收录跨页/空分割/文表边界。"
+            "结构类只展示主链快照/提案，不再「凡有错就 AI」；目录/非数据表跳过。"
+            "未点应用前不改对比预览。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #566573; padding-bottom: 6px;")
         root.addWidget(hint)
 
         bar = QHBoxLayout()
-        self.use_llm_cb = QCheckBox("启用 LLM 裁判")
+        self.use_llm_cb = QCheckBox("启用 LLM（结构纠错必开）")
+        self.use_llm_cb.setToolTip(
+            "勾选后：对质检错误表调用 AI 生成结构修复提案；"
+            "并对合并/空分割做 LLM 裁判。需已在配置页保存 DeepSeek Key。"
+        )
         self.write_back_cb = QCheckBox("应用后写回 data.json")
         self.write_back_cb.setChecked(False)
         bar.addWidget(self.use_llm_cb)
@@ -194,10 +266,12 @@ class FormatCorrectorTab(QWidget):
         self.task_kind_filter = QComboBox()
         self.task_kind_filter.addItem("全部任务", "all")
         self.task_kind_filter.addItem("仅合并类", "merge")
+        self.task_kind_filter.addItem("仅结构AI纠错", "structure_ai")
         self.task_kind_filter.addItem("仅非合并类", "non_merge")
         self.task_kind_filter.setToolTip(
-            "合并类：跨页合并、缺表头跨页候选（挂了前后表关联）\n"
-            "非合并类：空行空列分割、文表边界、仅缺表头标记等"
+            "合并类：跨页合并、缺表头跨页候选\n"
+            "结构AI纠错：对比预览质检/修复清单标错的全部表\n"
+            "非合并类：空行空列、文表边界等"
         )
         self.task_kind_filter.currentIndexChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self.task_kind_filter, 1)
@@ -254,7 +328,8 @@ class FormatCorrectorTab(QWidget):
         detail_box = QGroupBox("任务说明")
         detail_l = QVBoxLayout(detail_box)
         self.detail = QTextBrowser()
-        self.detail.setMaximumHeight(140)
+        self.detail.setMinimumHeight(180)
+        self.detail.setMaximumHeight(260)
         detail_l.addWidget(self.detail)
         right_l.addWidget(detail_box)
 
@@ -294,9 +369,25 @@ class FormatCorrectorTab(QWidget):
             QMessageBox.warning(self, "无数据", "请先加载/提取 PDF，确保对比预览中有表格数据。")
             return
 
+        use_llm = bool(self.use_llm_cb.isChecked())
+        if not use_llm:
+            r = QMessageBox.question(
+                self,
+                "未启用 LLM",
+                "当前未勾选「启用 LLM」。\n\n"
+                "结构AI任务仍会出现，但不会调用模型，"
+                "说明里会写「尚未调用 LLM」。\n\n"
+                "是否继续扫描（只生成待修清单）？\n"
+                "选「否」可先勾选后再扫。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if r != QMessageBox.Yes:
+                return
+
         engine = FormatCorrectorEngine(
             pdf or "",
-            use_llm=self.use_llm_cb.isChecked(),
+            use_llm=use_llm,
             auto_apply=False,
             pre_structure_split=True,
         )
@@ -324,13 +415,43 @@ class FormatCorrectorTab(QWidget):
         self._pending_tables = None
         self._reload_list()
         n_split = self._report.summary.get("structure_presplit_count", 0)
+        n_struct = sum(
+            1 for t in self._report.tasks
+            if t.task_type == TaskType.STRUCTURE_AI_REPAIR
+        )
+        n_await = sum(
+            1 for t in self._report.tasks
+            if t.task_type == TaskType.STRUCTURE_AI_REPAIR
+            and (t.proposal or {}).get("awaiting_llm")
+        )
+        n_ok = sum(
+            1 for t in self._report.tasks
+            if t.task_type == TaskType.STRUCTURE_AI_REPAIR
+            and (t.proposal or {}).get("repaired_table")
+            and not (t.proposal or {}).get("awaiting_llm")
+            and not (t.proposal or {}).get("llm_error")
+        )
+        llm_line = (
+            f"LLM：已启用；结构AI {n_struct} 项（有提案 {n_ok}，仍待LLM {n_await}）"
+            if use_llm
+            else f"LLM：未启用；结构AI {n_struct} 项只是占位——勾选后请重新扫描才会出意见"
+        )
+        kind = (self._report.summary or {}).get("table_kind") or {}
+        kind_line = ""
+        if kind:
+            kind_line = (
+                f"\n分流：数据表 {kind.get('data', 0)}；"
+                f"跳过目录 {kind.get('toc_skipped', 0)}、"
+                f"非数据 {kind.get('non_data_skipped', 0)}"
+            )
         QMessageBox.information(
             self,
             "扫描完成",
             f"共 {self._report.summary.get('task_count', 0)} 项"
             + (f"；已结构预拆分 {n_split} 处粘连表" if n_split else "")
-            + "。\n"
-            "请点左侧任务对照 PDF 与「合并后预览」，确认后「接受此项」，\n"
+            + f"。\n{llm_line}{kind_line}\n\n"
+            "点开结构AI任务看「任务说明」与「③AI提案」。\n"
+            "目录/非数据表已自动跳过，不进结构纠错。\n"
             "最后「应用已接受」写入对比预览。",
         )
 
@@ -361,9 +482,12 @@ class FormatCorrectorTab(QWidget):
             else "all"
         )
         is_merge = self._is_merge_task(task)
+        is_struct = task.task_type == TaskType.STRUCTURE_AI_REPAIR
         if kind == "merge" and not is_merge:
             return False
-        if kind == "non_merge" and is_merge:
+        if kind == "structure_ai" and not is_struct:
+            return False
+        if kind == "non_merge" and (is_merge or is_struct):
             return False
 
         accepted = task.task_id in self._accepted_ids
@@ -414,9 +538,13 @@ class FormatCorrectorTab(QWidget):
         visible = [t for t in self._report.tasks if self._task_matches_filters(t)]
         self._filtered_task_ids = [t.task_id for t in visible]
         n_merge = sum(1 for t in self._report.tasks if self._is_merge_task(t))
-        n_non = len(self._report.tasks) - n_merge
+        n_struct = sum(
+            1 for t in self._report.tasks
+            if t.task_type == TaskType.STRUCTURE_AI_REPAIR
+        )
+        n_non = len(self._report.tasks) - n_merge - n_struct
         self.stats_label.setText(
-            f"任务 {s.get('task_count', 0)}（合并 {n_merge} / 非合并 {n_non}）| "
+            f"任务 {s.get('task_count', 0)}（合并 {n_merge} / 结构AI {n_struct} / 其他 {n_non}）| "
             f"已接受 {len(self._accepted_ids)} | 已拒绝 {len(self._rejected_ids)} | "
             f"类型 {s.get('by_type', {})}"
         )
@@ -435,7 +563,12 @@ class FormatCorrectorTab(QWidget):
                 mark = "✗ "
             elif t.status == TaskStatus.APPLIED:
                 mark = "✔已应用 "
-            kind_tag = "合并" if self._is_merge_task(t) else "其他"
+            if t.task_type == TaskType.STRUCTURE_AI_REPAIR:
+                kind_tag = "结构AI"
+            elif self._is_merge_task(t):
+                kind_tag = "合并"
+            else:
+                kind_tag = "其他"
             item = QListWidgetItem(
                 f"{mark}[{kind_tag}] {loc}  [{t.confidence.value}] {t.task_type.value} "
                 f"— {t.reason[:50]}"
@@ -633,6 +766,59 @@ class FormatCorrectorTab(QWidget):
                 data = tables[cur].get("data") if 0 <= cur < len(tables) else []
                 _fill_table_widget(self.tbl_next, data or [])
                 self.preview_title.setText(f"{loc}  仅缺表头标记，无相邻前表可合并预览")
+        elif task.task_type == TaskType.STRUCTURE_AI_REPAIR and tables:
+            idx = int(task.table_index)
+            prop = task.proposal or {}
+            before = prop.get("before_data")
+            after = prop.get("repaired_table")
+            change = prop.get("change_summary") or {}
+            hi_cells = change.get("changed_cells") or []
+            if before is None and 0 <= idx < len(tables):
+                before = tables[idx].get("data") or []
+            _fill_table_widget(self.tbl_prev, before or [])
+            _fill_table_widget(
+                self.tbl_next, after or before or [], highlight_cells=hi_cells,
+            )
+            _fill_table_widget(
+                self.tbl_merged, after or [], highlight_cells=hi_cells,
+            )
+            self.preview_tabs.setTabText(0, "① 修复前")
+            self.preview_tabs.setTabText(1, "② 提案/当前")
+            self.preview_tabs.setTabText(2, "③ AI提案（橙=改动）")
+            self.preview_tabs.setCurrentWidget(
+                self.tbl_merged if after else self.tbl_prev
+            )
+            await_llm = prop.get("awaiting_llm")
+            blocked = prop.get("blocked_reason") or prop.get("llm_error")
+            n_chg = int(change.get("changed_cell_count") or 0)
+            if after and n_chg:
+                tip = (
+                    f"已有 AI 提案：改了 {n_chg} 格（橙底）。"
+                    "对照 PDF 后「接受」→「应用已接受」写回。"
+                )
+            elif after and change.get("identical"):
+                tip = "AI 已跑，但表格内容与修复前相同（见下方任务说明）。"
+            elif await_llm:
+                tip = "尚未生成提案：请勾选「启用 LLM」后重新「扫描可疑表」。"
+            elif blocked:
+                tip = f"无法自动修：{blocked}"
+            else:
+                tip = "结构 AI 任务：请对照 PDF 与下方「任务说明」决定接受/拒绝。"
+            self.preview_title.setText(f"{loc}  结构AI纠错\n{tip}")
+            payload["preview"] = {
+                "before_rows": len(before or []),
+                "after_rows": len(after or []),
+                "awaiting_llm": await_llm,
+                "blocked": blocked,
+                "changed_cell_count": n_chg,
+            }
+            self.detail.setPlainText(
+                _format_structure_ai_detail(
+                    task,
+                    llm_checkbox_on=bool(self.use_llm_cb.isChecked()),
+                )
+            )
+            return
         else:
             idx = task.table_index
             if tables and 0 <= idx < len(tables):
@@ -681,6 +867,26 @@ class FormatCorrectorTab(QWidget):
     def _on_accept_current(self):
         if not self._current_task_id:
             return
+        task = next(
+            (x for x in (self._report.tasks if self._report else [])
+             if x.task_id == self._current_task_id),
+            None,
+        )
+        if task and task.task_type == TaskType.STRUCTURE_AI_REPAIR:
+            prop = task.proposal or {}
+            if prop.get("awaiting_llm") or not prop.get("repaired_table"):
+                if prop.get("blocked_reason"):
+                    QMessageBox.warning(
+                        self, "无法接受",
+                        prop.get("blocked_reason")
+                        or "该表禁止自动补数，请人工在对比预览修改。",
+                    )
+                    return
+                QMessageBox.warning(
+                    self, "尚无 AI 提案",
+                    "请勾选「启用 LLM」后重新扫描，生成结构修复提案后再接受。",
+                )
+                return
         decided = self._current_task_id
         self._accepted_ids.add(decided)
         self._rejected_ids.discard(decided)
