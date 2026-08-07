@@ -21,6 +21,27 @@ def test_wrap_merge():
     assert new_data[2][0] == "现金"
 
 
+def test_section_title_not_merged_as_wrap():
+    """表内分标题（资本充足率）不得并入上一数据行；「底线前）」可续并。"""
+    data = [
+        ["4a", "风险加权资产合计（应用资本", "21,854,590", "22,150,555"],
+        ["", "底线前）", "", ""],
+        ["", "资本充足率", "", ""],
+        ["5", "核心一级资本充足率（%）", "14.48", "14.10"],
+        ["", "杠杆率相关信息", "", ""],
+        ["13", "调整后表内外资产余额", "42,755,544", "41,837,451"],
+    ]
+    table = {"type": "table", "page": 5, "data": [list(r) for r in data]}
+    notes = repair_table_wrap_split(table, label_col=1)
+    assert any("底线前）" in n for n in notes), notes
+    assert not any("资本充足率" in n for n in notes), notes
+    assert not any("杠杆率相关信息" in n for n in notes), notes
+    labels = [str(r[1]) for r in table["data"]]
+    assert "资本充足率" in labels
+    assert "杠杆率相关信息" in labels
+    assert any("应用资本底线前）" in x for x in labels)
+
+
 def test_hierarchy_not_merged_and_split():
     from codes.table_repair.wrap_repair import (
         merge_wrapped_label_rows,
@@ -85,7 +106,7 @@ def test_router_wrap_fixes():
         "is_real_table": True,
         "data": [
             ["项目", "金额"],
-            ["指定为以公允价值计量且其变动计入其他", "100"],
+            ["指定为以公允价值计量且其变动计入其他", "1,000"],
             ["的权益工具", ""],
         ],
         "_anomaly": {
@@ -162,9 +183,12 @@ def test_data_loss_not_auto_invent():
 
 if __name__ == "__main__":
     test_wrap_merge()
+    test_section_title_not_merged_as_wrap()
     test_hierarchy_not_merged_and_split()
     test_problem_report_glue_and_human()
     test_router_wrap_fixes()
     test_router_hierarchy_split()
+    test_data_loss_not_auto_invent()
+    print("OK")
     test_data_loss_not_auto_invent()
     print("OK")

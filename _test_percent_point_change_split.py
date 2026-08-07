@@ -26,6 +26,15 @@ def test_split_percent_point_change():
         "10.47%",
         "上升1.2个百分点",
     )
+    # 净息差/收益率：数值无 % 也应拆到「数值 | 增减文字」
+    assert split_percent_point_change_text("1.28 下降0.09个百分点") == (
+        "1.28",
+        "下降0.09个百分点",
+    )
+    assert split_percent_point_change_text("1.66 下降0.11个百分点") == (
+        "1.66",
+        "下降0.11个百分点",
+    )
     # 变化原因不得误判为百分点
     assert split_percent_point_change_text("-41.49%代理业务支出减少") is None
     assert split_percent_trailing_text("18.78% 下降 0.97 个百分点") is None
@@ -71,6 +80,28 @@ def test_expand_places_into_value_and_change_cols():
     chg_it = next(it for it in out if "个百分点" in it["text"])
     assert cols[2][0] <= (float(pct_it["x0"]) + float(pct_it["x1"])) / 2 <= cols[2][1]
     assert cols[3][0] <= (float(chg_it["x0"]) + float(chg_it["x1"])) / 2 <= cols[3][1]
+    # 无 % 的收益率粘连：增减文字须进下一列，不得留在数值列
+    bare = expand_percent_point_change_glued_row_items(
+        [
+            {
+                "text": "1.28 下降0.09个百分点",
+                "x0": 300.0,
+                "x1": 360.0,
+                "y0": 400.0,
+                "y1": 414.0,
+                "item_index": "d",
+            }
+        ],
+        cols,
+    )
+    bare_texts = [str(it["text"]).strip() for it in bare]
+    assert bare_texts == ["1.28", "下降0.09个百分点"] or (
+        "1.28" in bare_texts and "下降0.09个百分点" in bare_texts
+    )
+    bare_val = next(it for it in bare if it["text"] == "1.28")
+    bare_chg = next(it for it in bare if "个百分点" in it["text"])
+    assert cols[2][0] <= (float(bare_val["x0"]) + float(bare_val["x1"])) / 2 <= cols[2][1]
+    assert cols[3][0] <= (float(bare_chg["x0"]) + float(bare_chg["x1"])) / 2 <= cols[3][1]
     # 变化原因路径不得再拆百分点串
     still = expand_percent_reason_glued_row_items(
         [{"text": "18.78% 下降 0.97 个百分点", "x0": 315, "x1": 450, "y0": 1, "y1": 2}],

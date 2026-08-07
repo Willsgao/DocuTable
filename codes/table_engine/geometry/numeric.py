@@ -30,9 +30,10 @@ _PERCENT_TRAILING_TEXT_RE = re.compile(
 _PERCENT_TRAILING_TEXT_SEARCH_RE = re.compile(
     r"(-?[\d,，]+\.?\d*%)\s*([\u4e00-\u9fff].+)$",
 )
-# 近三年指标等：「上年数值% + 上升/下降…个百分点」跨列粘连（非变化原因说明）
+# 近三年指标等：「上年数值(%可选) + 上升/下降…个百分点」跨列粘连（非变化原因说明）
+# 净息差/收益率等常无 %：如「1.28 下降0.09个百分点」
 _PERCENT_POINT_CHANGE_RE = re.compile(
-    r"^(-?[\d,，]+\.?\d*%)\s*"
+    r"^(-?[\d,，]+\.?\d*%?)\s*"
     r"((?:上升|下降|增加|减少|变动|提高|降低|扩大|收窄)"
     r"[\s　]*[\d,，.]+[\s　]*个百分点.*)$"
 )
@@ -210,9 +211,10 @@ def looks_like_change_reason_description_not_label(text: str) -> bool:
 
 
 def split_percent_point_change_text(text: str) -> tuple[str, str] | None:
-    """数值% 与「上升/下降…个百分点」跨列粘连 → (上年数值%, 增减文字)。
+    """数值(%可选) 与「上升/下降…个百分点」跨列粘连 → (上年数值, 增减文字)。
 
-    例：「18.78% 下降 0.97 个百分点」。与变化原因「-41.49%代理业务…」分流。
+    例：「18.78% 下降 0.97 个百分点」「1.28 下降0.09个百分点」。
+    与变化原因「-41.49%代理业务…」分流。
     """
     t = str(text or "").strip()
     if not t or "百分点" not in t:
@@ -221,14 +223,17 @@ def split_percent_point_change_text(text: str) -> tuple[str, str] | None:
     if not m:
         return None
     pct, change = m.group(1).strip(), m.group(2).strip()
-    if not pct.endswith("%"):
+    # 须为带 % 的比率，或纯数值（净息差/收益率等）
+    if pct.endswith("%"):
+        pass
+    elif not re.fullmatch(r"-?[\d,，]+\.?\d*", pct) or not re.search(r"\d", pct):
         return None
     if not _PERCENT_POINT_PHRASE_RE.search(change):
         return None
-    # 末尾若还粘着下一年数值%，只剥到百分点短语为止，留给其它规则
+    # 末尾若还粘着下一年数值(%可选)，只剥到百分点短语为止，留给其它规则
     trail = re.search(
         r"^((?:上升|下降|增加|减少|变动|提高|降低|扩大|收窄)"
-        r"[\s　]*[\d,，.]+[\s　]*个百分点)\s+(-?[\d,，]+\.?\d*%)$",
+        r"[\s　]*[\d,，.]+[\s　]*个百分点)\s+(-?[\d,，]+\.?\d*%?)$",
         change,
     )
     if trail:

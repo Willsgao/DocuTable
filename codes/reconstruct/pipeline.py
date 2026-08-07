@@ -64,6 +64,22 @@ def run_table_reconstruct(
         for n in (body.get("notes") or [])[:6]:
             policy_trace.append(f"{STAGE_DATA_BODY}:{n}" if "glue" not in str(n) else f"{STAGE_GLUE}:{n}")
 
+        # 2.5) 凝结核网格（字框 → 分割线 → data）；失败保留原 data
+        try:
+            from codes.table_repair.table_kind import get_table_kind
+            from codes.reconstruct.grid_nucleus import apply_grid_to_table, GRID_NUCLEUS
+
+            if GRID_NUCLEUS.get("enabled") and get_table_kind(table) == "data":
+                grid_res = apply_grid_to_table(table)
+                policy_trace.append(
+                    f"grid_nucleus:{grid_res.method}:ok={grid_res.ok}:"
+                    f"cols={grid_res.n_cols}:rows={grid_res.n_rows}"
+                )
+                if grid_res.errors:
+                    policy_trace.append("grid_err:" + ";".join(grid_res.errors[:3]))
+        except Exception as exc:
+            policy_trace.append(f"grid_nucleus_skip:{exc}")
+
         # 3) 规则 checklist / PhaseA（表头等）+ 可选 LLM
         from codes.table_repair.pipeline import run_table_repair_pipeline
 

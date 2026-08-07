@@ -477,8 +477,10 @@ class MainWindow(QMainWindow):
 
         # 历史记录列表（表格形式）
         self.history_table = QTableWidget()
-        self.history_table.setColumnCount(8)
-        self.history_table.setHorizontalHeaderLabels(["删除", "文件名", "状态", "总页数", "成功", "加载中", "预览", "处理时间"])
+        self.history_table.setColumnCount(9)
+        self.history_table.setHorizontalHeaderLabels(
+            ["删除", "文件名", "状态", "总页数", "成功", "加载中", "预览", "导出", "处理时间"]
+        )
         self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.history_table.setAlternatingRowColors(True)
@@ -490,7 +492,8 @@ class MainWindow(QMainWindow):
         self.history_table.setColumnWidth(4, 45)    # 成功
         self.history_table.setColumnWidth(5, 80)    # 加载中
         self.history_table.setColumnWidth(6, 50)   # 预览
-        self.history_table.setColumnWidth(7, 120)  # 处理时间
+        self.history_table.setColumnWidth(7, 50)   # 导出
+        self.history_table.setColumnWidth(8, 120)  # 处理时间
 
         # 加载状态定时器
         self.loading_timer = QTimer()
@@ -508,7 +511,7 @@ class MainWindow(QMainWindow):
         history_layout.addWidget(self.history_table)
 
         # 底部说明
-        hint_label = QLabel("💡 点击「预览」按钮可查看PDF与表格对比")
+        hint_label = QLabel("💡 点击「预览」查看对比；「导出」可直接从历史记录导出 Excel")
         hint_label.setStyleSheet("color: #7F8C8D; font-size: 11px; padding: 5px 0;")
         history_layout.addWidget(hint_label)
 
@@ -997,6 +1000,11 @@ class MainWindow(QMainWindow):
         """预览按钮点击（委托给history_manager）"""
         if self.history_manager:
             self.history_manager.on_preview_button_clicked(row)
+
+    def on_export_button_clicked(self, row):
+        """历史记录导出按钮（委托给history_manager）"""
+        if self.history_manager:
+            self.history_manager.on_export_button_clicked(row)
 
     def _update_loading_time(self):
         """更新加载时间（委托给history_manager）"""

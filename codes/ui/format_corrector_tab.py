@@ -8,12 +8,12 @@ from copy import deepcopy
 from typing import List, Optional
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtGui import QBrush, QColor, QKeySequence
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QTextBrowser, QCheckBox,
     QMessageBox, QSplitter, QAbstractItemView, QTableWidget,
-    QTableWidgetItem, QTabWidget, QGroupBox, QComboBox,
+    QTableWidgetItem, QTabWidget, QGroupBox, QComboBox, QMenu, QShortcut,
 )
 
 from codes.format_corrector import FormatCorrectorEngine, FormatCorrectionReport
@@ -80,8 +80,38 @@ def _fill_table_widget(
     widget.resizeColumnsToContents()
 
 
+def _copy_table_selection(widget: QTableWidget) -> bool:
+    """把选中单元格复制为 TSV（与对比预览一致）；无选区则复制整表。"""
+    ranges = widget.selectedRanges()
+    if ranges:
+        lines = []
+        for rg in ranges:
+            for row in range(rg.topRow(), rg.bottomRow() + 1):
+                cells = []
+                for col in range(rg.leftColumn(), rg.rightColumn() + 1):
+                    item = widget.item(row, col)
+                    cells.append(item.text() if item else "")
+                lines.append("\t".join(cells))
+        text = "\n".join(lines)
+    else:
+        lines = []
+        for row in range(widget.rowCount()):
+            cells = []
+            for col in range(widget.columnCount()):
+                item = widget.item(row, col)
+                cells.append(item.text() if item else "")
+            lines.append("\t".join(cells))
+        text = "\n".join(lines)
+    if not text.strip():
+        return False
+    QApplication.clipboard().setText(text)
+    return True
+
+
 def _format_structure_ai_detail(task, *, llm_checkbox_on: bool = False) -> str:
     """结构AI任务：用人话说明「到底改了什么」，避免只丢 JSON。"""
+    from codes.format_corrector.grid_nucleus_view import format_grid_nucleus_detail_block
+
     prop = task.proposal or {}
     ev = task.evidence or {}
     change = prop.get("change_summary") or ev.get("change_summary") or {}
@@ -90,6 +120,12 @@ def _format_structure_ai_detail(task, *, llm_checkbox_on: bool = False) -> str:
         f"【错误类型】{', '.join(prop.get('error_ids') or ev.get('typed_error_ids') or []) or '（未识别）'}",
         f"【置信度】{task.confidence.value} / evidence={ev.get('llm_confidence')}",
     ]
+    gn = ev.get("grid_nucleus") or {}
+    if gn:
+        lines.append(format_grid_nucleus_detail_block(gn))
+        gtrace = ev.get("grid_nucleus_trace") or []
+        if gtrace:
+            lines.append("【凝结核·主链trace】" + " | ".join(str(x) for x in gtrace[:3]))
     if prop.get("awaiting_llm"):
         if llm_checkbox_on:
             lines.append(
@@ -320,6 +356,16 @@ class FormatCorrectorTab(QWidget):
         self.tbl_merged = QTableWidget()
         for w in (self.tbl_prev, self.tbl_next, self.tbl_merged):
             w.setAlternatingRowColors(True)
+            w.setSelectionMode(QAbstractItemView.ExtendedSelection)
+            w.setSelectionBehavior(QAbstractItemView.SelectItems)
+            w.setContextMenuPolicy(Qt.CustomContextMenu)
+            w.customContextMenuRequested.connect(
+                lambda pos, tw=w: self._on_preview_table_menu(tw, pos)
+            )
+            # 焦点在预览表时 Ctrl+C 复制（对比预览同能力）
+            sc = QShortcut(QKeySequence.Copy, w)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda tw=w: _copy_table_selection(tw))
         self.preview_tabs.addTab(self.tbl_prev, "① 前表（合并前）")
         self.preview_tabs.addTab(self.tbl_next, "② 后表（合并前）")
         self.preview_tabs.addTab(self.tbl_merged, "③ 合并后预览")
@@ -338,6 +384,12 @@ class FormatCorrectorTab(QWidget):
         main_split.setStretchFactor(1, 1)
         main_split.setStretchFactor(2, 3)
         root.addWidget(main_split, 1)
+
+    def _on_preview_table_menu(self, widget: QTableWidget, pos):
+        menu = QMenu(self)
+        act = menu.addAction("📋 复制")
+        act.triggered.connect(lambda: _copy_table_selection(widget))
+        menu.exec_(widget.viewport().mapToGlobal(pos))
 
     def load_report(self, report: FormatCorrectionReport):
         self._report = report
@@ -569,9 +621,28 @@ class FormatCorrectorTab(QWidget):
                 kind_tag = "合并"
             else:
                 kind_tag = "其他"
+            gn_tag = ""
+            try:
+                from codes.format_corrector.grid_nucleus_view import (
+                    grid_nucleus_list_tag,
+                    summarize_grid_nucleus,
+                )
+
+                gn_ev = (t.evidence or {}).get("grid_nucleus")
+                if not gn_ev:
+                    tables = self._current_tables()
+                    ti = int(t.table_index)
+                    if 0 <= ti < len(tables):
+                        gn_ev = summarize_grid_nucleus(tables[ti])
+                        t.evidence = dict(t.evidence or {})
+                        t.evidence["grid_nucleus"] = gn_ev
+                gn_tag = grid_nucleus_list_tag(gn_ev)
+            except Exception:
+                gn_tag = ""
+            gn_part = f" · {gn_tag}" if gn_tag else ""
             item = QListWidgetItem(
-                f"{mark}[{kind_tag}] {loc}  [{t.confidence.value}] {t.task_type.value} "
-                f"— {t.reason[:50]}"
+                f"{mark}[{kind_tag}] {loc}{gn_part}  [{t.confidence.value}] "
+                f"{t.task_type.value} — {t.reason[:50]}"
             )
             item.setData(Qt.UserRole, t.task_id)
             if t.task_id in self._accepted_ids:
@@ -712,6 +783,7 @@ class FormatCorrectorTab(QWidget):
             else "rejected" if task.task_id in self._rejected_ids
             else "pending"
         )
+        detail_prefix = ""
 
         if task.task_type == TaskType.CROSS_PAGE_MERGE and tables:
             keep = int((task.proposal or {}).get("keep_index", task.table_index))
@@ -791,6 +863,24 @@ class FormatCorrectorTab(QWidget):
             await_llm = prop.get("awaiting_llm")
             blocked = prop.get("blocked_reason") or prop.get("llm_error")
             n_chg = int(change.get("changed_cell_count") or 0)
+            # 实时补全凝结核摘要（兼容旧任务 / 扫描后表上才有 _grid_nucleus）
+            if 0 <= idx < len(tables):
+                try:
+                    from codes.format_corrector.grid_nucleus_view import (
+                        summarize_grid_nucleus,
+                    )
+
+                    live_gn = summarize_grid_nucleus(tables[idx])
+                    task.evidence = dict(task.evidence or {})
+                    task.evidence["grid_nucleus"] = live_gn
+                    ev_gn = live_gn
+                except Exception:
+                    ev_gn = (task.evidence or {}).get("grid_nucleus") or {}
+            else:
+                ev_gn = (task.evidence or {}).get("grid_nucleus") or {}
+            gn_tip = ""
+            if ev_gn:
+                gn_tip = f"\n凝结核：{ev_gn.get('short_label') or '—'}"
             if after and n_chg:
                 tip = (
                     f"已有 AI 提案：改了 {n_chg} 格（橙底）。"
@@ -804,13 +894,14 @@ class FormatCorrectorTab(QWidget):
                 tip = f"无法自动修：{blocked}"
             else:
                 tip = "结构 AI 任务：请对照 PDF 与下方「任务说明」决定接受/拒绝。"
-            self.preview_title.setText(f"{loc}  结构AI纠错\n{tip}")
+            self.preview_title.setText(f"{loc}  结构AI纠错\n{tip}{gn_tip}")
             payload["preview"] = {
                 "before_rows": len(before or []),
                 "after_rows": len(after or []),
                 "awaiting_llm": await_llm,
                 "blocked": blocked,
                 "changed_cell_count": n_chg,
+                "grid_nucleus": ev_gn,
             }
             self.detail.setPlainText(
                 _format_structure_ai_detail(
@@ -823,13 +914,29 @@ class FormatCorrectorTab(QWidget):
             idx = task.table_index
             if tables and 0 <= idx < len(tables):
                 _fill_table_widget(self.tbl_prev, tables[idx].get("data") or [])
-                self.preview_title.setText(
-                    f"{loc}  [{task.task_type.value}] 当前表内容（请对照说明接受/拒绝）"
-                )
+                try:
+                    from codes.format_corrector.grid_nucleus_view import (
+                        format_grid_nucleus_detail_block,
+                        summarize_grid_nucleus,
+                    )
+
+                    gn_sum = summarize_grid_nucleus(tables[idx])
+                    payload["grid_nucleus"] = gn_sum
+                    detail_prefix = format_grid_nucleus_detail_block(gn_sum) + "\n\n"
+                    self.preview_title.setText(
+                        f"{loc}  [{task.task_type.value}] 当前表内容"
+                        f"（{gn_sum.get('short_label') or '凝核·—'}；请对照说明接受/拒绝）"
+                    )
+                except Exception:
+                    self.preview_title.setText(
+                        f"{loc}  [{task.task_type.value}] 当前表内容（请对照说明接受/拒绝）"
+                    )
             else:
                 self.preview_title.setText(f"{loc}  无表数据可预览")
 
-        self.detail.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+        self.detail.setPlainText(
+            detail_prefix + json.dumps(payload, ensure_ascii=False, indent=2)
+        )
 
     def _advance_after_decision(self, decided_id: str):
         """接受/拒绝后跳到筛选列表中下一条仍待处理的任务。"""

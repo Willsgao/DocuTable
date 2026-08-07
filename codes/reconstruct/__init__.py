@@ -21,6 +21,17 @@ from codes.reconstruct.snapshot import (
 )
 from codes.reconstruct.policy import POLICY_ORDER, POLICY_SUMMARY
 
+try:
+    from codes.reconstruct.grid_nucleus import (
+        GRID_NUCLEUS,
+        apply_grid_to_table,
+        restore_table_grid,
+    )
+except Exception:  # pragma: no cover
+    GRID_NUCLEUS = {"enabled": False}
+    apply_grid_to_table = None  # type: ignore
+    restore_table_grid = None  # type: ignore
+
 __all__ = [
     "RECONSTRUCT_VERSION",
     "POLICY_ORDER",
@@ -28,4 +39,7 @@ __all__ = [
     "build_reconstruct_snapshot",
     "run_table_reconstruct",
     "run_payload_reconstruct",
+    "GRID_NUCLEUS",
+    "apply_grid_to_table",
+    "restore_table_grid",
 ]

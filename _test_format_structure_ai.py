@@ -111,8 +111,45 @@ def test_engine_path_queues_after_reconstruct():
         assert status in ("rule_fixed", "none", "skipped_non_data") or not struct
 
 
+def test_hydrate_exposes_grid_nucleus_summary():
+    from codes.format_corrector.grid_nucleus_view import summarize_grid_nucleus
+    from codes.format_corrector.models import FormatTask, TaskType
+
+    table = {
+        "type": "table",
+        "page": 13,
+        "data": [["a", "b c"], ["1", "100"]],
+        "repair_status": "llm_candidate",
+        "_reconstruct": {"stage": "rules_done", "policy_trace": ["grid_nucleus:fallback_keep:ok=False:cols=0:rows=0"]},
+        "_grid_nucleus": {
+            "ok": False,
+            "method": "fallback_keep",
+            "n_rows": 0,
+            "n_cols": 0,
+            "errors": ["no_source_words"],
+            "metrics": {},
+        },
+    }
+    summ = summarize_grid_nucleus(table)
+    assert summ["present"] is True
+    assert summ["verdict"] == "kept"
+    assert "凝核·保留原表" in summ["short_label"]
+
+    task = FormatTask(
+        task_id="t1",
+        task_type=TaskType.STRUCTURE_AI_REPAIR,
+        table_index=0,
+        page=13,
+        reason="test",
+    )
+    hydrated = hydrate_structure_task_from_main_chain(task, table)
+    assert hydrated.evidence.get("grid_nucleus", {}).get("verdict") == "kept"
+    assert hydrated.evidence.get("grid_nucleus_trace")
+
+
 if __name__ == "__main__":
     test_main_chain_status_enters_structure_ai()
     test_needs_review_alone_does_not_queue_without_main_chain()
     test_engine_path_queues_after_reconstruct()
+    test_hydrate_exposes_grid_nucleus_summary()
     print("OK")

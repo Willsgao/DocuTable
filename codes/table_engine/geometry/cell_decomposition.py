@@ -552,7 +552,15 @@ def _apply_fragments_to_row(
             row_idx=row_idx, table=table, source_items=src_ids,
         )
     if frags.amount_prior:
-        ci = roles.get("amount_prior", roles.get("amount_current", source_ci))
+        # 百分点粘连：数值留在原粘连列，避免被角色图拽到更左的「上年」槽
+        if (
+            frags.reason
+            and looks_like_percent_point_change_phrase(frags.reason)
+            and not frags.percent
+        ):
+            ci = source_ci
+        else:
+            ci = roles.get("amount_prior", roles.get("amount_current", source_ci))
         written_cols.add(ci)
         _set_matrix_cell(
             row, ci, frags.amount_prior,
@@ -576,9 +584,19 @@ def _apply_fragments_to_row(
             row_idx=row_idx, table=table, source_items=src_ids,
         )
     if frags.reason:
-        # 「下降…个百分点」落增减列；变化原因说明仍落末列
+        # 「下降…个百分点」优先落粘连格右侧空列（增减列）；变化原因说明仍落末列
         if looks_like_percent_point_change_phrase(frags.reason) and not frags.percent:
-            ci = roles.get("percent", roles.get("reason", source_ci))
+            next_ci = source_ci + 1
+            next_empty = False
+            if next_ci < len(row):
+                nxt = row[next_ci]
+                next_empty = nxt is None or not str(getattr(nxt, "text", "") or "").strip()
+            if next_empty:
+                ci = next_ci
+            else:
+                ci = roles.get("percent", roles.get("reason", min(source_ci + 1, max(len(row) - 1, 0))))
+            if ci <= source_ci:
+                ci = min(source_ci + 1, max(len(row) - 1, source_ci))
         else:
             ci = roles["reason"]
         written_cols.add(ci)

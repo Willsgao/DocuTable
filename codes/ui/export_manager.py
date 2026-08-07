@@ -8,6 +8,7 @@ import os
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from codes.pdf_extractor import ExcelExporter
+from codes.pdf_extractor.table_export_filter import is_exportable_table as _is_exportable_table
 
 
 class ExportManager:
@@ -17,23 +18,26 @@ class ExportManager:
         self.mw = main_window
 
     def export_to_excel(self):
-        """导出到Excel"""
+        """导出到Excel：解析成功且符合「多行列+有数值」的表（不看质检标签）。"""
         if not self.mw.processed_results:
             QMessageBox.warning(self.mw, "警告", "没有可导出的数据")
             return
 
         tables = self.mw.processed_results.get('tables', [])
-        # 只导出：人工标记为表格的 + 分类为财务数据表的（且解析成功的）
-        success_tables = [t for t in tables
-                          if t.get('parse_status') == 'success'
-                          and (t.get('manual_mark') == 'table'
-                               or t.get('table_category') in ('财务数据表', '数据表(缺表头)'))]
+        # 成功解析 + 二维多行列且含数值；排除文本字符串脚注（防一字一行）
+        success_tables = [
+            t for t in tables
+            if t.get('parse_status') == 'success'
+            and _is_exportable_table(t)
+        ]
         empty_tables = [t for t in tables if t.get('parse_status') == 'empty']
 
         if not success_tables and not empty_tables:
-            QMessageBox.warning(self.mw, "警告",
-                                "没有可导出的表格数据\n"
-                                "（导出规则：人工标记为「人工表格」+「财务数据表 / 数据表(缺表头)」）")
+            QMessageBox.warning(
+                self.mw, "警告",
+                "没有可导出的表格数据\n"
+                "（标准：≥2行≥2列，且至少有一处数值；不含文本段落）",
+            )
             return
 
         # 如果有空数据但没有成功数据，提示用户
@@ -72,12 +76,12 @@ class ExportManager:
             success = exporter.export_tables(table_pages, output_path)
 
             if success:
-                finance_count = sum(1 for t in table_pages if t.get('table_category') == '财务数据表')
-                manual_count = sum(1 for t in table_pages if t.get('table_category') != '财务数据表')
-                QMessageBox.information(self.mw, "导出成功",
+                QMessageBox.information(
+                    self.mw, "导出成功",
                     f"文件已导出到:\n{output_path}\n\n"
-                    f"共 {len(table_pages)} 页表格"
-                    f"（财务数据表: {finance_count}，人工标记: {manual_count}）")
+                    f"共 {len(table_pages)} 张表"
+                    f"（标准：≥2行≥2列且含数值）",
+                )
             else:
                 QMessageBox.warning(self.mw, "导出失败", "导出过程中出现问题")
         except Exception as e:

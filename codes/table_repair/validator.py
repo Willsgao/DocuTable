@@ -19,6 +19,8 @@ _PLACEHOLDERS = frozenset({"", "-", "－", "—", "–", "N/A", "n/a", "NA", "�
 
 # 章节号（目录 4.1 / 6.2.1）不当金额；真金额通常有千分位或整数部分更长
 _SECTION_TOKEN_RE = re.compile(r"^\d{1,2}(?:\.\d{1,2}){1,3}$")
+# 孤立年份（表头「2024」）不当金额，避免网格重切时误报补造
+_YEAR_TOKEN_RE = re.compile(r"^(?:19|20)\d{2}$")
 
 
 def _is_amount_like_token(tok: str) -> bool:
@@ -27,6 +29,8 @@ def _is_amount_like_token(tok: str) -> bool:
     if not t:
         return False
     if _SECTION_TOKEN_RE.match(t):
+        return False
+    if _YEAR_TOKEN_RE.match(t):
         return False
     return True
 
@@ -49,6 +53,21 @@ def extract_amount_tokens(data: Sequence[Sequence[Any]]) -> Counter:
     return counts
 
 
+def extract_amount_tokens_from_texts(texts: Sequence[Any]) -> Counter:
+    """从一维文本（如 liteparse 字框）提取金额 token。"""
+    counts: Counter = Counter()
+    for cell in texts or []:
+        text = str(cell or "").strip()
+        if not text or text in _PLACEHOLDERS:
+            continue
+        for m in _AMOUNT_TOKEN_RE.finditer(text):
+            key = m.group(0).replace(" ", "").replace(",", "")
+            if not _is_amount_like_token(key):
+                continue
+            counts[key] += 1
+    return counts
+
+
 def amounts_invented(
     before: Sequence[Sequence[Any]],
     after: Sequence[Sequence[Any]],
@@ -61,6 +80,20 @@ def amounts_invented(
         if cnt > b.get(tok, 0):
             invented.append(tok)
     return invented
+
+
+def amounts_not_in_source(
+    after: Sequence[Sequence[Any]],
+    source_texts: Sequence[Any],
+) -> List[str]:
+    """after 中相对字框源多出的金额（网格恢复应用此门禁，勿对照破损旧表）。"""
+    src = extract_amount_tokens_from_texts(source_texts)
+    a = extract_amount_tokens(after)
+    missing: List[str] = []
+    for tok, cnt in a.items():
+        if cnt > src.get(tok, 0):
+            missing.append(tok)
+    return missing
 
 
 def validate_repair(

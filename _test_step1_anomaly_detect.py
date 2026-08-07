@@ -435,6 +435,21 @@ snap_toc = run_table_reconstruct(toc_rec, run_llm=False)
 check("目录 stage 为 skipped", snap_toc.get("stage") == "skipped_non_data")
 
 
+# ---- 凝结核网格 ----
+print("\n>>> Test 23: grid_nucleus")
+from codes.reconstruct.grid_nucleus import restore_table_grid, GRID_NUCLEUS
+check("grid_nucleus 默认启用", GRID_NUCLEUS.get("enabled") is True)
+_words = []
+for (x0, x1), t in zip([(10, 55), (100, 155), (200, 255)], ["项目", "期末", "上年"]):
+    _words.append({"text": t, "x0": x0, "y0": 8, "x1": x1, "y1": 20})
+for ri, y in enumerate([35, 55, 75]):
+    for ci, text in enumerate([("A", "B", "C")[ri], f"{1000000+ri}", f"{900000+ri}"]):
+        x0, x1 = [(10, 55), (100, 155), (200, 255)][ci]
+        _words.append({"text": text, "x0": x0, "y0": y, "x1": x1, "y1": y + 12})
+_gres = restore_table_grid({"type": "table"}, source_words=_words)
+check("凝结核恢复成功", _gres.ok and _gres.n_cols == 3)
+
+
 # Summary
 print("\n" + "=" * 60)
 print(f"结果: {passed} PASS, {failed} FAIL")

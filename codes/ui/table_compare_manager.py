@@ -30,7 +30,7 @@ from codes.ui.validation_dialog import CrossValidationDialog, CrossValidationWor
 from codes.table_validator.cell_differ import diff_table_with_liteparse, classify_rows_with_liteparse, _cluster_items_by_y, _normalize_for_search
 
 
-# ── 条目分类 / 筛选（与导出规则对齐，避免「✅表格」与「财务数据表」筛选项不一致）──
+# ── 条目分类 / 筛选（列表展示用；导出已改为全部 parse_status=success）──
 FINANCIAL_TABLE_CATEGORIES = frozenset({"财务数据表", "数据表(缺表头)"})
 NONSTANDARD_CATEGORIES = frozenset({"目录", "非标准表格", "空表", "图表标签"})
 
@@ -954,7 +954,7 @@ class TableCompareManager(QObject):
         table_layout.addWidget(self.lock_table_btn)
         
         self.goto_export_btn = QPushButton("💾 批量导出")
-        self.goto_export_btn.setToolTip("批量导出所有标记为表格的页面数据")
+        self.goto_export_btn.setToolTip("导出全部解析成功的表（不论分类/表头/异常）")
         self.goto_export_btn.clicked.connect(self.batch_export_tables)
         self.goto_export_btn.setEnabled(False)
         table_layout.addWidget(self.goto_export_btn)
@@ -1605,7 +1605,7 @@ class TableCompareManager(QObject):
                 for act in ((pr.get("evidence") or {}).get("router_actions") or [])[:3]:
                     tooltip_parts.append(f"  → {act}")
             if manual_mark:
-                mark_labels = {"table": "人工表格（将纳入导出）", "non_table": "人工非表格（不导出）"}
+                mark_labels = {"table": "人工表格", "non_table": "人工非表格"}
                 tooltip_parts.append(f"人工标记: {mark_labels.get(manual_mark, manual_mark)}")
             if table.get('_auto_scan_hit'):
                 qr = table.get('quality_reason', '')
@@ -1928,6 +1928,17 @@ class TableCompareManager(QObject):
                 data = table.get('original_data', []) or table.get('data', [])
             elif data_key == 'original_data':
                 data = table.get('data', [])
+        # 历史表可能尚无跨格标识：展示 data 层时补一次（不改 original/raw）
+        if data_key == "data" and isinstance(data, list) and data:
+            if not table.get("_cell_spans") and table.get("_source_words"):
+                try:
+                    from codes.reconstruct.grid_nucleus.span_mark import (
+                        apply_span_marks_to_table,
+                    )
+                    apply_span_marks_to_table(table)
+                    data = table.get("data") or data
+                except Exception:
+                    pass
         parse_type = table.get('type', '')
         parse_message = table.get('parse_message', '')
 
@@ -2000,6 +2011,10 @@ class TableCompareManager(QObject):
             for j, cell in enumerate(row):
                 item = QTableWidgetItem(str(cell) if cell is not None else "")
                 self.table_widget.setItem(i, j, item)
+
+        # 跨单元格标识：覆盖格浅紫底；锚点格浅蓝底
+        if data_key == "data":
+            self._apply_span_marks_highlight(table, data)
 
         # 异常检测（提前提取，供高亮和横幅共用）
         anomaly = _get_anomaly_summary(table)
@@ -2337,6 +2352,56 @@ class TableCompareManager(QObject):
             return
         # 用缓存数据重渲染
         self._show_liteparse_rows(self._liteparse_text_items_cache, self._liteparse_full_text)
+
+    def _apply_span_marks_highlight(self, table, data):
+        """跨单元格符号：锚点「⟦↔N⟧」浅蓝，覆盖格「⟦↔⟧」浅紫。"""
+        try:
+            from codes.reconstruct.grid_nucleus.span_mark import (
+                is_span_cover_mark,
+                is_span_anchor_mark,
+                parse_anchor_colspan,
+                strip_span_anchor_mark,
+            )
+        except Exception:
+            return
+        spans = table.get("_cell_spans") or []
+        anchor_set = {(int(s["r"]), int(s["c"])) for s in spans if "r" in s and "c" in s}
+        cover_map = {}
+        for s in spans:
+            ar, ac = int(s["r"]), int(s["c"])
+            for c in s.get("covered") or []:
+                cover_map[(ar, int(c))] = (ar, ac, s)
+        rows = len(data) if data else 0
+        cols = max((len(r) for r in data), default=0) if data else 0
+        for r in range(rows):
+            for c in range(cols):
+                item = self.table_widget.item(r, c)
+                if not item:
+                    continue
+                text = str(item.text() or "").strip()
+                if (r, c) in cover_map or is_span_cover_mark(text):
+                    ar, ac, sp = cover_map.get((r, c), (None, None, None))
+                    item.setBackground(QColor("#E8DAEF"))
+                    tip = "符号 ⟦↔⟧ = 跨单元格的被覆盖邻格（未真合并）"
+                    if ar is not None:
+                        tip += f"\n锚点格: ({ar},{ac})"
+                    if sp:
+                        tip += f"\n跨度: {sp.get('rowspan', 1)}行×{sp.get('colspan', 1)}列"
+                        if sp.get("text"):
+                            tip += f"\n锚点文本: {sp.get('text')}"
+                    item.setToolTip(tip)
+                elif (r, c) in anchor_set or is_span_anchor_mark(text):
+                    sp = next(
+                        (s for s in spans if int(s["r"]) == r and int(s["c"]) == c),
+                        None,
+                    )
+                    n = parse_anchor_colspan(text) or (sp or {}).get("colspan")
+                    item.setBackground(QColor("#D6EAF8"))
+                    tip = f"符号 ⟦↔{n or '?'}⟧ = 跨单元格锚点（未真合并）"
+                    if sp:
+                        tip += f"\n覆盖邻格列: {sp.get('covered') or []}"
+                        tip += f"\n原文: {strip_span_anchor_mark(sp.get('text') or text)}"
+                    item.setToolTip(tip)
 
     def _apply_diff_highlight(self, table, data):
         """对当前表格数据应用差异标注高亮

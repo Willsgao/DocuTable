@@ -62,6 +62,33 @@ _AMOUNT_GLUED_TEXT_RE = re.compile(
     r"^[\u4e00-\u9fffA-Za-z].+?"
     r"[\(（\-]?[\d,]{4,}(?:\.\d+)?[%％]?[\)）]?$"
 )
+# 币种/货币单位：与金额连续时是一体凝结核，不是「地区|金额」粘连
+_CURRENCY_UNIT_RE = re.compile(
+    r"^(?:人民币|港币|美元|欧元|日元|英镑|澳元|加元|新加坡元|"
+    r"RMB|CNY|USD|HKD|EUR|JPY|GBP|元)$",
+    re.I,
+)
+_CURRENCY_AMOUNT_ATOMIC_RE = re.compile(
+    r"^(?:"
+    r"(?:人民币|港币|美元|欧元|日元|英镑|澳元|加元|新加坡元|"
+    r"RMB|CNY|USD|HKD|EUR|JPY|GBP)"
+    r"\s*"
+    r"[\(（\-]?"
+    r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?|\d+\.\d+)"
+    r"[%％]?"
+    r"[\)）]?"
+    r"(?:元)?"
+    r"|"
+    r"[\(（\-]?"
+    r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{4,}(?:\.\d+)?|\d+\.\d+)"
+    r"[%％]?"
+    r"[\)）]?"
+    r"\s*"
+    r"(?:人民币|港币|美元|欧元|日元|英镑|澳元|加元|新加坡元|元|"
+    r"RMB|CNY|USD|HKD|EUR|JPY|GBP)"
+    r")$",
+    re.I,
+)
 _CJK_OR_ALPHA_RE = re.compile(r"[\u4e00-\u9fffA-Za-z]")
 _INDEX_PREFIX_RE = re.compile(r"^\s*\d{1,4}\s+\S")
 _SHORT_INDEX_RE = re.compile(r"^\d{1,4}$")
@@ -930,6 +957,14 @@ def _rule_merged_numeric(
     return issues
 
 
+def _is_currency_amount_atomic(text: str) -> bool:
+    """币种+金额连续体（人民币70,228）：一体凝结核，非分列粘连。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    return bool(_CURRENCY_AMOUNT_ATOMIC_RE.match(t))
+
+
 def _is_amount_token(token: str) -> bool:
     t = str(token or "").strip()
     if not t:
@@ -951,6 +986,9 @@ def _is_glue_label_token(token: str) -> bool:
     t = str(token or "").strip()
     if not _is_text_label_token(t):
         return False
+    # 币种单位不是地区/科目粘连标签
+    if _CURRENCY_UNIT_RE.match(t):
+        return False
     # 「号/层/栋…」门牌续写、E2 类楼号 → 不当事项标签
     if re.match(r"^[号层楼室弄巷路街栋幢座附之单]", t):
         return False
@@ -971,6 +1009,9 @@ def _looks_like_numeric_text_glue(text: str) -> bool:
     """金额型数值与文本同格（分列失败重点可疑）。"""
     t = str(text or "").strip()
     if not t or _is_report_period_text(t):
+        return False
+    # 人民币70,228 / 70,228元：连续货币金额，不是粘连
+    if _is_currency_amount_atomic(t):
         return False
     tokens = t.split()
     if len(tokens) >= 2:

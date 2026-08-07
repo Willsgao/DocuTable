@@ -180,6 +180,13 @@ def row_is_annual_subsection_caption_row(row: List[str]) -> bool:
 
 
 _NUMBERED_SUBSECTION_CAPTION_RE = re.compile(r"^\d+[\.．、]\s*[\u4e00-\u9fff]")
+# 节号碎片：3.2.3 / .3（liteparse 常把「3.2.3 利息收入」拆成 .3 + 利息收入）
+_SECTION_NUM_FRAGMENT_RE = re.compile(r"^(?:\d+\.){2,}\d+$|^\.\d+$")
+
+
+def _is_section_num_fragment(text: str) -> bool:
+    t = str(text or "").strip()
+    return bool(t and _SECTION_NUM_FRAGMENT_RE.match(t))
 
 
 def row_is_numbered_subsection_caption_row(row: List[str]) -> bool:
@@ -200,13 +207,69 @@ def row_is_numbered_subsection_caption_row(row: List[str]) -> bool:
     return True
 
 
+def row_is_mangled_section_caption_row(row: List[str]) -> bool:
+    """拆坏的节标题行：利息收入 | .3 （原 3.2.3 利息收入）。"""
+    cells = [str(c).strip() for c in row if str(c).strip()]
+    if not cells or len(cells) > 3:
+        return False
+    frags = [c for c in cells if _is_section_num_fragment(c)]
+    titles = [
+        c for c in cells
+        if re.search(r"[\u4e00-\u9fff]{2,}", c)
+        and not _is_section_num_fragment(c)
+        and not is_numeric_data_cell(c)
+    ]
+    if not frags or not titles:
+        return False
+    # 除节号碎片外不得再有真表体金额（千分位等）
+    for c in cells:
+        if _is_section_num_fragment(c):
+            continue
+        if c in titles:
+            continue
+        if cell_has_body_value_data(c):
+            return False
+    return True
+
+
 def row_is_table_tail_section_caption_row(row: List[str]) -> bool:
     """表尾应剥离为 TEXT 的小节标题行。"""
     return (
         row_is_note_section_caption_row(row)
         or row_is_annual_subsection_caption_row(row)
         or row_is_numbered_subsection_caption_row(row)
+        or row_is_mangled_section_caption_row(row)
+        or row_is_post_table_field_caption_row(row)
     )
+
+
+def row_is_post_table_field_caption_row(
+    row: List[str],
+    *,
+    value_start: int = 1,
+) -> bool:
+    """表体后纯标签字段名/下一节标题（值列全空）。
+
+    例：合计后的「同业存拆放及其他利息支出」。表内小节（公司客户存款）出现在合计前，
+    剥离时只从表尾往上剥，不会误伤。
+    """
+    if row_has_body_value_data(row, value_start=value_start):
+        return False
+    if not row_values_all_empty(row, value_start=value_start):
+        return False
+    cells = [str(c).strip() for c in row if str(c).strip()]
+    if len(cells) != 1:
+        return False
+    label = cells[0]
+    if re.fullmatch(r"(?:小计|合计|总计|净额|合计：|小计：)", label):
+        return False
+    cn = len(re.findall(r"[\u4e00-\u9fff]", label))
+    if cn < 6:
+        return False
+    # 排除明显表头碎片
+    if re.fullmatch(r"20\d{2}\s*年?", label):
+        return False
+    return True
 
 
 def row_has_text_in_values(row: List[str], *, value_start: int = 1) -> bool:
@@ -268,10 +331,13 @@ def row_has_value_data(row: List[str], *, value_start: int = 1) -> bool:
 
 
 def find_last_body_value_row(rows: List[List[str]], *, value_start: int = 1) -> int:
-    """最后一条值列为数值/短横的行。"""
+    """最后一条值列为数值/短横的行（不含拆坏的表尾节标题）。"""
     last = -1
     for i, row in enumerate(rows):
         if row_has_body_value_data(row, value_start=value_start):
+            # 「利息收入|.3」含节号碎片，不当作表体末行
+            if row_is_table_tail_section_caption_row(row):
+                continue
             last = i
     return last
 
@@ -431,6 +497,13 @@ def is_inter_table_narrative_row(row: List[str], *, value_start: int = 1) -> boo
     cn = len(re.findall(r"[\u4e00-\u9fff]", joined))
     if joined.endswith(("。", "；")) and cn >= 8:
         return True
+    # 短句残片：「占比36.13%。」——上文句末被吸进表顶
+    if joined.endswith(("。", "；", "！")) and cn >= 2 and re.search(r"\d", joined):
+        if any(
+            m in joined
+            for m in ("占比", "%", "％", "较上年", "同比", "亿元", "万元", "百分点")
+        ):
+            return True
     if cn >= 14 and re.search(r"\d+\.\d+", joined) and any(
         m in joined for m in ("亿元", "万元", "%", "较上年", "同比", "百分点")
     ):
@@ -602,5 +675,8 @@ def find_trailing_non_body_start(
     start = last_body + 1
     for i in range(start, len(rows)):
         if row_has_body_value_data(rows[i], value_start=value_start):
+            # 拆坏节标题含「.3」会被当成数值，仍应视为表尾非表体
+            if row_is_table_tail_section_caption_row(rows[i]):
+                continue
             return None
     return start

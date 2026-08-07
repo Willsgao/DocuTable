@@ -28,19 +28,35 @@ def propose_empty_split(task: FormatTask, table: dict, liteparse_data=None) -> F
     data = table.get("data") or []
     patches = []
 
-    # 1) 全空列：仅当 liteparse 也不支持该「空列位置有独立字段」时，提案删除空列
+    # 1) 粘连拆分优先：百分点→右侧空列须在删空列之前，否则目标列被删掉
+    glue_patches = _scan_glue_cells(data)
+    patches.extend(glue_patches)
+
+    # 干跑粘连后再判断仍为空的列/行（避免删掉即将填入的增减列）
+    trial_after_glue = data
+    if glue_patches:
+        trial_after_glue, ok_g, _ = apply_patches(data, glue_patches)
+        if not ok_g or trial_after_glue is None:
+            trial_after_glue = data
+
+    # 2) 全空列：仅当 liteparse 也不支持该「空列位置有独立字段」时，提案删除空列
     #    删除空列不丢非空内容 → 守恒 OK
     empty_cols = list(task.evidence.get("empty_cols") or [])
     if empty_cols:
-        patches.append(
-            {
-                "action": "drop_empty_columns",
-                "cols": empty_cols,
-                "note": "删除整列为空的列（不含任何非空单元格）",
-            }
-        )
+        from .conservation import count_empty_columns
 
-    # 2) 连续空行：同样可安全删除（全空）
+        still_empty = set(count_empty_columns(trial_after_glue))
+        drop_cols = [c for c in empty_cols if c in still_empty]
+        if drop_cols:
+            patches.append(
+                {
+                    "action": "drop_empty_columns",
+                    "cols": drop_cols,
+                    "note": "删除整列为空的列（不含任何非空单元格）",
+                }
+            )
+
+    # 3) 连续空行：同样可安全删除（全空）
     empty_ranges = list(task.evidence.get("empty_row_ranges") or [])
     if empty_ranges:
         patches.append(
@@ -50,10 +66,6 @@ def propose_empty_split(task: FormatTask, table: dict, liteparse_data=None) -> F
                 "note": "删除连续空行区间（行内无非空内容）",
             }
         )
-
-    # 3) 规则粘连拆分：扫描非空格，尝试拆成多段（拼接须还原）
-    glue_patches = _scan_glue_cells(data)
-    patches.extend(glue_patches)
 
     if not patches:
         task.status = TaskStatus.CANDIDATE
@@ -69,7 +81,12 @@ def propose_empty_split(task: FormatTask, table: dict, liteparse_data=None) -> F
         "patches": patches,
         "trial_rows": len(trial) if trial is not None else 0,
         "auto_apply": ok and task.confidence == Confidence.HIGH and all(
-            p["action"] in ("drop_empty_columns", "drop_empty_row_ranges") for p in patches
+            p["action"] in (
+                "drop_empty_columns",
+                "drop_empty_row_ranges",
+                "spill_into_next_empty",
+            )
+            for p in patches
         ),
     }
     task.status = TaskStatus.PROPOSED if ok else TaskStatus.BLOCKED
@@ -79,12 +96,30 @@ def propose_empty_split(task: FormatTask, table: dict, liteparse_data=None) -> F
 
 
 def _scan_glue_cells(data: List[List]) -> List[dict]:
+    from codes.table_engine.geometry.numeric import split_percent_point_change_text
+
     patches = []
     for ri, row in enumerate(data or []):
         for ci, cell in enumerate(row or []):
             s = normalize_cell(cell)
             if not s or len(s) < 4:
                 continue
+            # 百分点增减：右侧已有空列时填入，禁止再插列
+            ppc = split_percent_point_change_text(s)
+            if ppc and ci + 1 < len(row) and not normalize_cell(row[ci + 1]):
+                val, change = ppc
+                if cell_key(val + change) == cell_key(s):
+                    patches.append(
+                        {
+                            "action": "spill_into_next_empty",
+                            "row": ri,
+                            "col": ci,
+                            "parts": [val, change],
+                            "original": s,
+                            "note": "百分点增减粘连拆入右侧空列",
+                        }
+                    )
+                    continue
             parts = _try_split_glued(s)
             if not parts or len(parts) < 2:
                 continue
@@ -105,6 +140,11 @@ def _scan_glue_cells(data: List[List]) -> List[dict]:
 
 
 def _try_split_glued(s: str) -> Optional[List[str]]:
+    from codes.table_engine.geometry.numeric import split_percent_point_change_text
+
+    # 百分点增减留给 spill_into_next_empty；此处不再用通用规则误拆
+    if split_percent_point_change_text(s):
+        return None
     # 百分比 + 中文说明
     m = _GLUE_PCT_DESC.match(s)
     if m and re.search(r"[\u4e00-\u9fff]", m.group(2)):
@@ -159,6 +199,34 @@ def apply_patches(
                 if any(normalize_cell(c) for c in out[ri]):
                     return None, False, f"拒绝删行{ri}：存在非空单元格"
                 del out[ri]
+        elif action == "spill_into_next_empty":
+            ri, ci = int(p["row"]), int(p["col"])
+            parts = list(p.get("parts") or [])
+            if len(parts) < 2:
+                return None, False, "spill 需要至少两段"
+            if ri >= len(out) or ci >= len(out[ri]):
+                return None, False, "spill 坐标越界"
+            while len(out[ri]) <= ci + 1:
+                out[ri].append("")
+            original = normalize_cell(out[ri][ci])
+            if cell_key(original) != cell_key(p.get("original") or original):
+                return None, False, "单元格原文已变，跳过 spill"
+            if cell_key("".join(parts)) != cell_key(original):
+                return None, False, "spill 结果无法还原原文"
+            if normalize_cell(out[ri][ci + 1]):
+                return None, False, "右侧格非空，拒绝 spill"
+            ok_key = cell_key(original)
+            if expected.get(ok_key, 0) <= 0:
+                return None, False, "spill 原文不在期望集合中"
+            expected[ok_key] -= 1
+            if expected[ok_key] == 0:
+                del expected[ok_key]
+            for part in parts:
+                pk = cell_key(part)
+                if pk:
+                    expected[pk] += 1
+            out[ri][ci] = parts[0]
+            out[ri][ci + 1] = parts[1]
         elif action == "split_cell_horizontal":
             ri, ci = int(p["row"]), int(p["col"])
             parts = list(p.get("parts") or [])

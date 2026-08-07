@@ -6,6 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Dict, List, Optional, Set, Tuple
 
+from .grid_nucleus_view import summarize_grid_nucleus
 from .models import Confidence, FormatTask, TaskStatus, TaskType
 
 
@@ -96,6 +97,15 @@ def hydrate_structure_task_from_main_chain(
         "table_kind": snap.get("table_kind") or (table.get("_table_kind") or {}).get("kind"),
         "checklist_failed_ids": list(snap.get("checklist_failed_ids") or []),
     }
+    # 凝结核：列表标签 + 任务说明用（不含整表 data）
+    gn_summary = summarize_grid_nucleus(table)
+    task.evidence["grid_nucleus"] = gn_summary
+    # policy_trace 里常有 grid_nucleus:... 一行，一并露出
+    trace = snap.get("policy_trace") or []
+    if isinstance(trace, list):
+        grid_trace = [str(x) for x in trace if "grid_nucleus" in str(x)]
+        if grid_trace:
+            task.evidence["grid_nucleus_trace"] = grid_trace[:4]
 
     # 丢数 / human：展示拦截说明
     if status == "human_needed" or snap.get("stage") == "needs_human":

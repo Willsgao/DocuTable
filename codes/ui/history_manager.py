@@ -131,8 +131,21 @@ class HistoryManager:
             preview_btn.setFixedSize(40, 22)
             preview_btn.clicked.connect(partial(self.on_preview_button_clicked, row))
             self.history_table.setCellWidget(row, 6, preview_btn)
-            
-            # 处理时间（第7列）
+
+            # 导出按钮（第7列）— 直接从历史缓存导出，无需先预览
+            export_btn = QPushButton("导出")
+            export_btn.setCursor(Qt.PointingHandCursor)
+            export_btn.setFixedSize(40, 22)
+            export_btn.setToolTip("从该历史记录直接导出 Excel（全部解析成功的表）")
+            export_btn.setStyleSheet("""
+                QPushButton { background-color: #27AE60; color: white; border: none;
+                              padding: 2px 4px; border-radius: 3px; font-size: 11px; }
+                QPushButton:hover { background-color: #1E8449; }
+            """)
+            export_btn.clicked.connect(partial(self.on_export_button_clicked, row))
+            self.history_table.setCellWidget(row, 7, export_btn)
+
+            # 处理时间（第8列）
             processed_time = record.get('processed_time', record.get('timestamp', ''))
             if 'T' in processed_time:
                 try:
@@ -140,7 +153,7 @@ class HistoryManager:
                     processed_time = dt.strftime('%Y-%m-%d %H:%M:%S')
                 except Exception:
                     pass
-            self.history_table.setItem(row, 7, QTableWidgetItem(processed_time))
+            self.history_table.setItem(row, 8, QTableWidgetItem(processed_time))
 
         # 更新统计信息
         total = len(self.mw.pdf_history)
@@ -337,6 +350,46 @@ class HistoryManager:
 
                 if self.mw.preview_manager:
                     self.mw.preview_manager.hide_loading()
+
+    def on_export_button_clicked(self, row):
+        """历史记录导出：加载 mid_cache 后直接走导出，不必先点预览。"""
+        if not self.history_table:
+            return
+        item = self.history_table.item(row, 1)
+        if not item:
+            return
+        record = item.data(Qt.UserRole)
+        if not record:
+            return
+
+        relative_path = record.get("file_path")
+        file_path = self._get_absolute_path(relative_path)
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(
+                self.mw,
+                "文件不存在",
+                f"找不到文件：\n{file_path}\n\n可能已被移动或删除。",
+            )
+            return
+
+        cached_data = load_mid_data(file_path)
+        if not cached_data:
+            QMessageBox.warning(
+                self.mw,
+                "缓存失效",
+                f"该文件的缓存已失效或版本过旧，无法导出。\n\n"
+                f"文件：{record.get('filename', '')}\n"
+                f"请先「预览」或重新「处理」后再导出。",
+            )
+            return
+
+        # 写入当前会话状态，复用导出（全部 success 表）
+        self.mw.current_file = file_path
+        self.mw.processed_results = cached_data
+        if self.mw.export_manager:
+            self.mw.export_manager.export_to_excel()
+        elif hasattr(self.mw, "export_to_excel"):
+            self.mw.export_to_excel()
 
     def _update_loading_time(self):
         """更新加载时间"""

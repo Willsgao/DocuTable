@@ -3722,8 +3722,11 @@ class ExcelExporter:
             bottom=Side(style='thin')
         )
 
-        # 过滤掉空数据表格，按页码+表格序号排序
-        valid_tables = [t for t in tables_data if t.get("data")]
+        # 过滤：二维多行列且含数值；跳过文本字符串（防一字一行）
+        # 不看 is_real_table / quality_decision（质检拒标不等于不是表）
+        from codes.pdf_extractor.table_export_filter import is_exportable_table
+
+        valid_tables = [t for t in tables_data if is_exportable_table(t)]
         if not valid_tables:
             # 创建一个空 sheet 避免报错
             ws = wb.active
@@ -3783,10 +3786,15 @@ class ExcelExporter:
                 ws.title = sheet_name
                 global_idx += 1
 
-                # 计算列布局
+                # 计算列布局（行必须是 list/tuple，禁止对 str 按字符计列）
                 max_cols = 0
                 for row in table_data:
-                    max_cols = max(max_cols, len(row))
+                    if isinstance(row, (list, tuple)):
+                        max_cols = max(max_cols, len(row))
+                    elif row is not None and str(row).strip():
+                        max_cols = max(max_cols, 1)
+                if max_cols < 1:
+                    continue
                 data_start_col = 2  # 左侧留白
                 data_end_col = data_start_col + max_cols  # 数据结束列（也是右侧留白）
 
@@ -3821,11 +3829,19 @@ class ExcelExporter:
 
                 # ---- 写入表格数据 ----
                 for row in table_data:
+                    if isinstance(row, (list, tuple)):
+                        cells = list(row)
+                    elif row is None:
+                        cells = [""]
+                    else:
+                        # 异常：整行是字符串时整格写入，绝不当字符矩阵
+                        cells = [str(row)]
+
                     # 左侧空白列
                     cell = ws.cell(row=row_num, column=1, value="")
                     cell.border = thin_border
 
-                    for col_idx, value in enumerate(row):
+                    for col_idx, value in enumerate(cells):
                         col = data_start_col + col_idx
                         cell = ws.cell(row=row_num, column=col, value=str(value) if value is not None else "")
                         cell.border = thin_border
@@ -5677,7 +5693,19 @@ class ProcessingWorker(QThread):
 
                 def _apply_classify(tables_list: list):
                     for t in tables_list:
+                        # 文本段落不是表：勿用二维分类器误标，更勿把 data 字符串当行遍历
+                        if t.get("type") in ("text", "paragraph"):
+                            t.setdefault("is_real_table", False)
+                            t.setdefault("table_category", "文本段落")
+                            t.setdefault("quality_decision", "accepted")
+                            continue
                         t_data = t.get("data", [])
+                        if isinstance(t_data, str):
+                            t["is_real_table"] = False
+                            t["table_category"] = "文本段落"
+                            t["quality_decision"] = "accepted"
+                            t["quality_decision_reason"] = "data 为文本字符串，非二维表"
+                            continue
                         if t_data:
                             cr = classify_page(t_data, t.get("page", 0))
                             t["is_real_table"] = cr.is_real_table

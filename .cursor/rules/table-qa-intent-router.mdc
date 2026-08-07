@@ -14,6 +14,10 @@ alwaysApply: true
 - 表头、折行、空白行/列、报告期、序号列、规则 C01～C04 / R01～R09
 - `table_anomaly`、`needs_review`、`rule_ids`、黄金样本
 - 「这页表为什么没标红」「修一下检测规则」等
+- 凝结核 / 分列 / 跨格 / `⟦↔` / 缩进拆列 / 公共边界
+
+涉及凝结核时另读并遵守 `.cursor/rules/grid-nucleus-priority.mdc`：
+**分列为主，跨格标注为次，不得为标跨格破坏分列。**
 
 ## 触发后你必须做（用户无感）
 

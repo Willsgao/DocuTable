@@ -58,6 +58,62 @@ def _looks_like_hierarchy_child(text: str) -> bool:
     return False
 
 
+def _label_looks_incomplete(prev: str) -> bool:
+    """上行标签未写完（未闭合括号 / 连词尾巴），才允许接下行碎片。"""
+    t = str(prev or "").strip()
+    if not t:
+        return False
+    if t.count("（") > t.count("）") or t.count("(") > t.count(")"):
+        return True
+    if t.endswith(("的", "及", "与", "和", "或", "等", "应用", "资本", "、")):
+        return True
+    return False
+
+
+def _is_intra_table_section_title(text: str) -> bool:
+    """表内分组/分节标题，禁止当折行续写并入上一数据行。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    # 折行尾片「底线前）」不是分标题
+    if (
+        (t.endswith("）") or t.endswith(")"))
+        and not (t.startswith("（") or t.startswith("("))
+        and len(t) <= 10
+    ):
+        return False
+    known = {
+        "资本充足率",
+        "杠杆率相关信息",
+        "其他各级资本要求",
+        "可用资本（数额）",
+        "风险加权资产（数额）",
+        "资产",
+        "负债",
+        "权益",
+    }
+    if t in known:
+        return True
+    if any(k in t for k in ("相关信息", "各级资本要求")) and len(t) <= 16:
+        return True
+    # 短纯中文分组名（无数字、非续写前缀）
+    # 注意：裸「数额/金额/代码」是数值列头，不是通栏分节标题
+    if t in {"数额", "金额", "代码", "指标值", "余额", "面值"}:
+        return False
+    if (
+        re.fullmatch(r"[\u4e00-\u9fff]{2,10}", t)
+        and not t.startswith(("的", "及", "与", "和", "或"))
+        and (
+            "充足率" in t
+            or t.endswith(("要求", "信息"))
+            # 「可用资本（数额）」类：以数额收尾但须更长；排除裸「数额」
+            or (t.endswith("数额") and len(t) >= 4)
+        )
+    ):
+        return True
+    return False
+
+
 def _is_label_continuation(prev_label: str, cur_label: str) -> bool:
     """仅允许「同一标签被拆成两行」的续写，禁止层级子项并入父项。"""
     cur = str(cur_label or "").strip()
@@ -70,15 +126,21 @@ def _is_label_continuation(prev_label: str, cur_label: str) -> bool:
         return False
     if _looks_like_hierarchy_child(cur):
         return False
+    # 表内分标题（资本充足率 / 杠杆率相关信息）必须保留独立行
+    if _is_intra_table_section_title(cur):
+        return False
     # 上行已是完整科目、下行又是另一完整科目 → 层级，不合并
     if any(p in prev for p in _CATEGORY_PHRASES) and _looks_like_hierarchy_child(cur):
         return False
-    # 真续写：下行很短，且不像独立科目名
-    if len(cur) <= 12 and not cur.endswith(("金融资产", "金融负债", "资产", "负债")):
-        return True
-    # 「的/及/与」等粘连前缀续写
+    # 「的/及/与」等粘连前缀续写（优先于短标题门禁）
     if cur.startswith(("的", "及", "与", "和", "或", "等")) and len(cur) <= 24:
         return True
+    # 真续写：下行关闭未完成括号
+    if (cur.endswith("）") or cur.endswith(")")) and _label_looks_incomplete(prev):
+        return True
+    # 很短碎片：仅当上行看起来未写完
+    if len(cur) <= 12 and not cur.endswith(("金融资产", "金融负债", "资产", "负债")):
+        return _label_looks_incomplete(prev)
     return False
 
 
