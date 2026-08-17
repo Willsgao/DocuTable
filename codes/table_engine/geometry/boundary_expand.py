@@ -66,16 +66,19 @@ def expand_y_limit(
 
 
 def effective_y_margin_below(page: PageSource, region: RegionBox) -> float:
-    """邻表间隙较大时收紧 band 下沿，避免脚注行进 scope。"""
+    """邻表间隙收紧 band 下沿：大间隙防脚注；小间隙禁止越过下一 region。"""
     next_region_y0 = _next_overlapping_region_y0(page, region)
     if next_region_y0 is None:
         return _CLIP_MARGIN_BELOW
     gap = next_region_y0 - region.y1
+    if gap <= 0:
+        return 0.0
     if gap > _LARGE_REGION_GAP:
         return _CLIP_MARGIN_BELOW
     if gap > 20.0:
-        return 12.0
-    return 30.0
+        return min(12.0, max(0.0, gap - 2.0))
+    # 紧邻下表（如 VaR 2025/2024 仅数 pt）：不得用 30pt margin 吞下表列头
+    return max(0.0, gap - 2.0)
 
 
 def large_gap_above_region(page: PageSource, region: RegionBox) -> bool:

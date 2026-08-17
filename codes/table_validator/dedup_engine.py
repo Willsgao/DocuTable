@@ -342,7 +342,11 @@ class DeduplicationEngine:
         # 按页分组
         by_page: Dict[int, List[int]] = {}
         for i, r in enumerate(results):
-            if r.get("type") == "paragraph":
+            # 只对二维表去重；text/paragraph 的 data 是字符串，不能当行擦除
+            if r.get("type") in ("paragraph", "text", "annotation", "failed"):
+                continue
+            data = r.get("data")
+            if not isinstance(data, list) or not data or not isinstance(data[0], list):
                 continue
             by_page.setdefault(r.get("page", 0), []).append(i)
 
@@ -424,17 +428,21 @@ class DeduplicationEngine:
                     for pos_b in range(check_b_head):
                         fp_b = row_fingerprint(data_b[pos_b])
                         if fp_a == fp_b:
-                            if nr_a < 0.30 and is_fragment_a:
-                                data_a[pos_a] = [""] * len(data_a[pos_a])
-                                self._log(
-                                    f"[A2] P{pg} 表#{i_a}尾{pos_a}↔#{i_b}头{pos_b}: "
-                                    f"表头→从碎片#{i_a}删除"
-                                )
+                            if nr_a < 0.30:
+                                # 表头/列标：两张完整年表常共享「注释|平均值…」；
+                                # 只允许从碎片前表删，禁止清空后表（会永久丢字）
+                                if is_fragment_a:
+                                    data_a[pos_a] = [""] * len(data_a[pos_a])
+                                    self._log(
+                                        f"[A2] P{pg} 表#{i_a}尾{pos_a}<->{i_b}头{pos_b}: "
+                                        f"表头→从碎片#{i_a}删除"
+                                    )
                             else:
+                                # 数据行 → 归入前表，从后表删
                                 data_b[pos_b] = [""] * len(data_b[pos_b])
                                 self._log(
-                                    f"[A2] P{pg} 表#{i_a}尾{pos_a}↔#{i_b}头{pos_b}: "
-                                    f"从#{i_b}删除"
+                                    f"[A2] P{pg} 表#{i_a}尾{pos_a}<->{i_b}头{pos_b}: "
+                                    f"数据→从#{i_b}删除"
                                 )
                             break
 
@@ -452,16 +460,23 @@ class DeduplicationEngine:
                                     len(set_a), len(set_b), 1
                                 )
                                 if size_ratio >= self.policy.size_ratio_threshold:
-                                    if is_fragment_a:
+                                    if nr_a < 0.30:
+                                        if is_fragment_a:
+                                            data_a[pos_a] = [""] * len(data_a[pos_a])
+                                            self._log(
+                                                f"[A2-J] P{pg} 表#{i_a}尾<->{i_b}头: "
+                                                f"Jaccard={jac:.2f}表头→从碎片#{i_a}删除"
+                                            )
+                                    elif is_fragment_a:
                                         data_a[pos_a] = [""] * len(data_a[pos_a])
                                         self._log(
-                                            f"[A2-J] P{pg} 表#{i_a}尾↔#{i_b}头: "
+                                            f"[A2-J] P{pg} 表#{i_a}尾<->{i_b}头: "
                                             f"Jaccard={jac:.2f}→从碎片#{i_a}删除"
                                         )
                                     else:
                                         data_b[pos_b] = [""] * len(data_b[pos_b])
                                         self._log(
-                                            f"[A2-J] P{pg} 表#{i_a}尾↔#{i_b}头: "
+                                            f"[A2-J] P{pg} 表#{i_a}尾<->{i_b}头: "
                                             f"Jaccard={jac:.2f}→从#{i_b}删除"
                                         )
                                     break

@@ -454,8 +454,49 @@ def ensure_grid_for_decomposition(table: StructuredTable) -> StructuredTable:
     return out
 
 
-def _column_role_map(ncols: int) -> Dict[str, int]:
-    """标准财务表列角色 → 列索引。"""
+def _column_role_map(
+    ncols: int,
+    *,
+    layout_id: str = "",
+    grid_roles: Optional[Sequence[str]] = None,
+) -> Dict[str, int]:
+    """财务表列角色 → 列索引。
+
+    优先用 ColumnGrid.role（CC2: row_no|label|a|b|code）；
+    否则回退「项目|当年|上年|…」变化原因表默认。
+    """
+    if grid_roles and len(grid_roles) >= 4:
+        roles: Dict[str, int] = {}
+        for i, role in enumerate(grid_roles):
+            r = str(role or "").strip()
+            if r == "row_no":
+                roles["serial"] = i
+            elif r == "label":
+                roles["label"] = i
+            elif r in ("col_a", "value") and "amount_current" not in roles:
+                roles["amount_current"] = i
+            elif r in ("col_b",) and "amount_prior" not in roles:
+                roles["amount_prior"] = i
+            elif r == "code":
+                roles["code"] = i
+                roles["reason"] = i
+        if "label" in roles and "amount_current" in roles:
+            roles.setdefault("percent", roles.get("code", ncols - 1))
+            roles.setdefault("reason", roles.get("code", ncols - 1))
+            roles.setdefault("amount_prior", min(roles["amount_current"] + 1, ncols - 1))
+            return roles
+
+    if layout_id in ("pillar_cc2", "pillar_cc1") and ncols >= 5:
+        return {
+            "serial": 0,
+            "label": 1,
+            "amount_current": 2,
+            "amount_prior": 3,
+            "percent": ncols - 2,
+            "reason": ncols - 1,
+            "code": ncols - 1,
+        }
+
     if ncols >= 5:
         return {
             "label": 0,
@@ -605,11 +646,25 @@ def _apply_fragments_to_row(
             row_idx=row_idx, table=table, source_items=src_ids,
         )
     if frags.numeric_tokens:
+        tokens = list(frags.numeric_tokens)
+        # CC2 等：粘连「1 2,571,361」首段是序号，不得当 amount_current 盖掉项目列
+        serial_ci = roles.get("serial")
+        if (
+            serial_ci is not None
+            and tokens
+            and re.match(r"^\d+[a-z]?$", tokens[0], re.I)
+        ):
+            written_cols.add(serial_ci)
+            _set_matrix_cell(
+                row, serial_ci, tokens[0],
+                row_idx=row_idx, table=table, source_items=src_ids,
+            )
+            tokens = tokens[1:]
         vcols = [
             roles.get("amount_current", 1),
             roles.get("amount_prior", 2),
         ]
-        for i, tok in enumerate(frags.numeric_tokens):
+        for i, tok in enumerate(tokens):
             if i >= len(vcols):
                 break
             ci = vcols[i]
@@ -637,7 +692,14 @@ def decompose_table(table: StructuredTable) -> StructuredTable:
         return table
 
     try:
-        roles = _column_role_map(ncols)
+        grid_roles = []
+        if table.grid and table.grid.ranges:
+            grid_roles = [str(r.role or "") for r in table.grid.ranges]
+        roles = _column_role_map(
+            ncols,
+            layout_id=str(getattr(table.grid, "layout_id", "") or ""),
+            grid_roles=grid_roles or None,
+        )
     except ValueError:
         return table
     decomposed_ids: set[str] = set()

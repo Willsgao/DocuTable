@@ -95,6 +95,10 @@ def parse_docx_tables(docx_buf, page_num):
     return tables
 
 
+# 长批次中定期重建 Converter，降低 pdf2docx/PyMuPDF 状态卡死概率
+_CONVERTER_REFRESH_EVERY = 8
+
+
 def convert_batch(pdf_path, page_nums, temp_dir=None):
     """每个子进程处理一批页。
 
@@ -129,13 +133,36 @@ def convert_batch(pdf_path, page_nums, temp_dir=None):
 
     batch_tables = []
     cv = None
+    pages_done = 0
+
+    def _close_cv():
+        nonlocal cv
+        if cv is not None:
+            try:
+                cv.close()
+            except Exception:
+                pass
+            cv = None
+
+    def _open_cv():
+        nonlocal cv
+        _close_cv()
+        cv = Converter(pdf_path)
+        write_log("Converter 创建成功")
 
     try:
-        write_log(f"开始处理 {len(page_nums)} 页: {page_nums[:3]}... (PDF={pdf_path})")
-        cv = Converter(pdf_path)
-        write_log(f"Converter 创建成功")
+        write_log(
+            f"开始处理 {len(page_nums)} 页: "
+            f"{page_nums[0]}-{page_nums[-1]} (PDF={pdf_path})"
+        )
+        _open_cv()
 
         for page_num in page_nums:
+            # 定期重建，避免长文档后半段 Converter 卡死拖垮整批
+            if pages_done > 0 and pages_done % _CONVERTER_REFRESH_EVERY == 0:
+                write_log(f"  重建 Converter (已完成 {pages_done} 页)")
+                _open_cv()
+
             tmp_path = None
             try:
                 fd, tmp_path = tempfile.mkstemp(
@@ -163,7 +190,13 @@ def convert_batch(pdf_path, page_nums, temp_dir=None):
 
             except Exception:
                 log_exception(f"  P{page_num}: 处理异常")
+                # 单页异常后重建 Converter，尽量挽救后续页
+                try:
+                    _open_cv()
+                except Exception:
+                    log_exception(f"  P{page_num}: 重建 Converter 失败")
             finally:
+                pages_done += 1
                 if tmp_path and os.path.exists(tmp_path):
                     try:
                         os.unlink(tmp_path)
@@ -174,10 +207,6 @@ def convert_batch(pdf_path, page_nums, temp_dir=None):
     except Exception:
         log_exception(f"convert_batch 致命异常")
     finally:
-        if cv is not None:
-            try:
-                cv.close()
-            except Exception:
-                pass
+        _close_cv()
 
     return batch_tables

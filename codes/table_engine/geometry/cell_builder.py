@@ -73,6 +73,10 @@ def _assign_item_to_columns(
         return
     if col_ranges and text and _ROW_NUMBER_RE.match(text) and x0 <= col_ranges[0][1] + 10:
         ci = 0
+    elif layout_id and uses_pillar_row_assignment(layout_id):
+        # CC1/CC2 等：col0=序号、col1=项目。禁止再走「中文标签→ci=0」
+        # （会与序号列角色冲突，并把科目挤进第一列）。
+        ci = layout_col_index(x0, x1, text, col_ranges, layout_id)
     elif (
         text == "项目"
         and _is_label_like_text(text)
@@ -101,8 +105,6 @@ def _assign_item_to_columns(
         ci = col_index_by_x0(mid, col_ranges)
         if ci <= 0 and n_cols > 1:
             ci = 1
-    elif layout_id and uses_pillar_row_assignment(layout_id):
-        ci = layout_col_index(x0, x1, text, col_ranges, layout_id)
     elif _is_value_like_text(text) and not _ROW_NUMBER_RE.match(text):
         from codes.table_engine.geometry.column_anchors import col_index_by_x1
         ci = col_index_by_x1(x1, col_ranges)
@@ -143,6 +145,10 @@ def _assign_item_to_columns(
             not col_items[ci - 1]
             or all(_is_label_like_text(str(c.get("text", ""))) for c in col_items[ci - 1])
         ):
+            # pillar：col0 是序号列，禁止把科目从项目列拽进空的序号格
+            if layout_id and uses_pillar_row_assignment(layout_id):
+                col_items[ci].append(it)
+                return
             col_items[ci - 1].append(it)
             return
 
@@ -207,32 +213,16 @@ def _format_label_cell_text(items: List[dict], baseline_x0: float) -> str:
     return (" " * (_INDENT_SPACES_PER_LEVEL * level)) + raw
 
 
+def _sort_items_reading_order(items: List[dict]) -> List[dict]:
+    from codes.table_engine.geometry.reading_order import sort_items_reading_order
+
+    return sort_items_reading_order(items)
+
+
 def _cell_text_from_items(items: List[dict]) -> str:
-    if not items:
-        return ""
-    if len(items) == 1:
-        return str(items[0].get("text", "")).strip()
-    # 同行微抖动（地区/金额 y 差 1～2pt）优先按 x0，避免拼成「金额 地区」
-    ys = [float(it.get("y0", 0)) for it in items]
-    y_span = (max(ys) - min(ys)) if ys else 0.0
-    if y_span <= 4.0:
-        ordered = sorted(items, key=lambda it: float(it.get("x0", 0)))
-    else:
-        ordered = sorted(
-            items,
-            key=lambda it: (float(it.get("y0", 0)), float(it.get("x0", 0))),
-        )
-    texts: List[str] = []
-    seen: Set[str] = set()
-    for it in ordered:
-        t = str(it.get("text", "")).strip()
-        if not t or t in seen:
-            continue
-        seen.add(t)
-        texts.append(t)
-    if len(texts) == 1:
-        return texts[0]
-    return " ".join(texts)
+    from codes.table_engine.geometry.reading_order import join_texts_reading_order
+
+    return join_texts_reading_order(items)
 
 
 _YEAR_ONLY_HEADER_RE = re.compile(r"^(?:19|20)\d{2}\s*年$")

@@ -32,6 +32,9 @@ _PERIOD_BUCKET_HEADER_RE = re.compile(
     r"^(?:无期限|< ?6个?月|6[-–—]?12个?月|≥ ?1年|≧ ?1年|"
     r"实时偿还|即期|过夜|≤ ?3个?月|≤ ?1年)$"
 )
+# 注释列：窄列 + (i)/(ii) 脚注标记，不是「无金额的空头列」
+_NOTE_COLUMN_HEADERS = frozenset({"注释", "附注"})
+_FOOTNOTE_MARKER_RE = re.compile(r"^\([ivxlc]+\)$", re.I)
 
 
 def _is_period_bucket_header(text: str) -> bool:
@@ -42,6 +45,19 @@ def _is_period_bucket_header(text: str) -> bool:
     # 去掉跨格标记再判
     t = re.sub(r"⟦[^⟧]*⟧", "", t).strip()
     return bool(_PERIOD_BUCKET_HEADER_RE.match(t))
+
+
+def _is_note_column_header(text: str) -> bool:
+    """「注释」列头：凝结核已独立成列，禁止并进不计息/人民币等金额列。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    t = re.sub(r"⟦[^⟧]*⟧", "", t).strip()
+    return t in _NOTE_COLUMN_HEADERS
+
+
+def _is_footnote_marker_text(text: str) -> bool:
+    return bool(_FOOTNOTE_MARKER_RE.match(str(text or "").strip()))
 
 
 def _cell(row: Sequence[Any], c: int) -> str:
@@ -223,6 +239,12 @@ def _col_stats(
                 elif v in {"-", "－", "—", "–", "n/a", "N/A"}:
                     b_placeholder += 1
         letter = _header_col_code(data, c, body_start)
+        note_hdr = any(
+            _is_note_column_header(_cell(data[i], c))
+            for i in range(0, body_start)
+            if isinstance(data[i], list)
+        )
+        footnote_marks = sum(1 for v in body_vals if _is_footnote_marker_text(v))
         # 代码列：body 多为单字母 c/d/e…
         code_like = [v for v in body_vals if _is_letter_code(v)]
         serial_like = [v for v in body_vals if _is_row_serial_token(v)]
@@ -254,8 +276,9 @@ def _col_stats(
             and b_fill >= max(2, int(n_body * 0.3))
         )
         is_amt_col = b_amt >= 2
+        is_note_col = note_hdr or footnote_marks >= 1
         is_body_col = (
-            is_amt_col or is_code
+            is_amt_col or is_code or is_note_col
             or _body_fill_ok(b_fill, n_body)
             or b_placeholder >= max(2, int(n_body * 0.25))
         )
@@ -263,6 +286,7 @@ def _col_stats(
         is_header_orphan = (
             h_fill > 0 and b_amt == 0 and not is_serial
             and not letter and not is_body_col and not is_code
+            and not is_note_col
         )
         stats.append({
             "col": c,
@@ -277,9 +301,13 @@ def _col_stats(
             "is_header_orphan": is_header_orphan,
             "is_amt_col": is_amt_col,
             "is_body_col": is_body_col,
+            "is_note_col": is_note_col,
         })
     for s in stats:
-        if s["is_label"] or s["is_serial"] or s["is_code"] or s["is_amt_col"] or s["is_body_col"]:
+        if (
+            s["is_label"] or s["is_serial"] or s["is_code"]
+            or s["is_amt_col"] or s["is_body_col"] or s.get("is_note_col")
+        ):
             s["is_header_orphan"] = False
         if s.get("header_code"):
             s["is_header_orphan"] = False
@@ -391,7 +419,21 @@ def _prune_empty(
     col_lines: Optional[List[float]],
     n_cols: int,
 ) -> Tuple[List[List[str]], List[float]]:
-    keep = [c for c in range(n_cols) if any(_cell(r, c) for r in out)]
+    try:
+        from codes.reconstruct.grid_nucleus.span_mark import is_span_cover_mark
+    except Exception:
+        def is_span_cover_mark(text: str) -> bool:  # type: ignore
+            return False
+
+    def _real(r: Sequence[Any], c: int) -> bool:
+        v = _cell(r, c)
+        if not v:
+            return False
+        if is_span_cover_mark(v):
+            return False
+        return True
+
+    keep = [c for c in range(n_cols) if any(_real(r, c) for r in out)]
     if len(keep) < 2 or len(keep) == n_cols:
         return out, list(col_lines or [])
     new_data = [[_cell(r, c) for c in keep] for r in out]
@@ -472,12 +514,17 @@ def _enforce_bottom_header_one_to_one(
         s["col"] for s in stats
         if s.get("is_label") or s.get("is_serial") or s.get("is_code")
     }
-    # 主体非金额列（年度、占位「–」列）：底层单位/标签必须留在本列
+    # 主体非金额列（年度、占位「–」列、注释列）：底层单位/标签必须留在本列
     body_keep = {
         s["col"] for s in stats
-        if s.get("is_body_col")
-        and not s.get("is_amt_col")
-        and int(s.get("body_fill") or 0) >= 2
+        if (
+            s.get("is_note_col")
+            or (
+                s.get("is_body_col")
+                and not s.get("is_amt_col")
+                and int(s.get("body_fill") or 0) >= 2
+            )
+        )
     }
     bottom = _resolve_bottom_header_row(
         out, body_start, amt_cols, label_or_serial,
@@ -506,12 +553,19 @@ def _enforce_bottom_header_one_to_one(
         if _is_period_bucket_header(txt):
             actions.append(f"bottom_period_keep:{c}")
             continue
+        # 注释列：禁止并进不计息/人民币等金额列（否则「不计息 注释」且顺序颠倒）
+        if _is_note_column_header(txt):
+            actions.append(f"bottom_note_keep:{c}")
+            continue
         tgt = _nearest_amt_col(c, amt_cols)
         if tgt is None or tgt == c:
             continue
         # 目标格已是分档表头：禁止把另一分档并进去
         if _is_period_bucket_header(_cell(out[bottom], tgt)):
             actions.append(f"bottom_period_tgt_keep:{c}")
+            continue
+        if _is_note_column_header(_cell(out[bottom], tgt)):
+            actions.append(f"bottom_note_tgt_keep:{c}")
             continue
         out[bottom][tgt] = _merge_cell(_cell(out[bottom], tgt), txt)
         out[bottom][c] = ""
@@ -528,10 +582,32 @@ def _enforce_bottom_header_one_to_one(
             v = _cell(out[r], ac)
             if not v or not _is_fillable_bottom_header(v):
                 continue
+            # 上方同列已有相同内容 → 再抄会重复（如 a/b/c 列码），底层留空
+            if _same_fillable_already_above(out, bottom, ac, v):
+                actions.append(f"bottom_skip_dup_above:{ac}")
+                break
             out[bottom][ac] = v
             actions.append(f"bottom_fill_from_above:{ac}")
             break
     return actions
+
+
+def _same_fillable_already_above(
+    data: List[List[str]],
+    bottom: int,
+    col: int,
+    value: str,
+) -> bool:
+    """同列上方表头已出现过相同可填充内容（再抄即重复）。"""
+    target = (value or "").strip()
+    if not target:
+        return False
+    for r in range(0, max(0, bottom)):
+        if r >= len(data) or not isinstance(data[r], list):
+            continue
+        if _cell(data[r], col) == target:
+            return True
+    return False
 
 
 _UNIT_HEADER_RE = re.compile(

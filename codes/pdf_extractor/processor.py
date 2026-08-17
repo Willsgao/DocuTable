@@ -1898,6 +1898,61 @@ class PDFProcessor:
     # ---- 逐页 pdf2docx 转换（页码 100% 准确） ----
     # 工作函数已移至 _worker.py（独立模块，无 Qt 依赖，PyInstaller 子进程安全）
 
+    @staticmethod
+    def _plan_docx_page_batches(total_pages, max_workers=6):
+        """按总页数自适应切批：页数未知/很大时也不把一整段压进一个超时窗口。
+
+        Returns:
+            (batches, n_workers, pages_per_batch)
+        """
+        import multiprocessing
+
+        if total_pages <= 0:
+            return [], 1, 1
+        cpu = max(1, min(int(multiprocessing.cpu_count() or 2), int(max_workers)))
+        if total_pages <= 30:
+            ppb = max(1, (total_pages + cpu - 1) // cpu)
+        elif total_pages <= 120:
+            ppb = 20
+        elif total_pages <= 400:
+            ppb = 15
+        else:
+            # 年报级（500+ 页）：小批次，单批超时可控，便于批量连跑
+            ppb = 12
+        ppb = max(4, min(int(ppb), 25))
+        batches = []
+        for start in range(1, total_pages + 1, ppb):
+            end = min(start + ppb - 1, total_pages)
+            batches.append(list(range(start, end + 1)))
+        n_workers = max(1, min(cpu, len(batches)))
+        return batches, n_workers, ppb
+
+    @staticmethod
+    def _docx_batch_timeout_s(n_pages):
+        """单批超时：随页数缩放，封顶避免「干等 10 分钟才报错」。"""
+        n = max(1, int(n_pages))
+        return int(min(360, max(120, n * 15 + 45)))
+
+    @staticmethod
+    def _safe_pool_shutdown(pool, *, force=False):
+        """关闭 Pool；超时/卡死后必须 terminate，否则 join 会一直挂住。"""
+        if pool is None:
+            return
+        try:
+            if force:
+                pool.terminate()
+            else:
+                pool.close()
+        except Exception:
+            try:
+                pool.terminate()
+            except Exception:
+                pass
+        try:
+            pool.join()
+        except Exception:
+            pass
+
     def _extract_tables_via_docx_per_page(self, pdf_path=None, context=None,
                                            progress_callback=None):
         """逐页 pdf2docx 转换：每页独立转 DOCX，表格页码 100% 准确。
@@ -1905,8 +1960,11 @@ class PDFProcessor:
         相比一次性全文档转换，逐页方案从根本上消除了"猜页码→DP修正"
         的信息损失链条，表格从哪页 DOCX 解析出来就属于哪页。
 
-        性能优化：
-        - 多进程并行转换（每进程独立 Python 解释器，完全隔离 PyMuPDF C 扩展）
+        性能/稳健性：
+        - 多进程并行（每进程独立解释器，隔离 PyMuPDF C 扩展）
+        - 按总页数自适应小批次，避免大 PDF 单批超时拖死整任务
+        - 批次超时后 terminate 卡住的 worker，并可微批重试
+        - 适合后续多 PDF 连续批量处理（每文档独立建池并强制回收）
 
         TODO: 跨页表格合并（后续单独实现）
 
@@ -1923,12 +1981,12 @@ class PDFProcessor:
         # PyInstaller 兼容：使用 spawn 上下文的 multiprocessing.Pool，
         # ProcessPoolExecutor 在冻结环境中经常失败
         _frozen = getattr(sys, 'frozen', False)
-        _pool_cls = multiprocessing.Pool
         if _frozen:
             _ctx = multiprocessing.get_context('spawn')
             _pool_cls = _ctx.Pool
             write_log(f"[docx-per-page] 冻结环境，使用 spawn Pool")
         else:
+            _pool_cls = multiprocessing.Pool
             write_log(f"[docx-per-page] 普通环境，使用默认 Pool")
 
         if context:
@@ -1945,77 +2003,249 @@ class PDFProcessor:
             total_pages = len(doc)
             doc.close()
 
-        cpu_count = min(multiprocessing.cpu_count(), 6)
-
-        # 将页分配到各进程（每个进程处理一批页，复用 Converter）
-        pages_per_batch = (total_pages + cpu_count - 1) // cpu_count
-        page_batches = []
-        for t in range(cpu_count):
-            start = t * pages_per_batch + 1
-            end = min(start + pages_per_batch - 1, total_pages)
-            if start <= end:
-                page_batches.append(list(range(start, end + 1)))
-
-        write_log(f"[docx-per-page] {total_pages} 页, {cpu_count} 进程, "
-                  f"{len(page_batches)} 批次")
-
-        print(f"  [docx-per-page] 逐页转换: {total_pages} 页, "
-              f"{cpu_count} 进程并行 × ~{pages_per_batch} 页/进程")
+        page_batches, n_workers, pages_per_batch = self._plan_docx_page_batches(
+            total_pages
+        )
+        write_log(
+            f"[docx-per-page] {total_pages} 页, {n_workers} 进程, "
+            f"{len(page_batches)} 批次 × ~{pages_per_batch} 页/批"
+        )
+        print(
+            f"  [docx-per-page] 逐页转换: {total_pages} 页, "
+            f"{n_workers} 进程 × {len(page_batches)} 批 "
+            f"(~{pages_per_batch} 页/批)"
+        )
         if progress_callback:
-            progress_callback(22,
-                f"docx: 逐页转换 {total_pages} 页 ({cpu_count}进程)...")
+            progress_callback(
+                22,
+                f"docx: 逐页转换 {total_pages} 页 "
+                f"({n_workers}进程/{len(page_batches)}批)...",
+            )
 
         t0 = time.time()
-
-        # 延迟导入工作函数（确保 __module__ 为 _worker，子进程安全）
         from codes.pdf_extractor._worker import convert_batch
 
         all_tables = []
-        total_batches = len(page_batches)
-        completed_batches = 0
-
-        write_log(f"[docx-per-page] 创建 multiprocessing.Pool (processes={cpu_count})")
         pool = None
+        # 工作队列：主跑小批 → 超时则拆微批再入队一次
+        from collections import deque
+
+        work_q = deque()
+        for b in page_batches:
+            work_q.append({"batch": list(b), "micro": False, "requeues": 0})
+        total_units = max(len(page_batches), 1)
+        finished_units = 0
+        skipped_pages = []
+        _MAX_REQUEUE = 2
+
+        def _progress(msg=None):
+            if not progress_callback:
+                return
+            pct = 22 + int(finished_units / max(total_units, 1) * 8)
+            progress_callback(
+                min(pct, 29),
+                msg or f"docx: 进度 {finished_units}/{total_units}",
+            )
+
+        def _drain_pool_jobs(jobs, *, label):
+            """轮询收集；任一超时则 terminate 整池，未完成任务交还调用方重排队。"""
+            nonlocal pool, finished_units, all_tables
+            unfinished = []
+            timed_out = []
+            pending = list(jobs)
+            while pending:
+                still = []
+                timed_out_now = None
+                for job in pending:
+                    batch = job["batch"]
+                    page_lo, page_hi = batch[0], batch[-1]
+                    ar = job["async"]
+                    if ar.ready():
+                        try:
+                            tables = ar.get(timeout=0)
+                            all_tables.extend(tables or [])
+                            finished_units += 1
+                            write_log(
+                                f"[docx-per-page][{label}] 完成 "
+                                f"P{page_lo}-{page_hi}: "
+                                f"{len(tables or [])} 表"
+                            )
+                            _progress()
+                        except Exception as e:
+                            finished_units += 1
+                            ename = type(e).__name__
+                            detail = str(e).strip() or repr(e)
+                            log_exception(
+                                f"[docx-per-page][{label}] "
+                                f"P{page_lo}-{page_hi} {ename}: {detail}"
+                            )
+                            print(
+                                f"  [docx-per-page] 进程批处理异常: "
+                                f"{ename}: {detail} "
+                                f"(P{page_lo}-P{page_hi})"
+                            )
+                            _progress()
+                        continue
+
+                    if time.time() - job["t0"] > job["timeout"]:
+                        timed_out_now = job
+                        break
+                    still.append(job)
+
+                if timed_out_now is not None:
+                    b = timed_out_now["batch"]
+                    msg = (
+                        f"TimeoutError: 批次超时 "
+                        f"{timed_out_now['timeout']}s, "
+                        f"页 P{b[0]}-P{b[-1]} ({len(b)} 页)"
+                    )
+                    log_exception(f"[docx-per-page][{label}] {msg}")
+                    print(f"  [docx-per-page] 进程批处理异常: {msg}")
+                    timed_out.append(list(b))
+                    # 超时前先捞走本波已完成结果，避免 terminate 丢表
+                    for job in pending:
+                        if job is timed_out_now:
+                            continue
+                        if not job["async"].ready():
+                            unfinished.append(list(job["batch"]))
+                            continue
+                        try:
+                            tables = job["async"].get(timeout=0)
+                            all_tables.extend(tables or [])
+                            finished_units += 1
+                            bb = job["batch"]
+                            write_log(
+                                f"[docx-per-page][{label}] 超时前已完成 "
+                                f"P{bb[0]}-P{bb[-1]}: "
+                                f"{len(tables or [])} 表"
+                            )
+                            _progress()
+                        except Exception as e:
+                            unfinished.append(list(job["batch"]))
+                            write_log(
+                                f"[docx-per-page][{label}] 超时前收取失败 "
+                                f"P{job['batch'][0]}-{job['batch'][-1]}: "
+                                f"{type(e).__name__}",
+                                "WARN",
+                            )
+                    self._safe_pool_shutdown(pool, force=True)
+                    pool = None
+                    return unfinished, timed_out
+
+                pending = still
+                if pending:
+                    time.sleep(0.4)
+
+            self._safe_pool_shutdown(pool, force=False)
+            pool = None
+            return unfinished, timed_out
+
         try:
-            pool = _pool_cls(processes=cpu_count)
-            async_results = []
-            for idx, batch in enumerate(page_batches):
-                r = pool.apply_async(convert_batch, (_pdf_path, batch))
-                async_results.append((idx, r))
+            while work_q:
+                # 每波最多提交一批并行量，避免超大 PDF 一次挂上千任务
+                wave_size = max(n_workers * 3, n_workers)
+                wave = []
+                while work_q and len(wave) < wave_size:
+                    wave.append(work_q.popleft())
 
-            write_log(f"[docx-per-page] {len(async_results)} 个任务已提交")
+                write_log(
+                    f"[docx-per-page] 提交波次: {len(wave)} 任务, "
+                    f"workers={n_workers}, 队列剩余={len(work_q)}"
+                )
+                pool = _pool_cls(processes=n_workers, maxtasksperchild=2)
+                jobs = []
+                for item in wave:
+                    batch = item["batch"]
+                    jobs.append(
+                        {
+                            "batch": batch,
+                            "micro": bool(item.get("micro")),
+                            "requeues": int(item.get("requeues") or 0),
+                            "async": pool.apply_async(
+                                convert_batch, (_pdf_path, batch)
+                            ),
+                            "timeout": self._docx_batch_timeout_s(len(batch)),
+                            "t0": time.time(),
+                        }
+                    )
 
-            for idx, r in async_results:
-                try:
-                    batch_tables = r.get(timeout=600)  # 10分钟超时
-                    all_tables.extend(batch_tables)
-                    write_log(f"[docx-per-page] 批次 "
-                              f"{completed_batches+1}/{total_batches} 完成: "
-                              f"{len(batch_tables)} 个表格")
-                except Exception as e:
-                    log_exception(f"[docx-per-page] 批次{idx}异常: {e}")
-                    print(f"  [docx-per-page] 进程批处理异常: {e}")
+                unfinished, timed_out = _drain_pool_jobs(jobs, label="波次")
 
-                completed_batches += 1
-                if progress_callback:
-                    pct = 22 + int(completed_batches / total_batches * 8)
-                    progress_callback(pct,
-                        f"docx: 批次 {completed_batches}/{total_batches}")
+                # 未完成：换新池再跑（限制重入次数，防止病态死循环）
+                for job in jobs:
+                    b = job["batch"]
+                    if b not in unfinished:
+                        continue
+                    rq = int(job.get("requeues") or 0) + 1
+                    if rq > _MAX_REQUEUE:
+                        skipped_pages.extend(b)
+                        finished_units += 1
+                        print(
+                            f"  [docx-per-page] 多次中断，跳过 "
+                            f"P{b[0]}-P{b[-1]}"
+                        )
+                        _progress()
+                        continue
+                    work_q.append(
+                        {
+                            "batch": list(b),
+                            "micro": bool(job.get("micro")),
+                            "requeues": rq,
+                        }
+                    )
+
+                # 超时：拆微批重试一次；已是微批则跳过
+                for b in timed_out:
+                    if len(b) <= 5:
+                        skipped_pages.extend(b)
+                        finished_units += 1
+                        print(
+                            f"  [docx-per-page] 微批仍超时，跳过 "
+                            f"P{b[0]}-P{b[-1]}"
+                        )
+                        write_log(
+                            f"[docx-per-page] 跳过页 P{b[0]}-P{b[-1]}"
+                        )
+                        _progress()
+                        continue
+                    print(
+                        f"  [docx-per-page] P{b[0]}-P{b[-1]} 超时 → "
+                        f"拆成微批重试"
+                    )
+                    for i in range(0, len(b), 5):
+                        work_q.append(
+                            {
+                                "batch": b[i : i + 5],
+                                "micro": True,
+                                "requeues": 0,
+                            }
+                        )
+                        total_units += 1
+
         except Exception as e:
             log_exception(f"[docx-per-page] Pool 致命异常: {e}")
             write_log(f"[docx-per-page] 回退到单进程模式")
-            print(f"  [docx-per-page] 多进程异常，回退单进程: {e}")
-            # 回退：单进程顺序处理
+            print(
+                f"  [docx-per-page] 多进程异常，回退单进程: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._safe_pool_shutdown(pool, force=True)
+            pool = None
             for batch in page_batches:
                 try:
                     batch_tables = convert_batch(_pdf_path, batch)
-                    all_tables.extend(batch_tables)
+                    all_tables.extend(batch_tables or [])
                 except Exception as e2:
                     log_exception(f"[docx-per-page] 单进程批次异常: {e2}")
         finally:
-            if pool is not None:
-                pool.close()
-                pool.join()
+            self._safe_pool_shutdown(pool, force=True)
+            pool = None
+
+        if skipped_pages:
+            print(
+                f"  [docx-per-page] 共跳过 {len(skipped_pages)} 页 "
+                f"(P{min(skipped_pages)}-P{max(skipped_pages)}，详见 debug_log)"
+            )
 
         # 按页码排序
         all_tables.sort(key=lambda t: t.get("page", 0))
@@ -2030,9 +2260,10 @@ class PDFProcessor:
 
         # 打印摘要
         pages_with_tables = len(set(t["page"] for t in all_tables))
+        cov = (pages_with_tables / total_pages * 100) if total_pages else 0.0
         print(f"  [docx-per-page] {len(all_tables)} 表 / "
               f"{pages_with_tables} 页 / {total_pages} 页 → "
-              f"覆盖率 {pages_with_tables/total_pages*100:.0f}%")
+              f"覆盖率 {cov:.0f}%")
 
         if progress_callback:
             progress_callback(30, f"docx: 提取完成 ({len(all_tables)}表格)")
@@ -5628,6 +5859,9 @@ class ProcessingWorker(QThread):
                         run_table_engine_segmentation(self.pdf_path)
                     )
                     if te_entries:
+                        # 深拷贝：后续 anomaly/reconstruct 会就地改 results，
+                        # 不得连带改坏 liteparse_seg_tables 快照
+                        liteparse_seg_tables = copy.deepcopy(liteparse_seg_tables)
                         results = te_entries
                         results.sort(key=lambda r: (
                             r.get("page", 0), _sort_y_for_page_order(r),

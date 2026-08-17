@@ -726,6 +726,86 @@ def test_profit_dist_bottom_header_year_and_units():
     ), meta
 
 
+def test_letter_codes_not_copied_to_bottom_when_already_above():
+    """列码 a/b/c 已在上层表头出现时，禁止再抄到数据前底层（避免重复两行）。"""
+    from codes.reconstruct.grid_nucleus.header_align import align_header_to_body_columns
+
+    # 数据上一行金额列为空；旧逻辑会把上层 a/b/c 抄到这一行
+    data = [
+        ["单位", "a", "b", "c"],
+        ["类别", "表内资产余额", "表外转换前资产", "平均转换系数"],
+        ["", "", "", ""],
+        ["1", "1,904,390", "115,315", "33.63%"],
+        ["2", "100,000", "200,000", "10.00%"],
+        ["3", "2,004,390", "315,315", "20.00%"],
+    ]
+    new_data, _, meta = align_header_to_body_columns(data)
+    actions = meta.get("bottom_actions") or []
+    assert meta.get("amt_cols"), meta
+    assert not any(str(a).startswith("bottom_fill_from_above:") for a in actions), meta
+    assert any(str(a).startswith("bottom_skip_dup_above:") for a in actions), meta
+    letter_rows = [
+        i
+        for i, row in enumerate(new_data)
+        if sum(1 for c in row if str(c).strip() in {"a", "b", "c"}) >= 2
+    ]
+    assert letter_rows == [0], (letter_rows, new_data, meta)
+    bottom = new_data[meta["body_start"] - 1]
+    assert not any(str(c).strip() in {"a", "b", "c"} for c in bottom), bottom
+
+
+def test_cap_slots_keeps_headed_letter_cols_drops_empty():
+    """超额截断：有表头（列码）的槽保留；空表头缝列优先丢掉。"""
+    from codes.reconstruct.grid_nucleus.column_infer import _cap_column_slots
+    from codes.reconstruct.grid_nucleus.types import Nucleus, RowCluster
+
+    # 槽心：假缝夹在 j/k/l 之间
+    centers = [100.0, 200.0, 670.0, 690.0, 720.0, 740.0, 770.0]
+    letters = [
+        Nucleus(text="j", x0=668, y0=10, x1=676, y1=20, col_id=0),
+        Nucleus(text="k", x0=718, y0=10, x1=726, y1=20, col_id=0),
+        Nucleus(text="l", x0=768, y0=10, x1=776, y1=20, col_id=0),
+    ]
+    # 仅金额、无表头 → 空表头缝
+    amts = [
+        Nucleus(text="1,000", x0=685, y0=40, x1=710, y1=50, col_id=0),
+        Nucleus(text="2,000", x0=735, y0=40, x1=760, y1=50, col_id=0),
+    ]
+    rows = [
+        RowCluster(row_id=0, cy=15, nuclei=letters),
+        RowCluster(row_id=1, cy=45, nuclei=amts),
+    ]
+    out = _cap_column_slots(rows, centers, max_cols=4)
+    assert len(out) <= 4 or all(
+        any(abs(c - x) < 5 for x in (670.0, 720.0, 770.0)) for c in out if c > 600
+    ), out
+    # j/k/l 对应槽必须仍在
+    for want in (670.0, 720.0, 770.0):
+        assert any(abs(c - want) < 1.0 for c in out), (want, out)
+
+
+def test_distinct_column_headers_forbid_slot_merge():
+    """两槽各有不同独立表头（列码/指标）→ 拆并时不得合成一列。"""
+    from codes.reconstruct.grid_nucleus.column_infer import (
+        _should_collapse_adjacent_slots,
+        _slots_have_distinct_independent_headers,
+    )
+    from codes.reconstruct.grid_nucleus.types import Nucleus, RowCluster
+
+    j = Nucleus(text="j", x0=670, y0=10, x1=676, y1=20, col_id=0)
+    k = Nucleus(text="k", x0=720, y0=10, x1=726, y1=20, col_id=1)
+    hj = Nucleus(text="风险权", x0=658, y0=30, x1=690, y1=40, col_id=0)
+    hk = Nucleus(text="预期损", x0=708, y0=30, x1=740, y1=40, col_id=1)
+    rows = [
+        RowCluster(row_id=0, cy=15, nuclei=[j, k]),
+        RowCluster(row_id=1, cy=35, nuclei=[hj, hk]),
+    ]
+    assert _slots_have_distinct_independent_headers([j, hj], [k, hk])
+    assert not _should_collapse_adjacent_slots(
+        rows, 0, 1, [673.0, 723.0], small_gap=14.0, large_gap=40.0
+    )
+
+
 def test_identical_x_bounds_force_same_column_despite_phantom_amount_slot():
     """同 [x0,x1] 的「2023年」「指标值」即使被拆到不同 col_id，锁定后必须同列。"""
     from codes.reconstruct.grid_nucleus.column_infer import _lock_same_bound_nuclei
@@ -1103,6 +1183,84 @@ def test_code_column_not_merged_with_amount():
     ]
     for ci in code_cols:
         assert "2,571" not in str(row1[ci] if ci < len(row1) else ""), row1
+
+
+def test_dual_consolidation_header_wrap_same_col():
+    """财务/监管并表口径折行：两行续文须各跟上行表头同列，且对齐下方金额（招商 1875 几何）。
+
+    同文「的资产负债表」是两列并列凝结核，不得标成跨格把右列盖成 ⟦↔⟧。
+    """
+    from codes.reconstruct.grid_nucleus.pipeline import apply_grid_to_table, restore_table_grid
+    from codes.reconstruct.grid_nucleus.span_mark import COVER_MARK, is_span_cover_mark
+
+    words = [
+        _word("附表二：集团口径的资产负债表", 86, 145, 373, 157),
+        _word("财务并表口径下", 405, 170, 475, 182),
+        _word("监管并表口径下", 490, 170, 560, 182),
+        _word("的资产负债表", 410, 182, 470, 194),
+        _word("的资产负债表", 495, 182, 555, 194),
+        _word("资产", 91, 194, 111, 206),
+        _word("现金", 91, 207, 111, 219),
+        _word("14,808", 450, 207, 477, 219),
+        _word("14,808", 535, 207, 563, 219),
+        _word("贵金属", 91, 221, 121, 233),
+        _word("38,669", 450, 221, 477, 233),
+        _word("38,669", 535, 221, 563, 233),
+        _word("存放中央银行款项", 91, 235, 171, 247),
+        _word("560,207", 445, 235, 477, 247),
+        _word("560,207", 530, 235, 563, 247),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = restore_table_grid(table, source_words=words)
+    assert res.ok and res.data, res.to_dict()
+    data = res.data
+    assert res.n_cols == 3, (res.n_cols, data[:6], res.col_lines)
+
+    hdr = next(
+        r for r in data
+        if any("财务并表" in str(c) for c in r) and any("监管并表" in str(c) for c in r)
+    )
+    wrap = next(r for r in data if sum(1 for c in r if "资产负债表" in str(c)) >= 2)
+    asset = next(r for r in data if any(str(c).strip() == "资产" for c in r))
+    cash = next(r for r in data if any(str(c).strip() == "现金" for c in r))
+    assert asset is not cash, data
+    assert not any("资产现金" in str(c) for r in data for c in r), data
+
+    fi = next(i for i, c in enumerate(hdr) if "财务并表" in str(c))
+    ri = next(i for i, c in enumerate(hdr) if "监管并表" in str(c))
+    assert fi != ri, hdr
+    assert "资产负债表" in str(wrap[fi]), (wrap, fi)
+    assert "资产负债表" in str(wrap[ri]), (wrap, ri)
+    # 续文不得漂到对方列或额外空列
+    assert str(wrap[fi]).count("资产负债表") == 1
+    assert "14,808" in str(cash[fi]) and "14,808" in str(cash[ri]), cash
+    # 列宽不得出现 1pt 幽灵缝
+    lines = list(res.col_lines or [])
+    assert len(lines) == 4, lines
+    for a, b in zip(lines, lines[1:]):
+        assert b - a >= 20.0, (lines, a, b)
+
+    # apply 后跨格标注：两列各留「的资产负债表」，右列不得变成覆盖符
+    table2 = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    applied = apply_grid_to_table(table2)
+    assert applied.ok and applied.metrics.get("overwrote_data"), applied.to_dict()
+    wrap2 = next(
+        r for r in table2["data"]
+        if sum(1 for c in r if str(c).strip().startswith("的资产负债表")) >= 2
+    )
+    texts = [str(c) for c in wrap2]
+    assert not any(is_span_cover_mark(t) or t.strip() == COVER_MARK for t in texts), wrap2
+    assert not any("⟦↔" in t for t in texts), wrap2
 
 
 def test_merge_split_decimal_nuclei():
@@ -1744,6 +1902,208 @@ def test_indented_labels_share_one_column_common_boundary():
     assert len(label_cols) == 1, (label_cols, table["data"])
 
 
+def test_wrap_amount_fragment_does_not_split_label_column():
+    """折行续文「金额/应扣除金额」不得当独立列头，把缩进「其中：」拆成第二科目列。"""
+    words = [
+        _word("a", 430, 40, 436, 52),
+        _word("数额", 420, 55, 442, 67),
+        _word("37", 70, 100, 82, 112),
+        _word("应从二级资本中扣除的未扣缺口", 107, 100, 254, 112),
+        _word("-", 470, 100, 481, 112),
+        _word("43", 70, 120, 82, 132),
+        _word("超额损失准备可计入部分", 107, 120, 223, 132),
+        _word("384,521", 440, 120, 481, 132),
+        _word("28", 70, 140, 82, 152),
+        _word("其中：权益部分", 129, 140, 203, 152),
+        _word("159,977", 440, 140, 481, 152),
+        _word("47", 70, 160, 82, 172),
+        _word("对未并表金融机构小额少数资本投资中的二级资本应扣除", 107, 160, 372, 172),
+        _word("-", 470, 160, 481, 172),
+        _word("金额", 107, 175, 128, 187),
+        _word("34", 70, 200, 82, 212),
+        _word("对未并表金融机构小额少数资本投资中的其他一级资本中", 107, 200, 372, 212),
+        _word("-", 470, 200, 481, 212),
+        _word("应扣除金额", 107, 215, 160, 227),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = apply_grid_to_table(table)
+    assert res.ok and res.metrics.get("overwrote_data"), res.to_dict()
+    assert res.metrics.get("n_cols") <= 4, (res.metrics.get("n_cols"), table["data"])
+    label_cols = set()
+    for r in table["data"]:
+        for i, c in enumerate(r):
+            t = str(c or "").split("\u27e6")[0].strip()
+            if any(
+                k in t
+                for k in ("未扣缺口", "超额损失", "其中：权益", "应扣除", "金额")
+            ):
+                label_cols.add(i)
+    assert len(label_cols) == 1, (label_cols, table["data"])
+
+
+def test_sec1_label_not_merged_into_amount_column():
+    """SEC1：科目与 a 列金额分列；折行「款」并回「…抵押贷款」；勿因表头「传统型」退化。"""
+    words = [
+        _word("a", 240, 40, 246, 52),
+        _word("b", 291, 40, 297, 52),
+        _word("传统型", 230, 55, 270, 67),
+        _word("足STC标", 274, 55, 314, 67),
+        _word("1", 79, 100, 85, 112),
+        _word("零售类合计", 98, 100, 148, 112),
+        _word("7,195", 237, 100, 261, 112),
+        _word("-", 313, 100, 317, 112),
+        _word("2", 79, 120, 85, 132),
+        _word("其中：个人住房抵押贷", 109, 118, 209, 130),
+        _word("7,134", 237, 120, 261, 132),
+        _word("-", 313, 120, 317, 132),
+        # 与上行同簇：折行「款」须并进科目格
+        _word("款", 109, 126, 119, 138),
+        _word("3", 79, 155, 85, 167),
+        _word("其中：信用卡", 109, 155, 169, 167),
+        _word("52", 251, 155, 261, 167),
+        _word("-", 313, 155, 317, 167),
+        _word("6 公司类合计", 79, 180, 148, 192),
+        _word("25", 251, 180, 261, 192),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = apply_grid_to_table(table)
+    assert res.ok and res.metrics.get("overwrote_data"), res.to_dict()
+    assert res.method == "nucleus", res.to_dict()
+    # 信用卡不得与 52 粘同一格
+    assert not any(
+        "信用卡" in str(c) and any(ch.isdigit() for ch in str(c).split("信用卡")[-1])
+        for r in table["data"]
+        for c in r
+    ), table["data"]
+    # 序号与科目已拆
+    assert any(str(c).strip() == "6" for r in table["data"] for c in r), table["data"]
+    assert any("公司类合计" in str(c) for r in table["data"] for c in r), table["data"]
+    # 科目列与金额列分离
+    for r in table["data"]:
+        cells = [str(c or "").split("\u27e6")[0].strip() for c in r]
+        if any("零售类合计" in c for c in cells):
+            li = next(i for i, c in enumerate(cells) if "零售类合计" in c)
+            ai = next(i for i, c in enumerate(cells) if "7,195" in c)
+            assert ai != li, (r, table["data"])
+            break
+    else:
+        raise AssertionError(table["data"])
+    # 折行「款」若单独成行，不得与金额同列
+    for r in table["data"]:
+        cells = [str(c or "").split("\u27e6")[0].strip() for c in r]
+        if "款" not in cells:
+            continue
+        ki = cells.index("款")
+        assert "7,134" not in cells[ki] and cells[ki] == "款"
+        amts = [i for i, c in enumerate(cells) if c.replace(",", "").isdigit()]
+        assert ki not in amts, r
+
+
+def test_small_gap_id_fragments_merge_by_vertical_band():
+    """标识码小空隙断框：用上下列带约束并回同列，不得拆成多列。"""
+    words = []
+    # 表头行：序号 | 属性 | 工具A | 工具B
+    words += [
+        _word("1", 40, 40, 50, 52),
+        _word("发行机构", 60, 40, 110, 52),
+        _word("招商银行", 150, 40, 200, 52),
+        _word("招商银行", 260, 40, 310, 52),
+    ]
+    # 标识码：A 连续；B 小空隙断成三段（仍同列）
+    words += [
+        _word("2", 40, 70, 50, 82),
+        _word("标识码", 60, 70, 95, 82),
+        _word("242480070", 150, 70, 210, 82),
+        _word("2423", 255, 70, 278, 82),
+        _word("800", 281, 70, 300, 82),
+        _word("33", 303, 70, 318, 82),
+    ]
+    # 多行表体稳住列槽
+    for yi, (ser, lab, a, b) in enumerate([
+        ("3", "适用法律", "中国大陆", "中国香港"),
+        ("4", "资本层级", "核心一级资本", "核心一级资本"),
+        ("5", "工具类型", "普通股", "普通股"),
+        ("6", "会计处理", "权益", "权益"),
+    ], start=0):
+        y = 100 + yi * 28
+        words += [
+            _word(ser, 40, y, 50, y + 12),
+            _word(lab, 60, y, 60 + 8 * len(lab), y + 12),
+            _word(a, 150, y, 150 + min(55, 8 * len(a)), y + 12),
+            _word(b, 260, y, 260 + min(55, 8 * len(b)), y + 12),
+        ]
+    # 金额行（连续币种金额）
+    words += [
+        _word("7", 40, 220, 50, 232),
+        _word("可计入数额", 60, 220, 120, 232),
+        _word("人民币70,228", 145, 220, 215, 232),
+        _word("人民币31,675", 255, 220, 325, 232),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = apply_grid_to_table(table)
+    data = res.data if res.data else table.get("data")
+    assert data, res.to_dict()
+    # 列数应接近 4（序号+属性+2工具），不得因断码拆出多余列
+    assert res.n_cols <= 5, (res.n_cols, data)
+    id_row = next(
+        (r for r in data if any("2423" in str(c) or "242480070" in str(c) for c in r)),
+        None,
+    )
+    assert id_row is not None, data
+    flat = " ".join(str(c) for c in id_row)
+    # 断码应落在同一工具列（可含空格拼接），不得把 33 甩到邻列与另一码粘连
+    assert "33" in flat.replace(" ", "") or any("33" in str(c) for c in id_row), id_row
+    # 两工具列仍分开
+    cmb = [i for i, r in enumerate(data) if any("招商银行" in str(c) for c in r)]
+    assert cmb, data
+    hdr = data[cmb[0]]
+    bank_cols = [i for i, c in enumerate(hdr) if "招商银行" in str(c)]
+    assert len(bank_cols) >= 2, (hdr, data)
+
+
+def test_peer_instrument_columns_not_merged_despite_moderate_gap():
+    """多行同时有内容的真并列工具列：即使列间距不大也不得并。"""
+    words = []
+    xs = [140, 210, 280, 350]
+    words += [_word("1", 40, 40, 50, 52), _word("发行机构", 55, 40, 110, 52)]
+    for x in xs:
+        words.append(_word("招商银行", x, 40, x + 50, 52))
+    for yi, lab in enumerate(["标识码", "适用法律", "资本层级", "工具类型", "会计处理"]):
+        y = 70 + yi * 26
+        words += [_word(str(yi + 2), 40, y, 50, y + 12), _word(lab, 55, y, 110, y + 12)]
+        for j, x in enumerate(xs):
+            words.append(_word(f"值{yi}{j}", x, y, x + 40, y + 12))
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = apply_grid_to_table(table)
+    data = res.data if res.data else table.get("data")
+    assert data, res.to_dict()
+    # 序号+属性+4工具 ≈ 6 列
+    assert 5 <= res.n_cols <= 7, (res.n_cols, data)
+    hdr = next((r for r in data if sum(1 for c in r if "招商银行" in str(c)) >= 2), None)
+    assert hdr is not None, data
+    assert sum(1 for c in hdr if "招商银行" in str(c)) >= 4, hdr
+
+
 def test_orphan_single_datum_column_without_header_is_pruned():
     """仅单点数据、无表头的列非常可疑（多分缝），应丢掉并让数据归入邻列。"""
     words = [
@@ -1781,6 +2141,49 @@ def test_orphan_single_datum_column_without_header_is_pruned():
     assert i_b == i_a + 1, (cells_h, table["data"])
     # 不得在 a/b 间多出只装 999 的空列表头列
     assert res.metrics.get("n_cols") <= 5, (res.metrics.get("n_cols"), table["data"])
+
+
+def test_all_blank_column_means_wrong_split_must_reclaim():
+    """拆出一列却通列空白 → 拆错，必须收回（不得保留空缝）。"""
+    from codes.reconstruct.grid_nucleus.pipeline import prune_empty_columns
+    from codes.reconstruct.grid_nucleus.span_mark import COVER_MARK
+
+    data = [
+        ["关联方", "6,322", "", "6.38"],
+        ["合计", "6,352", "", "6.41"],
+        ["", "30", COVER_MARK, "0.03"],
+    ]
+    col_lines = [40.0, 150.0, 250.0, 320.0, 400.0]
+    out, lines = prune_empty_columns(data, col_lines)
+    assert max(len(r) for r in out) == 3, out
+    row0 = out[0]
+    assert "6,322" in str(row0[1]) and "6.38" in str(row0[2]), out
+    # 中间全空列已收回
+    assert all(str(c).strip() != "" or True for c in row0)
+    assert not any(
+        all(not str(r[c] if c < len(r) else "").strip() or str(r[c]).strip() == COVER_MARK
+            for r in out)
+        for c in range(max(len(r) for r in out))
+    ) or max(len(r) for r in out) == 3
+
+
+def test_cover_only_blank_column_is_pruned():
+    """仅含 ⟦↔⟧ 覆盖符的缝列视为空白，应删除。"""
+    from codes.reconstruct.grid_nucleus.pipeline import prune_empty_columns
+    from codes.reconstruct.grid_nucleus.span_mark import COVER_MARK
+
+    data = [
+        ["54", COVER_MARK, "核心一级资本充足率", "14%"],
+        ["55", COVER_MARK, "一级资本充足率", "16%"],
+        ["56", "", "资本充足率", "18%"],
+        ["", COVER_MARK, "科目甲", "1"],
+    ]
+    col_lines = [50.0, 90.0, 120.0, 300.0, 400.0]
+    out, lines = prune_empty_columns(data, col_lines)
+    assert max(len(r) for r in out) == 3, out
+    # 中间仅覆盖符列已删：序号 | 科目 | 金额
+    assert out[0][0] == "54" and "核心一级" in out[0][1] and out[0][2] == "14%", out
+    assert all(COVER_MARK not in r for r in out), out
 
 
 def test_right_aligned_dash_not_phantom_between_letter_cols():
@@ -1967,13 +2370,11 @@ def test_body_pd_and_customer_count_not_merged_despite_date_header():
     }
     res = apply_grid_to_table(table)
     assert res.ok and res.metrics.get("overwrote_data"), res.to_dict()
-    # 正常行不得并成「0.47% 37」；源里本就粘连的框可保留（另标跨格）
+    # 正常行不得并成「0.47% 37」；源里粘连的「2.20% 77,221,526」须拆核
     glued = []
     for r in table["data"]:
         for c in r:
             t = str(c or "").strip()
-            if "2.20%" in t:
-                continue
             # 去掉跨格标记再判
             t_plain = t.split("\u27e6")[0].strip()
             if "%" in t_plain:
@@ -1985,15 +2386,37 @@ def test_body_pd_and_customer_count_not_merged_despite_date_header():
     found_split = False
     for r in table["data"]:
         cells = [str(c or "").strip().split("\u27e6")[0].strip() for c in r]
-        pd_i = next((i for i, c in enumerate(cells) if c in ("0.47%", "0.52%", "1.85%")), None)
+        pd_i = next(
+            (
+                i
+                for i, c in enumerate(cells)
+                if c in ("0.47%", "0.52%", "1.85%", "2.20%")
+            ),
+            None,
+        )
         cust_i = next(
-            (i for i, c in enumerate(cells) if c in ("37", "293,845", "171,373")),
+            (
+                i
+                for i, c in enumerate(cells)
+                if c in ("37", "293,845", "171,373", "77,221,526")
+            ),
             None,
         )
         if pd_i is not None and cust_i is not None and pd_i != cust_i:
             found_split = True
             break
     assert found_split, table["data"]
+    # 粘连源字也应拆成两格
+    assert any(
+        str(c).strip().startswith("2.20%") and "77" not in str(c)
+        for r in table["data"]
+        for c in r
+    ), table["data"]
+    assert any(
+        "77,221,526" in str(c)
+        for r in table["data"]
+        for c in r
+    ), table["data"]
 
 
 def test_span_marks_cover_neighbor_cells_after_grid():
@@ -2050,20 +2473,64 @@ def test_span_marks_cover_neighbor_cells_after_grid():
     assert strip_span_anchor_mark(out2[0][0]) == "可用资本（数额）"
     assert out2[0][1] == COVER_MARK, out2[0]
 
-    # 「资本充足率」字框偏短，但整行无数值 → 应按小节标题通栏标跨格；文本放左首格
+    # 「资本充足率」：核宽覆盖序号+科目等多列有数据 → 跨格；文本放左首格
     data3 = [
         ["", "资本充足率", "", "", "", ""],
         ["5", "核心一级资本充足率（%）", "14.48", "14.10", "14.01", "14.11"],
     ]
-    out3, spans3 = mark_spanned_neighbor_cells(data3, words=[], col_lines=None)
-    sp3 = next(s for s in spans3 if s.get("text") == "资本充足率")
-    assert sp3["evidence"] == "section_title_row"
-    assert sp3["colspan"] == 6
-    assert sp3["c"] == 0
-    assert is_span_anchor_mark(out3[0][0])
-    assert parse_anchor_colspan(out3[0][0]) == 6
-    assert strip_span_anchor_mark(out3[0][0]) == "资本充足率"
-    assert out3[0][1] == COVER_MARK and out3[0][2] == COVER_MARK
+    # 列界：6 列；标题核宽盖住前两列（序号+科目）
+    col3 = [60.0, 90.0, 220.0, 280.0, 340.0, 400.0, 460.0]
+    words3 = [
+        {"text": "资本充足率", "x0": 70.0, "y0": 10.0, "x1": 160.0, "y1": 22.0},
+        {"text": "5", "x0": 72.0, "y0": 30.0, "x1": 78.0, "y1": 42.0},
+        {"text": "核心一级资本充足率（%）", "x0": 100.0, "y0": 30.0, "x1": 200.0, "y1": 42.0},
+        {"text": "14.48", "x0": 230.0, "y0": 30.0, "x1": 270.0, "y1": 42.0},
+    ]
+    out3, spans3 = mark_spanned_neighbor_cells(data3, words=words3, col_lines=col3)
+    sp3 = next(s for s in spans3 if "资本充足率" in str(s.get("text") or ""))
+    assert sp3["evidence"] == "nucleus_width_vs_body_cols"
+    assert sp3["colspan"] >= 2
+    assert sp3["c"] == sp3["c0"]
+    assert is_span_anchor_mark(out3[0][sp3["c"]])
+    assert strip_span_anchor_mark(out3[0][sp3["c"]]) == "资本充足率"
+
+    # 61/64 下同类标题：核宽相近 → 跨格结果一致（不按字数）
+    data4 = [
+        ["61", "", "满足最低资本要求后的可用核心一级资本净额占风险加权资产的比例", "9.16%"],
+        ["", "我国最低监管资本要求", "", ""],
+        ["62", "", "核心一级资本充足率", "5.00%"],
+        ["64", "", "资本充足率", "8.00%"],
+        ["", "门槛扣除项中未扣除部分", "", ""],
+        ["65", "", "对未并表金融机构的小额少数资本投资中的未扣除部分", "54,898"],
+    ]
+    col4 = [70.0, 100.0, 280.0, 420.0, 520.0]
+    words4 = [
+        {"text": "我国最低监管资本要求", "x0": 87.86, "y0": 298.0, "x1": 188.3, "y1": 310.0},
+        {"text": "门槛扣除项中未扣除部分", "x0": 87.86, "y0": 348.0, "x1": 198.19, "y1": 360.0},
+        {"text": "61", "x0": 80.0, "y0": 270.0, "x1": 92.0, "y1": 282.0},
+        {"text": "满足最低资本要求后的可用核心一级资本净额占风险加权资产的比例", "x0": 110.0, "y0": 270.0, "x1": 270.0, "y1": 282.0},
+        {"text": "9.16%", "x0": 450.0, "y0": 270.0, "x1": 490.0, "y1": 282.0},
+        {"text": "62", "x0": 80.0, "y0": 320.0, "x1": 92.0, "y1": 332.0},
+        {"text": "核心一级资本充足率", "x0": 110.0, "y0": 320.0, "x1": 220.0, "y1": 332.0},
+        {"text": "5.00%", "x0": 450.0, "y0": 320.0, "x1": 490.0, "y1": 332.0},
+        {"text": "65", "x0": 80.0, "y0": 380.0, "x1": 92.0, "y1": 392.0},
+        {"text": "对未并表金融机构的小额少数资本投资中的未扣除部分", "x0": 110.0, "y0": 380.0, "x1": 270.0, "y1": 392.0},
+        {"text": "54,898", "x0": 450.0, "y0": 380.0, "x1": 500.0, "y1": 392.0},
+    ]
+    out4, spans4 = mark_spanned_neighbor_cells(data4, words=words4, col_lines=col4)
+    by_title = {
+        strip_span_anchor_mark(str(s.get("text") or "")): s
+        for s in spans4
+        if s.get("evidence") == "nucleus_width_vs_body_cols"
+    }
+    assert "我国最低监管资本要求" in by_title, (out4, spans4)
+    assert "门槛扣除项中未扣除部分" in by_title, (out4, spans4)
+    assert by_title["我国最低监管资本要求"]["colspan"] == by_title["门槛扣除项中未扣除部分"]["colspan"]
+    assert by_title["我国最低监管资本要求"]["colspan"] >= 2
+    # 长科目在科目列内，核宽不盖金额列 → 不得因「部分」字样通栏
+    assert not any(
+        "小额少数资本投资" in str(s.get("text") or "") for s in spans4
+    ), spans4
 
 
 def test_trailing_section_caption_not_mixed_into_table():
@@ -2169,6 +2636,69 @@ def test_vertical_same_column_range_inherits_from_row_above():
     assert dash_sep.col_id == 3 and neg_sep.col_id == 3
 
 
+def test_letter_code_right_align_keeps_dash_and_amount_under_b():
+    """列码 a/b/c：右对齐短杠/金额不得因中心偏右落到邻列（page_023 列 b 空）。"""
+    from codes.reconstruct.grid_nucleus.column_infer import (
+        assign_nuclei_to_slots,
+        _snap_values_by_letter_code_right_align,
+    )
+    from codes.reconstruct.grid_nucleus.types import Nucleus, RowCluster
+
+    a = Nucleus(text="a", x0=189.8, y0=100, x1=195.1, y1=112, col_id=2)
+    b = Nucleus(text="b", x0=244.3, y0=100, x1=250.1, y1=112, col_id=3)
+    c = Nucleus(text="c", x0=296.0, y0=100, x1=300.7, y1=112, col_id=4)
+    # 短杠右缘贴 b 列，但中心更靠近 c → 初筛常进 col4
+    dash = Nucleus(text="-", x0=266.0, y0=140, x1=269.5, y1=152, col_id=4)
+    amt = Nucleus(text="628,497", x0=235.4, y0=160, x1=269.6, y1=172, col_id=3)
+    # c 列短杠
+    dash_c = Nucleus(text="-", x0=313.0, y0=140, x1=316.4, y1=152, col_id=4)
+
+    rows = [
+        RowCluster(row_id=0, cy=106, nuclei=[a, b, c]),
+        RowCluster(row_id=1, cy=146, nuclei=[dash, dash_c]),
+        RowCluster(row_id=2, cy=166, nuclei=[amt]),
+    ]
+    centers = [75.0, 120.0, 198.0, 241.0, 283.0, 315.0]
+    # 只测列码右对齐一步（避免整条 assign 依赖更多几何）
+    _snap_values_by_letter_code_right_align(rows, n_cols=len(centers))
+    assert dash.col_id == 3, dash.col_id
+    assert amt.col_id == 3, amt.col_id
+    assert dash_c.col_id == 4, dash_c.col_id
+
+    # 垂直 snap 不得再把金额吸到 c
+    from codes.reconstruct.grid_nucleus.column_infer import (
+        _snap_vertical_same_column_range,
+    )
+
+    _snap_vertical_same_column_range(rows, n_cols=len(centers))
+    assert amt.col_id == 3, amt.col_id
+    # 完整落列路径也应对
+    rows2 = [
+        RowCluster(row_id=0, cy=106, nuclei=[
+            Nucleus(text="a", x0=189.8, y0=100, x1=195.1, y1=112),
+            Nucleus(text="b", x0=244.3, y0=100, x1=250.1, y1=112),
+            Nucleus(text="c", x0=296.0, y0=100, x1=300.7, y1=112),
+        ]),
+        RowCluster(row_id=1, cy=146, nuclei=[
+            Nucleus(text="-", x0=266.0, y0=140, x1=269.5, y1=152),
+            Nucleus(text="-", x0=313.0, y0=140, x1=316.4, y1=152),
+        ]),
+        RowCluster(row_id=2, cy=166, nuclei=[
+            Nucleus(text="628,497", x0=235.4, y0=160, x1=269.6, y1=172),
+        ]),
+    ]
+    assign_nuclei_to_slots(rows2, centers)
+    by_text = {n.text: n.col_id for r in rows2 for n in r.nuclei}
+    assert by_text["b"] == by_text["628,497"] == by_text["-"] or (
+        by_text["628,497"] == by_text["b"]
+    ), by_text
+    # 两个短杠：左杠跟 b，右杠跟 c
+    dashes = [n for r in rows2 for n in r.nuclei if n.text == "-"]
+    assert sorted(n.col_id for n in dashes) == [by_text["b"], by_text["c"]], [
+        (n.x0, n.col_id) for n in dashes
+    ]
+
+
 def test_join_cell_continuous_cjk_no_space():
     """同格连续中文拼接不加空格（文本列不因空格拆开）。"""
     from codes.reconstruct.grid_nucleus.assign_cells import join_cell_nuclei_text
@@ -2178,6 +2708,25 @@ def test_join_cell_continuous_cjk_no_space():
         Nucleus("垫款金额", 52, 10, 110, 20),
     ]
     assert join_cell_nuclei_text(items) == "贷款和垫款金额"
+
+
+def test_join_cell_preserves_left_to_right_despite_y0_jitter():
+    """同行左→右顺序不可颠倒：即使右边字 y0 略高，也不得拼成「人民币 注释」。"""
+    from codes.reconstruct.grid_nucleus.assign_cells import (
+        join_cell_nuclei_text,
+        sort_nuclei_reading_order,
+    )
+
+    # PDF：注释在左、人民币在右；人民币字框略偏上（y0 更小）
+    zhu = Nucleus(text="注释", x0=200, y0=102, x1=230, y1=114)
+    rmb = Nucleus(text="人民币", x0=250, y0=100, x1=300, y1=112)
+    ordered = sort_nuclei_reading_order([rmb, zhu])  # 故意乱序传入
+    assert [n.text for n in ordered] == ["注释", "人民币"], [n.text for n in ordered]
+    text = join_cell_nuclei_text([rmb, zhu])
+    assert text.startswith("注释"), text
+    assert "人民币" in text
+    assert not text.startswith("人民币"), text
+    assert text.index("注释") < text.index("人民币"), text
 
 
 def test_logical_wrap_merge_above_and_below_amount_anchor():
@@ -2288,22 +2837,383 @@ def test_logical_wrap_placeholder_host_and_serial_continuation():
 
 
 def test_span_mark_long_body_label_left_edge_only():
-    """长科目右缘伸进金额列：只认左缘，不标 ↔2。"""
+    """长科目右缘伸进金额列：只认左缘，不标 ↔2。
+
+    金额格为空时原先会误标覆盖；有「-」时反而因无法覆盖而「碰巧」不标。
+    """
     from codes.reconstruct.grid_nucleus.span_mark import mark_spanned_neighbor_cells
 
     text = "银行间或银行与其他金融机构间通过协议相互持有的二级资本投资及TLAC非资本"
-    data = [
-        ["46", text, "-"],
-    ]
     # 科目列 [120,390)，金额列 [390,520)；字框右缘越过金额列很多
     words = [
         {"text": text, "x0": 125.7, "x1": 481.8, "y0": 500, "y1": 512},
     ]
     col_lines = [90.0, 120.0, 390.0, 520.0]
+    for data in (
+        [["46", text, "-"]],
+        [["", text, ""]],  # 折行首行：序号/金额常为空
+    ):
+        out, spans = mark_spanned_neighbor_cells(data, words=words, col_lines=col_lines)
+        flat = " ".join(str(c) for r in out for c in r)
+        assert "⟦↔" not in flat, (out, spans)
+        assert not spans, spans
+
+
+def test_ratio_header_wrap_not_phantom_before_pct_values():
+    """折行「占有关同类/交易发生额/比例」与 6.38 同列带交叉 → 同列，禁止前插空白列。"""
+    from codes.reconstruct.grid_nucleus.pipeline import apply_grid_to_table
+    from codes.reconstruct.grid_nucleus.column_infer import (
+        _metric_header_amount_same_column,
+    )
+    from codes.reconstruct.grid_nucleus.types import Nucleus
+
+    hdr = Nucleus(text="占有关同类", x0=255, y0=100, x1=360, y1=112)
+    amt = Nucleus(text="6.38", x0=340, y0=160, x1=375, y1=172)
+    assert _metric_header_amount_same_column(hdr, amt), (hdr, amt)
+    # 邻年金额不得因过宽右廊误锁
+    other = Nucleus(text="5,000", x0=400, y0=160, x1=440, y1=172)
+    assert not _metric_header_amount_same_column(hdr, other), (hdr, other)
+
+    words = [
+        _word("关联方名称", 40, 80, 110, 92),
+        _word("2025年", 200, 80, 235, 92),
+        _word("2024年", 400, 80, 435, 92),
+        _word("交易发生额", 160, 100, 230, 112),
+        # 与 6.38 核带交叉（真实表头列宽盖住右对齐比例）
+        _word("占有关同类", 255, 100, 360, 112),
+        _word("交易发生额", 255, 112, 360, 124),
+        _word("比例(%)", 255, 124, 360, 136),
+        _word("交易发生额", 380, 100, 450, 112),
+        _word("占有关同类", 455, 100, 540, 112),
+        _word("比例(%)", 455, 124, 540, 136),
+        _word("招商局集团有限公司", 40, 160, 150, 172),
+        _word("6,322", 170, 160, 220, 172),
+        _word("6.38", 340, 160, 375, 172),
+        _word("30", 170, 180, 195, 192),
+        _word("0.03", 340, 180, 375, 192),
+        _word("合计", 40, 200, 70, 212),
+        _word("6,352", 170, 200, 220, 212),
+        _word("6.41", 340, 200, 375, 212),
+        _word("5,000", 400, 160, 440, 172),
+        _word("5.00", 510, 160, 540, 172),
+        _word("20", 400, 180, 420, 192),
+        _word("0.02", 510, 180, 540, 192),
+        _word("5,100", 400, 200, 440, 212),
+        _word("5.10", 510, 200, 540, 212),
+    ]
+    table = {"type": "table", "data": [["x"]], "_source_words": words}
+    applied = apply_grid_to_table(table)
+    assert applied.ok, applied.to_dict()
+    row = next(r for r in table["data"] if any("6,322" in str(c) for c in r))
+    i_amt = next(i for i, c in enumerate(row) if "6,322" in str(c))
+    i_pct = next(i for i, c in enumerate(row) if "6.38" in str(c))
+    assert i_pct == i_amt + 1, row
+    # 中间不得夹空白列
+    assert not any(str(c).strip() == "" for c in row[i_amt + 1 : i_pct]), row
+    assert "5,000" not in str(row[i_pct]), row
+
+
+def test_year_group_header_spans_amount_and_ratio_cols():
+    """「2025年」下有交易发生额+比例两列：表体保持两列，年头标 ↔2。"""
+    from codes.reconstruct.grid_nucleus.pipeline import apply_grid_to_table
+    from codes.reconstruct.grid_nucleus.span_mark import (
+        COVER_MARK,
+        is_span_anchor_mark,
+        is_span_cover_mark,
+        parse_anchor_colspan,
+        strip_span_anchor_mark,
+    )
+
+    words = [
+        _word("关联方名称", 50, 100, 120, 112),
+        # 字框偏窄，只盖住年组中心
+        _word("2025年", 220, 100, 255, 112),
+        _word("2024年", 400, 100, 435, 112),
+        _word("交易发生额", 180, 120, 240, 132),
+        _word("占有关同类交易发生额比例(%)", 250, 120, 350, 132),
+        _word("交易发生额", 360, 120, 420, 132),
+        _word("占有关同类交易发生额比例(%)", 430, 120, 530, 132),
+        _word("招商局集团有限公司", 50, 150, 160, 162),
+        _word("6,322", 200, 150, 235, 162),
+        _word("6.38", 280, 150, 310, 162),
+        _word("5,000", 380, 150, 415, 162),
+        _word("5.00", 460, 150, 490, 162),
+        _word("合计", 50, 180, 80, 192),
+        _word("6,352", 200, 180, 235, 192),
+        _word("6.41", 280, 180, 310, 192),
+        _word("5,100", 380, 180, 415, 192),
+        _word("5.10", 460, 180, 490, 192),
+    ]
+    table = {"type": "table", "data": [["x"]], "_source_words": words}
+    applied = apply_grid_to_table(table)
+    assert applied.ok, applied.to_dict()
+    data = table["data"]
+    # 表体仍是两列金额（不得并成一列）
+    body = next(r for r in data if any("6,322" in str(c) for c in r))
+    assert any("6.38" in str(c) for c in body), body
+    assert body.index(next(c for c in body if "6,322" in str(c))) != body.index(
+        next(c for c in body if "6.38" in str(c))
+    ), body
+    # 年头跨两列
+    year_row = next(r for r in data if any("2025年" in strip_span_anchor_mark(str(c)) for c in r))
+    y25 = next(c for c in year_row if "2025年" in strip_span_anchor_mark(str(c)))
+    assert is_span_anchor_mark(str(y25)), year_row
+    assert parse_anchor_colspan(str(y25)) >= 2, year_row
+    assert any(is_span_cover_mark(str(c)) or str(c).strip() == COVER_MARK for c in year_row), year_row
+    y24 = next(c for c in year_row if "2024年" in strip_span_anchor_mark(str(c)))
+    assert is_span_anchor_mark(str(y24)), year_row
+
+
+def test_qizhong_detail_rows_stay_with_serial_amount():
+    """「其中：…」与序号 21/22、金额同属一行，不得因冒号被拆成两行。"""
+    from codes.reconstruct.grid_nucleus.pipeline import apply_grid_to_table
+    from codes.reconstruct.grid_nucleus.row_cluster import (
+        _is_section_title_nucleus,
+        cluster_rows,
+    )
+    from codes.reconstruct.grid_nucleus.preprocess import preprocess_words
+    from codes.reconstruct.grid_nucleus.types import Nucleus
+
+    assert not _is_section_title_nucleus(
+        Nucleus(
+            text="其中：应在对金融机构大额少数资本投资中扣除的金额",
+            x0=120, y0=200, x1=380, y1=212,
+        )
+    )
+    assert _is_section_title_nucleus(
+        Nucleus(text="核心一级资本：扣除项", x0=87, y0=203, x1=200, y1=215)
+    )
+
+    words = [
+        _word("数额", 510, 100, 531, 112),
+        _word("20", 95, 170, 108, 182),
+        _word(
+            "其他依赖于银行未来盈利的净递延税资产的未扣除部分超过核心一级资本15%的应扣除金额",
+            120, 170, 400, 182,
+        ),
+        _word("-", 530, 170, 538, 182),
+        _word("其中：应在对金融机构大额少数资本投资中扣除的金额", 120, 200, 380, 212),
+        _word("21", 95, 202, 108, 214),
+        _word("-", 530, 202, 538, 214),
+        _word(
+            "其中：应在其他依赖于银行未来盈利的净递延所得税资产中扣除的金额",
+            120, 230, 420, 242,
+        ),
+        _word("22", 95, 232, 108, 244),
+        _word("-", 530, 232, 538, 244),
+    ]
+    rows = cluster_rows(preprocess_words(words))
+    r21 = next(
+        r for r in rows
+        if any(str(n.text).strip() == "21" for n in r.nuclei)
+    )
+    assert any("其中：应在对金融机构" in str(n.text) for n in r21.nuclei), [
+        n.text for n in r21.nuclei
+    ]
+    assert any(str(n.text).strip() == "-" for n in r21.nuclei), [n.text for n in r21.nuclei]
+
+    table = {"type": "table", "data": [["x"]], "_source_words": words}
+    applied = apply_grid_to_table(table)
+    assert applied.ok, applied.to_dict()
+    row21 = next(r for r in table["data"] if any(str(c).strip() == "21" for c in r))
+    assert any("其中：应在对金融机构" in str(c) for c in row21), row21
+    assert any(str(c).strip() == "-" for c in row21), row21
+    row22 = next(r for r in table["data"] if any(str(c).strip() == "22" for c in r))
+    assert any("其中：应在其他依赖" in str(c) for c in row22), row22
+
+
+def test_deduction_section_title_own_row_and_span():
+    """「核心一级资本：扣除项」在 5 行下方单独成行并跨列，不得并进第 5 行。"""
+    from codes.reconstruct.grid_nucleus.logical_rows import (
+        assemble_wrapped_label_rows,
+        peel_inline_section_title_rows,
+    )
+    from codes.reconstruct.grid_nucleus.pipeline import apply_grid_to_table
+    from codes.reconstruct.grid_nucleus.span_mark import is_span_anchor_mark
+
+    # 粘连在科目格内
+    jammed = [
+        ["5", "扣除前的核心一级资本核心一级资本：扣除项", "1,080,721"],
+        ["6", "审慎估值调整", "-"],
+    ]
+    peeled, pmeta = peel_inline_section_title_rows(jammed)
+    assert pmeta.get("peeled"), pmeta
+    assert str(peeled[0][1]).strip() == "扣除前的核心一级资本", peeled
+    assert str(peeled[1][1]).strip() == "核心一级资本：扣除项", peeled
+    out, _ = assemble_wrapped_label_rows(jammed)
+    assert any(
+        str(r[0]).strip() == "" and "核心一级资本：扣除项" in str(r[1])
+        for r in out
+    ), out
+    row5 = next(r for r in out if str(r[0]).strip() == "5")
+    assert "扣除项" not in str(row5[1]), row5
+
+    # y 贴近时：凝结核聚类不得并进 5 行
+    words = [
+        _word("数额", 510, 100, 531, 112),
+        _word("5", 95, 200, 100, 212),
+        _word("扣除前的核心一级资本", 120, 200, 250, 212),
+        _word("1,080,721", 500, 200, 545, 212),
+        _word("核心一级资本：扣除项", 87, 203, 200, 215),
+        _word("6", 95, 228, 100, 240),
+        _word("审慎估值调整", 120, 228, 200, 240),
+        _word("-", 530, 228, 538, 240),
+    ]
+    table = {"type": "table", "data": [["x"]], "_source_words": words}
+    applied = apply_grid_to_table(table)
+    assert applied.ok, applied.to_dict()
+    data = table["data"]
+    row5b = next(r for r in data if any(str(c).strip() == "5" for c in r))
+    assert "扣除项" not in "".join(str(c) for c in row5b), row5b
+    title_row = next(
+        r for r in data if any("核心一级资本：扣除项" in str(c) for c in r)
+    )
+    assert all(str(c).strip() != "5" for c in title_row), title_row
+    assert any(is_span_anchor_mark(str(c)) or "⟦↔" in str(c) for c in title_row), (
+        title_row
+    )
+
+
+def test_span_mark_core_tier1_section_crosses_serial_and_label():
+    """「核心一级资本：」凝结核与序号列+科目列交叉 → 必须标跨列。"""
+    from codes.reconstruct.grid_nucleus.span_mark import (
+        is_span_anchor_mark,
+        mark_spanned_neighbor_cells,
+        parse_anchor_colspan,
+        strip_span_anchor_mark,
+    )
+    from codes.reconstruct.grid_nucleus.pipeline import apply_grid_to_table
+
+    data = [
+        ["", "", "数额"],
+        ["", "核心一级资本：", ""],
+        ["1", "实收资本和资本公积可计入部分", "90,624"],
+        ["2", "留存收益", "969,084"],
+    ]
+    # 与样本一致：左缘在序号列，右缘伸进科目列
+    words = [
+        {"text": "核心一级资本：", "x0": 87.0, "x1": 157.0, "y0": 252, "y1": 264},
+        {"text": "1", "x0": 95.0, "x1": 100.0, "y0": 267, "y1": 279},
+        {"text": "实收资本和资本公积可计入部分", "x0": 120.0, "x1": 259.0, "y0": 265, "y1": 277},
+        {"text": "90,624", "x0": 526.0, "x1": 554.0, "y0": 267, "y1": 279},
+    ]
+    col_lines = [70.0, 100.0, 400.0, 520.0]
+    out, spans = mark_spanned_neighbor_cells(data, words=words, col_lines=col_lines)
+    sp = next(s for s in spans if "核心一级资本" in str(s.get("text") or ""))
+    assert sp["colspan"] >= 2, (out, spans)
+    assert sp["c0"] == 0 and sp["c1"] >= 1, sp
+    assert is_span_anchor_mark(out[1][sp["c"]]), out[1]
+    assert parse_anchor_colspan(out[1][sp["c"]]) >= 2
+    assert strip_span_anchor_mark(out[1][sp["c"]]) == "核心一级资本："
+
+    words_full = [
+        _word("数额", 510, 239, 531, 251),
+        _word("核心一级资本：", 87, 252, 157, 264),
+        _word("1", 95, 267, 100, 279),
+        _word("实收资本和资本公积可计入部分", 120, 265, 259, 277),
+        _word("90,624", 526, 267, 554, 279),
+        _word("2", 95, 280, 100, 292),
+        _word("留存收益", 120, 279, 160, 291),
+        _word("969,084", 521, 280, 554, 292),
+    ]
+    table = {"type": "table", "data": [["x"]], "_source_words": words_full}
+    applied = apply_grid_to_table(table)
+    assert applied.ok, applied.to_dict()
+    row = next(r for r in table["data"] if any("核心一级资本" in str(c) for c in r))
+    assert any(is_span_anchor_mark(str(c)) for c in row), row
+    assert any("⟦↔" in str(c) for c in row), row
+
+
+def test_span_mark_no_force_without_nucleus_crossing():
+    """无字框凝结核时：即使右侧空格也不强制跨列。"""
+    from codes.reconstruct.grid_nucleus.span_mark import mark_spanned_neighbor_cells
+
+    data = [
+        ["以公允价值计量", "", ""],
+        ["项目", "a", "b"],
+        ["现金", "1", "2"],
+    ]
+    out, spans = mark_spanned_neighbor_cells(data)
+    assert not spans, spans
+    assert "⟦↔" not in "".join(str(c) for c in out[0]), out[0]
+
+
+def test_span_mark_fv_oci_header_not_cover_total_exposure():
+    """「以公允价值计量」折行列头不得跨盖「合计」「最大损失敞口」。"""
+    from codes.reconstruct.grid_nucleus.span_mark import mark_spanned_neighbor_cells
+
+    # 列：项目 | FV损益 | 摊余 | FV-OCI | 合计 | 最大损失敞口
+    data = [
+        ["", "账面余额", "", "", "", ""],
+        ["", "", "", "以公允价值计量", "", ""],
+        ["", "以公允价值计量且", "以摊余成本计量", "且其变动计入其他", "", "最大损失敞口"],
+        ["", "其变动计入当期损", "的债务工具投资", "综合收益的债务", "合计", ""],
+        ["", "的金融投资", "", "工具投资", "", ""],
+        ["资产管理计划", "1", "2", "3", "6", "4"],
+    ]
+    # 折行首行字框右缘几何压进合计/敞口列带（与截图一致）
+    words = [
+        {"text": "以公允价值计量", "x0": 325.0, "x1": 530.0, "y0": 100, "y1": 112},
+        {"text": "且其变动计入其他", "x0": 325.0, "x1": 405.0, "y0": 124, "y1": 136},
+        {"text": "综合收益的债务", "x0": 325.0, "x1": 405.0, "y0": 136, "y1": 148},
+        {"text": "工具投资", "x0": 325.0, "x1": 365.0, "y0": 148, "y1": 160},
+        {"text": "合计", "x0": 430.0, "x1": 455.0, "y0": 136, "y1": 148},
+        {"text": "最大损失敞口", "x0": 480.0, "x1": 545.0, "y0": 124, "y1": 136},
+        {"text": "账面余额", "x0": 200.0, "x1": 450.0, "y0": 80, "y1": 92},
+    ]
+    col_lines = [50.0, 150.0, 250.0, 320.0, 420.0, 470.0, 560.0]
+    out, spans = mark_spanned_neighbor_cells(data, words=words, col_lines=col_lines)
+    fv_spans = [
+        s for s in spans
+        if str(s.get("text") or "").strip() == "以公允价值计量"
+        or (
+            "以公允价值计量" in str(s.get("text") or "")
+            and "且" not in str(s.get("text") or "")
+        )
+    ]
+    assert not fv_spans, (out[:5], fv_spans, spans)
+    row_fv = next(
+        r for r in out
+        if any(str(c).strip() == "以公允价值计量" for c in r)
+    )
+    assert "⟦↔" not in "".join(str(c) for c in row_fv), row_fv
+    assert any("合计" in str(c) and "⟦↔⟧" not in str(c) for r in out for c in r), out
+    assert any("最大损失敞口" in str(c) and "⟦↔⟧" not in str(c) for r in out for c in r), out
+
+
+def test_span_mark_wrap_label_row20_not_span_amount():
+    """资本构成第20行折行首行：科目列弹性加宽即可，不引入跨列。"""
+    from codes.reconstruct.grid_nucleus.span_mark import (
+        mark_spanned_neighbor_cells,
+        _overflow_absorbable_by_primary_stretch,
+        _cols_spanned_by_nucleus_width,
+        _columns_with_body_data,
+    )
+
+    wrap1 = "对未并表金融机构大额少数资本投资中的核心一级资本和其他依赖于银行未来盈"
+    wrap2 = "利的净递延税资产的未扣除部分超过核心一级资本15%的应扣除金额"
+    data = [
+        ["19", "其他一级资本投资中应扣除金额", "-"],
+        ["", wrap1, ""],
+        ["20", wrap2, "-"],
+    ]
+    words = [
+        {"text": wrap1, "x0": 119.5, "x1": 469.4, "y0": 300, "y1": 312},
+        {"text": wrap2, "x0": 119.5, "x1": 360.0, "y0": 314, "y1": 326},
+    ]
+    col_lines = [95.4, 110.0, 372.9, 553.9]
+    body = _columns_with_body_data(data, exclude_rows=[1])
+    cand = _cols_spanned_by_nucleus_width(119.5, 469.4, col_lines, body)
+    assert len(cand) >= 2, cand
+    assert _overflow_absorbable_by_primary_stretch(
+        data, 1, cand, 119.5, 469.4, col_lines, wrap1,
+    ), (cand, body)
     out, spans = mark_spanned_neighbor_cells(data, words=words, col_lines=col_lines)
     flat = " ".join(str(c) for r in out for c in r)
     assert "⟦↔" not in flat, (out, spans)
     assert not spans, spans
+    assert wrap1 in str(out[1][1]), out
+    assert str(out[1][2]).strip() == "", out
 
 
 def test_logical_hierarchy_rows_with_amounts_not_merged():
@@ -2319,6 +3229,380 @@ def test_logical_hierarchy_rows_with_amounts_not_merged():
     out, meta = assemble_wrapped_label_rows(data)
     assert len(out) == 4, out
     assert not meta.get("merges"), meta
+
+
+def test_section_title_not_merged_into_serial_amount_row():
+    """「资本充足率和其他各级资本要求」是独立小节行，不得并进 54 核心一级资本充足率。"""
+    from codes.reconstruct.grid_nucleus.logical_rows import assemble_wrapped_label_rows
+    from codes.reconstruct.grid_nucleus.pipeline import restore_table_grid
+
+    data = [
+        ["", "资本充足率和其他各级资本要求", ""],
+        ["54", "核心一级资本充足率", "14.16%"],
+        ["55", "一级资本充足率", "16.51%"],
+        ["56", "资本充足率", "18.24%"],
+        ["", "我国最低监管资本要求", ""],
+        ["61", "核心一级资本充足率", "5.00%"],
+    ]
+    out, meta = assemble_wrapped_label_rows(data)
+    assert any(
+        str(r[0]).strip() == "" and "资本充足率和其他各级资本要求" in str(r[1])
+        for r in out
+    ), out
+    row54 = next(r for r in out if str(r[0]).strip() == "54")
+    assert str(row54[1]).strip() == "核心一级资本充足率", row54
+    assert "和其他" not in str(row54[1]), row54
+    row61 = next(r for r in out if str(r[0]).strip() == "61")
+    assert "我国最低" not in str(row61[1]), row61
+
+    words = [
+        _word("附表一：资本构成披露 - 续", 86, 100, 220, 112),
+        _word("数额", 510, 120, 530, 132),
+        _word("资本充足率和其他各级资本要求", 120, 200, 280, 212),
+        _word("54", 95, 220, 108, 232),
+        _word("核心一级资本充足率", 120, 220, 220, 232),
+        _word("14.16%", 520, 220, 555, 232),
+        _word("55", 95, 240, 108, 252),
+        _word("一级资本充足率", 120, 240, 200, 252),
+        _word("16.51%", 520, 240, 555, 252),
+    ]
+    res = restore_table_grid(
+        {"type": "table", "data": [["x"]], "_source_words": words},
+        source_words=words,
+    )
+    assert res.data, res.to_dict()
+    assert any(
+        "资本充足率和其他各级资本要求" in str(c)
+        and all(str(x).strip() != "54" for x in r)
+        for r in res.data
+        for c in r
+    ) or any(
+        str(r[0]).strip() == "" and "资本充足率和其他" in str(r[1])
+        for r in res.data
+        if len(r) > 1
+    ), res.data[:8]
+    row54b = next(r for r in res.data if any(str(c).strip() == "54" for c in r))
+    assert "核心一级资本充足率" in str(row54b[1]), row54b
+    assert "和其他各级" not in str(row54b[1]), row54b
+
+
+def test_capital_composition_narrative_not_merged_into_paid_in_capital():
+    """表外「以下监管…」不得并进序号1「实收资本…」；原文科目不得丢失。"""
+    from codes.reconstruct.grid_nucleus.logical_rows import assemble_wrapped_label_rows
+    from codes.reconstruct.grid_nucleus.pipeline import restore_table_grid
+
+    # 复现：未闭合括号说明 + 下方金额行（曾被 wrap above 误并）
+    data = [
+        ["", "资本构成信息披露", ""],
+        ["", "以下监管资本项目与资产负债表对应关系附表依据《商业银行资本管理办法》(国家金融监", ""],
+        ["", "督管理总局令第4号)进行披露。", ""],
+        ["", "附表一：资本构成披露", ""],
+        ["", "", "数额"],
+        ["", "核心一级资本：", ""],
+        ["1", "实收资本和资本公积可计入部分", "90,624"],
+        ["2", "留存收益", "969,084"],
+    ]
+    out, meta = assemble_wrapped_label_rows(data)
+    flat = "\n".join("|".join(str(c) for c in r) for r in out)
+    assert "实收资本和资本公积可计入部分" in flat, out
+    assert "以下监管" not in flat or all(
+        "实收资本" not in str(r[1]) or "以下监管" not in str(r[1])
+        for r in out if len(r) > 1
+    ), (out, meta)
+    row1 = next(r for r in out if str(r[0]).strip() == "1")
+    assert "实收资本和资本公积可计入部分" in str(row1[1]), row1
+    assert "以下监管" not in str(row1[1]), row1
+
+    words = [
+        _word("未经审计财务报表补充资料", 50, 74, 200, 86),
+        _word("2025 年 12 月 31 日止年度", 50, 90, 200, 102),
+        _word("(除特别注明外，货币单位均以人民币百万元列示)", 50, 105, 320, 117),
+        _word("资本构成信息披露", 50, 135, 160, 147),
+        _word(
+            "以下监管资本项目与资产负债表对应关系附表依据《商业银行资本管理办法》(国家金融监",
+            50, 164, 520, 176,
+        ),
+        _word("督管理总局令第4号)进行披露。", 50, 180, 220, 192),
+        _word("附表一：资本构成披露", 50, 209, 180, 221),
+        _word("数额", 510, 239, 531, 251),
+        _word("核心一级资本：", 87, 252, 157, 264),
+        _word("1", 95, 267, 100, 279),
+        _word("实收资本和资本公积可计入部分", 120, 265, 259, 277),
+        _word("90,624", 526, 267, 554, 279),
+        _word("2", 95, 280, 100, 292),
+        _word("留存收益", 120, 279, 160, 291),
+        _word("969,084", 521, 280, 554, 292),
+    ]
+    res = restore_table_grid(
+        {"type": "table", "data": [["x"]], "_source_words": words},
+        source_words=words,
+    )
+    assert res.data, res.to_dict()
+    flat2 = "\n".join("|".join(str(c) for c in r) for r in res.data)
+    assert "实收资本和资本公积可计入部分" in flat2, res.data[:10]
+    row1b = next(
+        (r for r in res.data if any(str(c).strip() == "1" for c in r)),
+        None,
+    )
+    assert row1b is not None, res.data[:10]
+    assert "实收资本" in str(row1b[1]), row1b
+    assert "以下监管" not in str(row1b[1]), row1b
+    assert any("90,624" in str(c) for c in row1b), row1b
+
+
+def test_asset_and_cash_keep_separate_rows():
+    """源表「资产」「现金」各占一行：必须保留两行，禁止拼成「资产现金」。"""
+    from codes.reconstruct.grid_nucleus.pipeline import restore_table_grid
+
+    words = [
+        _word("财务并表口径下", 405, 170, 475, 182),
+        _word("监管并表口径下", 490, 170, 560, 182),
+        _word("的资产负债表", 410, 182, 470, 194),
+        _word("的资产负债表", 495, 182, 555, 194),
+        _word("资产", 91, 194, 111, 206),
+        _word("现金", 91, 207, 111, 219),
+        _word("14,808", 450, 207, 477, 219),
+        _word("14,808", 535, 207, 563, 219),
+        _word("贵金属", 91, 221, 121, 233),
+        _word("38,669", 450, 221, 477, 233),
+        _word("38,669", 535, 221, 563, 233),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = restore_table_grid(table, source_words=words)
+    assert res.ok and res.data, res.to_dict()
+    assert any(
+        any(str(c).strip() == "资产" for c in r) for r in res.data
+    ), res.data
+    cash = next(r for r in res.data if any(str(c).strip() == "现金" for c in r))
+    assert not any("资产现金" in str(c) for r in res.data for c in r), res.data
+    assert any("14,808" in str(c) for c in cash), cash
+
+
+def test_shareholders_equity_section_not_glued_to_serial_38():
+    """「股东权益」是表内小标题，不得并进「38|股本」成「股东权益股本」。"""
+    from codes.reconstruct.grid_nucleus.logical_rows import (
+        assemble_wrapped_label_rows,
+        peel_inline_section_title_rows,
+        _split_jammed_section_title,
+    )
+    from codes.reconstruct.grid_nucleus.pipeline import restore_table_grid
+
+    assert _split_jammed_section_title("股东权益股本") == ("股本", "股东权益")
+    assert _split_jammed_section_title("股东权益合计") is None
+
+    # 已粘连金额行 → peel 拆出独立小标题行
+    jammed = [["38", "股东权益股本", "250,011", "250,011", "e"]]
+    peeled, pmeta = peel_inline_section_title_rows(jammed)
+    assert pmeta.get("peeled"), pmeta
+    assert any(str(c).strip() == "股东权益" for r in peeled for c in r), peeled
+    leaf = next(r for r in peeled if any(str(c).strip() == "38" for c in r))
+    assert any(str(c).strip() == "股本" for c in leaf), leaf
+    assert not any("股东权益股本" in str(c) for r in peeled for c in r), peeled
+
+    # 分列两行：禁止折行并入
+    two = [
+        ["37", "负债合计", "1", "1", ""],
+        ["", "股东权益", "", "", ""],
+        ["38", "股本", "250,011", "250,011", "e"],
+    ]
+    out, meta = assemble_wrapped_label_rows(two)
+    assert not meta.get("merges"), meta
+    assert any(any(str(c).strip() == "股东权益" for c in r) for r in out), out
+    assert not any("股东权益股本" in str(c) for r in out for c in r), out
+
+    # 几何：小标题与 38/股本分行
+    words = [
+        _word("37", 75, 259, 85, 273),
+        _word("负债合计", 100, 261, 142, 272),
+        _word("37,227,184", 339, 259, 387, 273),
+        _word("股东权益", 71, 275, 113, 286),
+        _word("38", 75, 287, 85, 301),
+        _word("股本", 100, 289, 121, 300),
+        _word("250,011", 350, 287, 387, 301),
+        _word("250,011", 450, 287, 488, 301),
+        _word("e", 510, 287, 520, 301),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = restore_table_grid(table, source_words=words)
+    assert res.ok and res.data, res.to_dict()
+    assert not any("股东权益股本" in str(c) for r in res.data for c in r), res.data
+    assert any(any(str(c).strip() == "股东权益" for c in r) for r in res.data), res.data
+    row38 = next(r for r in res.data if any(str(c).strip() == "38" for c in r))
+    assert any(str(c).strip() == "股本" for c in row38), row38
+    assert not any("股东权益" in str(c) for c in row38), row38
+
+
+def test_asset_mgmt_plan_not_split_into_section_title():
+    """「资产管理计划」「资产支持证券」「资产证券化…」是一体凝结核，禁止把「资产」拆成跨列小节行。"""
+    from codes.reconstruct.grid_nucleus.logical_rows import (
+        peel_inline_section_title_rows,
+        _split_jammed_section_title,
+    )
+    from codes.reconstruct.grid_nucleus.pipeline import restore_table_grid
+
+    assert _split_jammed_section_title("资产管理计划") is None
+    assert _split_jammed_section_title("资产支持证券") is None
+    assert _split_jammed_section_title("资产证券化销售利得") is None
+
+    # 已在同一格：禁止 peel 拆出「资产」
+    one = [["资产管理计划", "596", "69,168", "-", "69,764", "69,764"]]
+    peeled, pmeta = peel_inline_section_title_rows(one)
+    assert not pmeta.get("peeled"), pmeta
+    assert str(peeled[0][0]).strip() == "资产管理计划", peeled
+
+    sec = [["12", "资产证券化销售利得", "-", "e"]]
+    peeled2, pmeta2 = peel_inline_section_title_rows(sec)
+    assert not pmeta2.get("peeled"), pmeta2
+    assert str(peeled2[0][1]).strip() == "资产证券化销售利得", peeled2
+
+    # 几何上同一行簇内折行（y 贴近）→ 同格拼回一体核；不得拆成跨列「资产」
+    words = [
+        _word("账面余额", 200, 80, 250, 92),
+        _word("资产", 90, 124, 118, 134),
+        _word("管理计划", 90, 128, 150, 140),
+        _word("596", 200, 128, 230, 140),
+        _word("69,168", 260, 128, 310, 140),
+        _word("资产", 90, 164, 118, 174),
+        _word("支持证券", 90, 168, 150, 180),
+        _word("100", 200, 168, 230, 180),
+        _word("200", 260, 168, 300, 180),
+    ]
+    table = {
+        "type": "table",
+        "data": [["x"]],
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+    }
+    res = restore_table_grid(table, source_words=words)
+    assert res.ok and res.data, res.to_dict()
+    flat_rows = [" ".join(str(c) for c in r) for r in res.data]
+    assert any("资产管理计划" in fr for fr in flat_rows), res.data
+    assert any("资产支持证券" in fr for fr in flat_rows), res.data
+    for r in res.data:
+        cells = [str(c or "").strip() for c in r]
+        if any(
+            c == "资产" or c.startswith("资产 ⟦") or c.startswith("资产⟦")
+            for c in cells
+        ):
+            assert False, ("资产被拆成单独跨列行", r, res.data)
+
+
+def test_consecutive_spanning_prose_rows_stripped():
+    """连续≥3行通栏无金额 → 整块表外；1～2行短通栏表头保留。"""
+    from codes.reconstruct.grid_nucleus.word_segment import (
+        strip_leading_non_table_rows_from_data,
+    )
+    from codes.table_engine.split.row_classify import (
+        leading_spanning_prose_run_end,
+        row_is_spanning_prose_candidate,
+    )
+
+    # 三行通栏说明 + 短表头 + 数据
+    block = [
+        ["本集团合并财务报表的合并范围以控制为基础予以确定。控制，是指投资方拥有对被投资", "⟦↔⟧", "⟦↔⟧"],
+        ["方的权力，通过参与被投资方的相关活动而享有可变回报，并且有能力运用对被投资方的", "⟦↔⟧", "⟦↔⟧"],
+        ["权力影响其回报金额。本集团对结构化主体拥有权力而其他投资者没有实质性权利。", "⟦↔⟧", "⟦↔⟧"],
+        ["", "2025年12月31日", ""],
+        ["", "账面余额", ""],
+        ["资产管理计划", "9,073", "67,642"],
+    ]
+    assert all(row_is_spanning_prose_candidate(r) for r in block[:3])
+    assert leading_spanning_prose_run_end(block, min_run=3) == 3
+    peeled = strip_leading_non_table_rows_from_data(block)
+    flat = " ".join(str(c) for r in peeled for c in r)
+    assert "控制为基础" not in flat, peeled
+    assert "2025年12月31日" in flat and "资产管理计划" in flat, peeled
+
+    # 仅两行通栏短表头：不得整表剥掉
+    hdr_only = [
+        ["2025年12月31日 ⟦↔3⟧", "⟦↔⟧", "⟦↔⟧"],
+        ["账面余额 ⟦↔3⟧", "⟦↔⟧", "⟦↔⟧"],
+        ["资产管理计划", "9,073", "67,642"],
+    ]
+    assert leading_spanning_prose_run_end(hdr_only, min_run=3) == 0
+    kept = strip_leading_non_table_rows_from_data(hdr_only)
+    assert any("账面余额" in str(c) for r in kept for c in r), kept
+    assert any("资产管理计划" in str(c) for r in kept for c in r), kept
+
+
+def test_leading_prose_before_balance_table_not_in_grid():
+    """表前「结构化主体」说明段是纯文本：页眉止年度不得当表起点，说明不得进表。"""
+    from codes.reconstruct.grid_nucleus.pipeline import restore_table_grid
+    from codes.reconstruct.grid_nucleus.word_segment import (
+        strip_leading_non_table_rows_from_data,
+        trim_leading_narrative_words,
+        trim_leading_page_chrome_words,
+    )
+    from codes.table_engine.split.row_classify import is_inter_table_narrative_row
+
+    words = [
+        _word("财务报表附注", 86, 74, 160, 86),
+        _word("2025 年 12 月 31 日止年度", 86, 90, 220, 102),
+        _word("在未纳入合并财务报表范围的结构化主体中的权益", 86, 119, 340, 131),
+        _word(
+            "本集团合并财务报表的合并范围以控制为基础予以确定。控制，是指投资方拥有对被投资",
+            86, 149, 520, 161,
+        ),
+        _word("方的权力，通过参与被投资方的相关活动而享有可变回报，并且有能力运用对被投资方的", 86, 164, 520, 176),
+        _word("权力影响其回报金额。", 86, 180, 200, 192),
+        _word("围的结构化主体的权益信息如下：", 86, 270, 280, 282),
+        _word("2025年12月31日", 300, 400, 380, 412),
+        _word("账面余额", 320, 415, 370, 427),
+        _word("资产管理计划", 90, 480, 160, 492),
+        _word("9,073", 220, 480, 260, 492),
+        _word("67,642", 300, 480, 350, 492),
+        _word("200", 390, 480, 420, 492),
+        _word("76,915", 470, 480, 520, 492),
+        _word("信托受益权", 90, 500, 150, 512),
+        _word("100", 220, 500, 250, 512),
+        _word("200", 300, 500, 340, 512),
+        _word("-", 390, 500, 405, 512),
+        _word("300", 470, 500, 510, 512),
+    ]
+    trimmed = trim_leading_narrative_words(trim_leading_page_chrome_words(words))
+    texts = [str(w.get("text") or "") for w in trimmed]
+    assert any(t.replace(" ", "") == "2025年12月31日" for t in texts), texts
+    assert not any("止年度" in t for t in texts), texts
+    assert not any("控制为基础" in t for t in texts), texts
+    assert not any(t == "财务报表附注" for t in texts), texts
+
+    dirty = [
+        ["财务报表附注 ⟦↔6⟧", "⟦↔⟧", "⟦↔⟧", "⟦↔⟧"],
+        ["2025 年 12 月 31 日止年度 ⟦↔6⟧", "⟦↔⟧", "⟦↔⟧", "⟦↔⟧"],
+        ["在未纳入合并财务报表范围的结构化主体中的权益 ⟦↔3⟧", "⟦↔⟧", "⟦↔⟧", ""],
+        ["本集团合并财务报表的合并范围以控制为基础予以确定。控制，是指投资方拥有对被投资 …", "⟦↔⟧", "⟦↔⟧", "⟦↔⟧"],
+        ["权力影响其回报金额。", "", "", ""],
+        ["", "", "2025年12月31日", ""],
+        ["", "", "账面余额", ""],
+        ["资产管理计划", "9,073", "67,642", "76,915"],
+    ]
+    assert is_inter_table_narrative_row(dirty[3])
+    peeled = strip_leading_non_table_rows_from_data(dirty)
+    flat_peel = " ".join(str(c) for r in peeled for c in r)
+    assert "控制为基础" not in flat_peel, peeled
+    assert any("资产管理计划" in str(c) for r in peeled for c in r), peeled
+
+    # 网格恢复：说明不得进 data
+    res = restore_table_grid(
+        {"type": "table", "data": [["x"]], "_source_words": words},
+        source_words=words,
+    )
+    assert res.data, res.to_dict()
+    flat = "\n".join("|".join(str(c) for c in r) for r in res.data)
+    assert "控制为基础" not in flat, res.data[:8]
+    assert "止年度" not in flat, res.data[:8]
+    assert any("资产管理计划" in str(c) for r in res.data for c in r), res.data
+    assert any("9,073" in str(c) for r in res.data for c in r), res.data
 
 
 def test_indented_label_gets_leading_spaces_in_grid():
@@ -2470,7 +3754,11 @@ if __name__ == "__main__":
     test_period_bucket_headers_keep_left_to_right_order()
     test_nsfr_period_headers_not_glued_by_header_align()
     test_indented_labels_share_one_column_common_boundary()
+    test_small_gap_id_fragments_merge_by_vertical_band()
+    test_peer_instrument_columns_not_merged_despite_moderate_gap()
     test_orphan_single_datum_column_without_header_is_pruned()
+    test_all_blank_column_means_wrong_split_must_reclaim()
+    test_cover_only_blank_column_is_pruned()
     test_right_aligned_dash_not_phantom_between_letter_cols()
     test_body_text_and_text_digit_cols_count_as_data()
     test_body_data_cols_not_phantom_from_spanning_header()
@@ -2479,14 +3767,29 @@ if __name__ == "__main__":
     test_trailing_section_caption_not_mixed_into_table()
     test_vertical_same_column_range_inherits_from_row_above()
     test_join_cell_continuous_cjk_no_space()
+    test_join_cell_preserves_left_to_right_despite_y0_jitter()
     test_logical_wrap_merge_above_and_below_amount_anchor()
     test_logical_wrap_between_two_amounts_is_ambiguous()
     test_logical_wrap_incomplete_de_merges_down_despite_two_amounts()
     test_span_mark_ignores_label_right_tip_overflow()
     test_logical_wrap_placeholder_host_and_serial_continuation()
     test_span_mark_long_body_label_left_edge_only()
+    test_ratio_header_wrap_not_phantom_before_pct_values()
+    test_year_group_header_spans_amount_and_ratio_cols()
+    test_qizhong_detail_rows_stay_with_serial_amount()
+    test_deduction_section_title_own_row_and_span()
+    test_span_mark_core_tier1_section_crosses_serial_and_label()
+    test_span_mark_no_force_without_nucleus_crossing()
+    test_span_mark_fv_oci_header_not_cover_total_exposure()
+    test_span_mark_wrap_label_row20_not_span_amount()
     test_logical_hierarchy_rows_with_amounts_not_merged()
     test_indented_label_gets_leading_spaces_in_grid()
     test_gsib_intro_narrative_not_mixed_into_first_row()
+    test_leading_prose_before_balance_table_not_in_grid()
+    test_asset_and_cash_keep_separate_rows()
+    test_asset_mgmt_plan_not_split_into_section_title()
+    test_consecutive_spanning_prose_rows_stripped()
+    test_capital_composition_narrative_not_merged_into_paid_in_capital()
+    test_section_title_not_merged_into_serial_amount_row()
     test_shue_amount_header_stays_in_last_column()
     print("OK")

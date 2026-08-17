@@ -17,6 +17,8 @@ from codes.table_engine.scope.header_scope import (
     is_annual_report_column_header_row,
     is_annual_report_unit_row,
     is_pre_table_header_band_row,
+    is_single_year_label_row,
+    is_stats_column_header_row,
 )
 from codes.table_engine.split.boundary_overlap import row_content_fingerprint
 from codes.table_engine.split.row_classify import (
@@ -379,13 +381,31 @@ def supplement_scope_missing_body_above(page: PageSource, scope: TableScope) -> 
             for d in clustered[0].get("items", [])
             if d.get("item_index") in index_map
         ]
-        if first_row_items and not _gap_row_is_scope_table_body_row(first_row_items):
-            if not is_pre_table_header_band_row(first_row_items):
+        if first_row_items:
+            cells = _row_cells_from_items(first_row_items)
+            # 表顶已是年头/列头：完整表起始，禁止向上吞邻表表体
+            if (
+                is_single_year_label_row(cells)
+                or is_stats_column_header_row(cells)
+                or is_annual_report_column_header_row(cells)
+                or is_pre_table_header_band_row(first_row_items)
+            ):
+                return scope
+            if not _gap_row_is_scope_table_body_row(first_row_items):
                 return scope
 
     min_y = min(it.bbox.y0 for it in scope.items)
     y_hi = min_y - 1.0
     y_lo = max(0.0, y_hi - _MAX_BODY_UPWARD_SCAN_PT)
+    # 不得越过上一 liteparse region（紧邻两年表）
+    prev_y1 = [
+        r.y1 for r in page.table_regions
+        if r.y1 < float(scope.region.y0) - 1.0
+    ]
+    if prev_y1:
+        y_lo = max(y_lo, max(prev_y1) + 1.0)
+    if y_lo >= y_hi:
+        return scope
     scope_ids = {it.item_index for it in scope.items}
     candidates = _collect_items_above_region(
         page,

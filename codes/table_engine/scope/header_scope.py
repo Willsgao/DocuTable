@@ -240,10 +240,29 @@ def is_period_year_header_row(row_items: Sequence[SourceItem]) -> bool:
     return bool(texts) and all(is_year_cell(t) for t in texts)
 
 
+def is_stats_column_header_row(cells: List[str]) -> bool:
+    """风险价值等统计列表头：注释 + 平均值/最大值/最小值（±日期）。"""
+    norms = [str(c).strip() for c in cells if str(c).strip()]
+    if len(norms) < 3:
+        return False
+    markers = {"注释", "平均值", "最大值", "最小值"}
+    hits = sum(1 for c in norms if c in markers or c.replace(" ", "") in markers)
+    if hits >= 3:
+        return True
+    if "注释" in norms and sum(
+        1 for c in norms
+        if c in ("平均值", "最大值", "最小值") or _cell_is_header_date_token(c)
+    ) >= 2:
+        return True
+    return False
+
+
 def is_annual_report_column_header_row(cells: List[str]) -> bool:
-    """年报表头行：项目 + 多个报告期列 / 增减列。"""
+    """年报表头行：项目 + 多个报告期列 / 增减列 / VaR 统计列。"""
     if not cells:
         return False
+    if is_stats_column_header_row(cells):
+        return True
     project_hits = sum(1 for c in cells if _cell_has_project_label(c))
     if project_hits >= 1:
         year_hits = sum(

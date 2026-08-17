@@ -167,6 +167,20 @@ def validate_grid(
                     continue
                 checked += 1
                 if not is_amount_nucleus(Nucleus(text=v, x0=0, y0=0, x1=1, y1=1)):
+                    plain = str(v).split("\u27e6")[0].strip().replace(" ", "")
+                    # 多层表头短词（传统型/合成型/小计）不算科目污染
+                    if plain in {
+                        "传统型",
+                        "合成型",
+                        "小计",
+                        "合计",
+                        "数额",
+                        "金额",
+                        "代码",
+                    }:
+                        continue
+                    if len(plain) <= 1 and plain.isalpha():
+                        continue
                     if sum(1 for ch in v if "\u4e00" <= ch <= "\u9fff") >= 3:
                         textish += 1
             if checked and textish / checked > 0.15:

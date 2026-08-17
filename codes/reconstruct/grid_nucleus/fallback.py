@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 from codes.reconstruct.grid_nucleus.assign_cells import assign_to_grid
 from codes.reconstruct.grid_nucleus.column_infer import (
     assign_nuclei_to_slots,
+    compact_unused_column_ids,
     compute_column_bands,
     infer_column_slots,
     mark_abnormal_rows,
@@ -54,6 +55,7 @@ def fallback_header(
     sample = sorted(rows, key=lambda r: len(r.nuclei), reverse=True)[:2]
     n_cols, centers = infer_column_slots(sample or rows, col_gap_factor=col_gap_factor, max_cols=max_cols)
     assign_nuclei_to_slots(rows, centers)
+    n_cols = compact_unused_column_ids(rows, n_cols)
     for r in rows:
         r.is_abnormal = False
         r.role = "body"

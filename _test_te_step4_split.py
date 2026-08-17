@@ -353,6 +353,46 @@ def test_item_conservation_cell_text() -> None:
         {"text": "金融投资", "x0": 102, "x1": 130},
     ]
     check("two labels preserved", "发放贷款" in _cell_text_from_items(items2) and "金融投资" in _cell_text_from_items(items2))
+    # 左右并列：即使「人民币」y0 更小，也不得拼成「人民币 注释」
+    note_rmb = [
+        {"text": "人民币", "x0": 250, "x1": 300, "y0": 100, "y1": 112},
+        {"text": "注释", "x0": 200, "x1": 230, "y0": 106, "y1": 118},
+    ]
+    joined_nr = _cell_text_from_items(note_rmb)
+    check(
+        "note before rmb LTR",
+        joined_nr.startswith("注释") and joined_nr.index("注释") < joined_nr.index("人民币"),
+        joined_nr,
+    )
+    # 守恒 reconcile 路径：不得用 (y0,x0) 把左侧「注释」排到「人民币」后
+    from codes.table_engine.conservation.item_conservation import (
+        _text_from_source_items,
+        _union_text_preserve,
+    )
+    from codes.table_engine.models import BBox, SourceItem
+
+    lookup = {
+        "rmb": SourceItem(
+            text="人民币",
+            bbox=BBox(250, 100, 300, 112),
+            page=1,
+            item_index="rmb",
+            y_mid=106.0,
+        ),
+        "note": SourceItem(
+            text="注释",
+            bbox=BBox(200, 106, 230, 118),
+            page=1,
+            item_index="note",
+            y_mid=112.0,
+        ),
+    }
+    cons = _text_from_source_items(["rmb", "note"], lookup)
+    check("conservation note before rmb", cons == "注释 人民币", cons)
+    check(
+        "union prefers reading-order incoming",
+        _union_text_preserve("人民币 注释", "注释 人民币") == "注释 人民币",
+    )
 
 
 def test_numeric_repair_p314() -> None:

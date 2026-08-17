@@ -1784,6 +1784,7 @@ def plan_page_scopes(page: PageSource) -> PageScopePlan:
 
     # 对照 liteparse：每个原始 table_region 必须被至少一个 scope 覆盖，否则补建
     scopes = _ensure_liteparse_regions_covered(page, scopes)
+    scopes = _transfer_trailing_period_openers(page, scopes)
 
     # 页眉/页脚独立拆出（含原先被 page_height-25 裁掉的页脚）
     gap_texts = ensure_page_chrome_separated(page, gap_texts)
@@ -1812,23 +1813,206 @@ def _y_overlap_ratio(a: RegionBox, b: RegionBox) -> float:
     return ov / denom
 
 
+def _expand_scope_to_cover_region(
+    page: PageSource,
+    scope: TableScope,
+    region: RegionBox,
+) -> TableScope:
+    """把未吃全的 liteparse region 并进已有 scope，禁止再开一张重复表。"""
+    from codes.table_engine.scope.region_scope import (
+        collect_items_in_band,
+        dedupe_scope_row_duplicates,
+        merge_items_dedup,
+    )
+
+    x0 = min(scope.region.x0, region.x0)
+    y0 = min(scope.region.y0, region.y0, scope.scope_y0)
+    x1 = max(scope.region.x1, region.x1)
+    y1 = max(scope.region.y1, region.y1, scope.scope_y1)
+    union = RegionBox(x0=x0, y0=y0, x1=x1, y1=y1)
+    band = collect_items_in_band(
+        page,
+        union,
+        scope_y0=y0,
+        y_margin_below=12.0,
+        y_margin_above=4.0,
+    )
+    scope.items = dedupe_scope_row_duplicates(
+        merge_items_dedup(scope.items, band),
+    )
+    scope.region = union
+    scope.scope_y0 = y0
+    if scope.items:
+        scope.scope_y1 = max(y1, max(it.bbox.y1 for it in scope.items))
+    else:
+        scope.scope_y1 = y1
+    scope.metadata["expanded_to_liteparse_region"] = True
+    return scope
+
+
+def _merge_overlapping_table_scopes(
+    page: PageSource,
+    scopes: List[TableScope],
+) -> List[TableScope]:
+    """Y 向大幅重叠的 scope 合并为一张表（防 2024 残片 + 补建 scope 双份）。"""
+    if len(scopes) < 2:
+        return scopes
+    ordered = sorted(
+        scopes,
+        key=lambda s: float(s.region.y0 if s.region else s.scope_y0),
+    )
+    merged: List[TableScope] = [ordered[0]]
+    for cur in ordered[1:]:
+        prev = merged[-1]
+        if prev.region is None or cur.region is None:
+            merged.append(cur)
+            continue
+        if _y_overlap_ratio(prev.region, cur.region) < 0.25:
+            # 也看 item 集合：同页重复表头+同指标行
+            prev_ids = {str(it.item_index) for it in prev.items}
+            cur_ids = {str(it.item_index) for it in cur.items}
+            share = len(prev_ids & cur_ids) / max(1, min(len(prev_ids), len(cur_ids)))
+            if share < 0.35:
+                merged.append(cur)
+                continue
+        print(
+            f"  [Scope] P{page.page_number} 合并重叠 scope "
+            f"y={prev.region.y0:.0f}-{prev.region.y1:.0f} ∪ "
+            f"{cur.region.y0:.0f}-{cur.region.y1:.0f}"
+        )
+        _expand_scope_to_cover_region(page, prev, cur.region)
+        from codes.table_engine.scope.region_scope import (
+            dedupe_scope_row_duplicates,
+            merge_items_dedup,
+        )
+
+        prev.items = dedupe_scope_row_duplicates(
+            merge_items_dedup(prev.items, cur.items),
+        )
+        if prev.items:
+            prev.scope_y1 = max(prev.scope_y1, max(it.bbox.y1 for it in prev.items))
+    return merged
+
+
+_PERIOD_YEAR_ITEM_RE = re.compile(r"^\d{4}\s*年?$")
+
+
+def _transfer_trailing_period_openers(
+    page: PageSource,
+    scopes: List[TableScope],
+) -> List[TableScope]:
+    """上一 region 底边的「2024年」等年头归属下一张表（liteparse 常把年头切进上区）。"""
+    if len(scopes) < 2:
+        return scopes
+    from codes.table_engine.scope.region_scope import merge_items_dedup
+
+    ordered = sorted(
+        scopes,
+        key=lambda s: float(s.region.y0 if s.region else s.scope_y0),
+    )
+    for i in range(len(ordered) - 1):
+        upper, lower = ordered[i], ordered[i + 1]
+        if upper.region is None or lower.region is None:
+            continue
+        if not any(
+            str(it.text).strip() in ("注释", "平均值", "最大值", "最小值", "项目")
+            for it in lower.items
+        ):
+            continue
+        if any(_PERIOD_YEAR_ITEM_RE.match(str(it.text).strip()) for it in lower.items):
+            continue
+        boundary = float(upper.region.y1)
+        movers = [
+            it
+            for it in upper.items
+            if _PERIOD_YEAR_ITEM_RE.match(str(it.text).strip())
+            and it.bbox.y0 >= boundary - 22.0
+            and it.bbox.y0 <= float(lower.region.y0) + 8.0
+        ]
+        if not movers:
+            continue
+        move_ids = {it.item_index for it in movers}
+        upper.items = [it for it in upper.items if it.item_index not in move_ids]
+        lower.items = merge_items_dedup(movers, lower.items)
+        if upper.items:
+            upper.scope_y1 = max(it.bbox.y1 for it in upper.items)
+        lower.scope_y0 = min(lower.scope_y0, min(it.bbox.y0 for it in movers))
+        lower.pre_header_items = merge_items_dedup(
+            list(lower.pre_header_items or []), movers,
+        )
+        print(
+            f"  [Scope] P{page.page_number} 年头 "
+            f"{'/'.join(str(it.text).strip() for it in movers)} "
+            f"→ 下表 region y={lower.region.y0:.0f}"
+        )
+    return ordered
+
+
+def _region_item_coverage_in_scope(
+    page: PageSource,
+    scope: TableScope,
+    region: RegionBox,
+) -> float:
+    """region 带内 items 已落入 scope 的比例（残片续页用，不用几何紧邻硬并）。"""
+    from codes.table_engine.scope.region_scope import collect_items_in_band
+
+    band = collect_items_in_band(
+        page,
+        region,
+        scope_y0=region.y0,
+        y_margin_below=2.0,
+        y_margin_above=2.0,
+    )
+    if not band:
+        return 0.0
+    ids = {str(it.item_index) for it in scope.items}
+    hit = sum(1 for it in band if str(it.item_index) in ids)
+    return hit / max(1, len(band))
+
+
 def _ensure_liteparse_regions_covered(
     page: PageSource,
     scopes: List[TableScope],
 ) -> List[TableScope]:
-    """liteparse 检出的表区若未进入 scope，强制补上（防索引撞号/漏合并丢表）。"""
+    """liteparse 检出的表区若未进入 scope，并入邻近 scope 或补建（禁止叠两份）。"""
     if not page.table_regions:
         return scopes
     out = list(scopes)
     for ri, region in enumerate(page.table_regions):
         if (region.y1 - region.y0) < 20.0:
             continue
-        covered = any(
-            _y_overlap_ratio(region, s.region) >= 0.35
+        # 已充分覆盖（几何）
+        if any(
+            s.region is not None and _y_overlap_ratio(region, s.region) >= 0.35
             for s in out
-            if s.region is not None
+        ):
+            continue
+        # 部分重叠：扩进最近 scope，勿新建（否则表头/首行会双份）
+        partial = [
+            (s, _y_overlap_ratio(region, s.region))
+            for s in out
+            if s.region is not None and _y_overlap_ratio(region, s.region) > 0.05
+        ]
+        if partial:
+            best, ov = max(partial, key=lambda x: x[1])
+            print(
+                f"  [Scope] P{page.page_number} liteparse region{ri} "
+                f"y={region.y0:.0f}-{region.y1:.0f} 部分重叠({ov:.0%}) → 扩入已有 scope"
+            )
+            _expand_scope_to_cover_region(page, best, region)
+            continue
+        # 几何紧邻≠同一张表（上下两年表间隙可仅数 pt）。
+        # 仅当 region 内字框大半已在某 scope 时跳过；部分覆盖也补建，禁止硬并吞下表。
+        best_cov = max(
+            (_region_item_coverage_in_scope(page, s, region) for s in out),
+            default=0.0,
         )
-        if covered:
+        if best_cov >= 0.50:
+            print(
+                f"  [Scope] P{page.page_number} liteparse region{ri} "
+                f"y={region.y0:.0f}-{region.y1:.0f} "
+                f"items已覆盖({best_cov:.0%}) → 跳过"
+            )
             continue
         print(
             f"  [Scope] P{page.page_number} liteparse region{ri} "
@@ -1841,5 +2025,6 @@ def _ensure_liteparse_regions_covered(
                 region_index=ri * 1000 + 999,
             )
         )
+    out = _merge_overlapping_table_scopes(page, out)
     out.sort(key=lambda s: float(s.region.y0 if s.region else 0))
     return out

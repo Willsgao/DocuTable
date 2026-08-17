@@ -1,13 +1,13 @@
 # 复制本文件为 anomaly-change-scope.txt 后填写（每次修改任务一份）
 # verify 会据此检查改动范围
 
-task: 人民币+数值连续应为一体凝结核，有空白才拆
+task: 拆并列参考表头：每列应有独立表头，表头异常则拆并有问题
 
 allowed:
   - codes/v2_steps/table_anomaly_rules.py
-  - codes/v2_steps/table_glue_repair.py
-  - codes/reconstruct/grid_nucleus/preprocess.py
+  - codes/reconstruct/grid_nucleus/column_infer.py
   - _test_grid_nucleus.py
+  - anomaly-change-scope.txt
 
 forbidden:
   - codes/ui/**
@@ -19,6 +19,4 @@ must_pass:
   - unit
 
 notes: |
-  币种+金额连续（人民币70,228）是一体凝结核，不当 R10/粘连拆核；
-  仅中间有空白间隔才考虑分列。近距分框亦合并。
-
+  拆/并约束：两槽各有不同独立表头则禁止合并；空表头优先当缝列丢掉。

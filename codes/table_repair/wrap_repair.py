@@ -88,9 +88,12 @@ def _is_intra_table_section_title(text: str) -> bool:
         "其他各级资本要求",
         "可用资本（数额）",
         "风险加权资产（数额）",
+        "我国最低监管资本要求",
+        "门槛扣除项中未扣除部分",
         "资产",
         "负债",
         "权益",
+        "股东权益",
     }
     if t in known:
         return True
@@ -101,13 +104,14 @@ def _is_intra_table_section_title(text: str) -> bool:
     if t in {"数额", "金额", "代码", "指标值", "余额", "面值"}:
         return False
     if (
-        re.fullmatch(r"[\u4e00-\u9fff]{2,10}", t)
+        re.fullmatch(r"[\u4e00-\u9fff（）()]{2,16}", t)
         and not t.startswith(("的", "及", "与", "和", "或"))
         and (
             "充足率" in t
-            or t.endswith(("要求", "信息"))
+            or t.endswith(("要求", "信息", "部分", "情况"))
             # 「可用资本（数额）」类：以数额收尾但须更长；排除裸「数额」
             or (t.endswith("数额") and len(t) >= 4)
+            or (t.endswith(("数额）", "数额)")) and len(t) >= 6)
         )
     ):
         return True

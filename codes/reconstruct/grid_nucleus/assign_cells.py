@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from statistics import median
 from typing import List, Optional, Sequence
 
 from codes.reconstruct.grid_nucleus.types import Nucleus, RowCluster
@@ -12,6 +13,52 @@ from codes.reconstruct.grid_nucleus.types import Nucleus, RowCluster
 _SPLIT_DECIMAL_SPACE_RE = re.compile(r"(\d)\s+(\.\d)")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _AMOUNT_RE = re.compile(r"[\d,]{3,}|\d+\.\d+%?|\(\s*[\d,]+\s*\)")
+
+
+def _nuclei_horizontally_stacked(a: Nucleus, b: Nucleus) -> bool:
+    """上下折行叠列（x 大量重叠）；左右并列返回 False。"""
+    overlap = max(0.0, min(float(a.x1), float(b.x1)) - max(float(a.x0), float(b.x0)))
+    min_w = min(max(float(a.width), 1.0), max(float(b.width), 1.0))
+    return overlap >= 0.5 * min_w
+
+
+def sort_nuclei_reading_order(items: Sequence[Nucleus]) -> List[Nucleus]:
+    """阅读序：文本顺序绝对不可颠倒。
+
+    - 左右并列（注释|人民币）：严格 x0 左→右；y 抖动不得改序。
+    - 上下折行（x 重叠）：按行带自上而下，行内再左→右。
+    """
+    nuclei = [n for n in items if n is not None]
+    if len(nuclei) <= 1:
+        return list(nuclei)
+
+    stacked = False
+    for i, a in enumerate(nuclei):
+        for b in nuclei[i + 1 :]:
+            if _nuclei_horizontally_stacked(a, b) and abs(
+                float(a.cy) - float(b.cy)
+            ) > 3.0:
+                stacked = True
+                break
+        if stacked:
+            break
+    if not stacked:
+        return sorted(nuclei, key=lambda n: float(n.x0))
+
+    heights = [float(n.height) for n in nuclei if float(n.height or 0) > 0]
+    h_med = median(heights) if heights else 10.0
+    line_tol = max(3.0, float(h_med) * 0.55)
+    by_cy = sorted(nuclei, key=lambda n: (float(n.cy), float(n.x0)))
+    lines: List[List[Nucleus]] = []
+    for n in by_cy:
+        if not lines or abs(float(n.cy) - float(lines[-1][0].cy)) > line_tol:
+            lines.append([n])
+        else:
+            lines[-1].append(n)
+    out: List[Nucleus] = []
+    for line in lines:
+        out.extend(sorted(line, key=lambda n: float(n.x0)))
+    return out
 
 
 def _col_from_lines(x: float, col_lines: List[float]) -> int:
@@ -62,8 +109,8 @@ def _should_glue_texts(
 
 
 def join_cell_nuclei_text(items: List[Nucleus]) -> str:
-    """同格多字框拼接：小数拆段与连续中文折行无空格；粘连拆核保留空格。"""
-    nuclei = [n for n in items if n.text]
+    """同格多字框拼接：先按阅读序排好，再拼接。顺序不得改变。"""
+    nuclei = sort_nuclei_reading_order([n for n in items if n.text])
     if not nuclei:
         return ""
     out = str(nuclei[0].text)
@@ -160,7 +207,7 @@ def assign_to_grid(
     for ri in range(n_rows):
         row_out: List[str] = []
         for c in range(n_cols):
-            items = sorted(grid[ri][c], key=lambda n: (float(n.y0), float(n.x0)))
+            items = sort_nuclei_reading_order(grid[ri][c])
             text = join_cell_nuclei_text(items)
             if (
                 preserve_label_indent

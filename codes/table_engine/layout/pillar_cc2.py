@@ -12,6 +12,8 @@ from codes.table_engine.layout.base import LayoutContext, LayoutSelection
 
 _CC2_MARKERS = frozenset({"a", "b", "c"})
 _ROW_NUMBER_RE = re.compile(r"^\d+[a-z]?$", re.I)
+# 表内分组标题：几何落在序号带，须进 row_no 列而非项目列
+_SECTION_LEAD_LABELS = frozenset({"资产", "负债", "股东权益"})
 
 
 class CC2LayoutPlugin:
@@ -72,9 +74,18 @@ class CC2LayoutPlugin:
             return col_index_by_x0(x0, col_ranges)
         if len(t) <= 2 and t in ("a", "b", "c") and x0 >= code_x0 - 20:
             return len(col_ranges) - 1
-        # 标签按 x0 落列（勿用 bbox 中心；末列前收紧右容差，避免吞掉「代码」）
+        # 节标题「资产/负债」左缘在序号带 → 序号列（勿进项目列）
+        if t in _SECTION_LEAD_LABELS and x0 <= row_num_x1 + 2.0:
+            return 0
+        # 按 x0 落列。序号列右缘必须收紧：旧 hi+6 把 x0≈100 的科目吞进 col0，
+        # 再经空列左移后变成「项目|序号」颠倒。
         for ci, (lo, hi) in enumerate(col_ranges):
-            hi_slack = hi + (6.0 if ci < len(col_ranges) - 1 else 2.0)
+            if ci == 0:
+                hi_slack = hi + 1.0
+            elif ci < len(col_ranges) - 1:
+                hi_slack = hi + 6.0
+            else:
+                hi_slack = hi + 2.0
             if lo - 4 <= x0 <= hi_slack:
                 return ci
         return _nearest_center(x0, x1, col_ranges)

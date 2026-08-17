@@ -17,6 +17,9 @@ _AMOUNT_RE = re.compile(r"[\d,]{3,}|\d+\.\d+%?|\(\s*[\d,]+\s*\)")
 _PLACEHOLDER_RE = re.compile(r"^[-–—－]$")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _SPAN_MARK_RE = re.compile(r"\s*⟦[^⟧]*⟧\s*")
+# 资产负债表表内分组小标题（整格精确匹配；勿用 startswith，以免误伤「资产管理计划」等）
+_BALANCE_SHEET_SECTION_LEADS = frozenset({"资产", "负债", "股东权益"})
+_BALANCE_SECTION_LEAD_ORDER = ("股东权益", "资产", "负债")
 
 
 def _strip_marks(s: str) -> str:
@@ -168,15 +171,91 @@ def _looks_cjk_wrap_continuation(upper: str, lower: str) -> bool:
     return False
 
 
-def _looks_serial_host_continuation(upper: str, lower: str) -> bool:
-    """无序号续行 → 邻行有序号宿主：允许下半为短续文（如「债务工具投资」）。"""
-    if _looks_cjk_wrap_continuation(upper, lower):
+def _cjk_len(text: str) -> int:
+    return len(_CJK_RE.findall(str(text or "")))
+
+
+def _looks_like_section_title_label(label: str) -> bool:
+    """表内独立小节标题：必须单独成行，禁止并进下方序号金额行。
+
+    带结构标记的标题（冒号收尾 / …要求 等）一律认。
+    资产负债表「资产/负债/股东权益」仅整格精确匹配（禁止 startswith，以免
+    「资产管理计划」被拆）。「其中：…」是层次科目行，不是小节标题。
+    """
+    t = str(label or "").strip()
+    if not t:
+        return False
+    if re.match(r"^其中[：:]", t):
+        return False
+    # 明确折行碎片不是小节
+    if _is_clear_wrap_fragment(t):
+        return False
+    if t in _BALANCE_SHEET_SECTION_LEADS:
         return True
+    if any(m in t for m in ("和其他", "及其他")):
+        return True
+    if re.match(
+        r"^(?:核心一级资本|其他一级资本|二级资本|一级资本)[：:]",
+        t,
+    ):
+        return True
+    if "：扣除项" in t or ":扣除项" in t:
+        return True
+    # 短分组标题以冒号收尾；勿把长「其中：应在…金额」当小节
+    if t.endswith(("：", ":")):
+        cn = _cjk_len(t)
+        if 4 <= cn <= 12:
+            return True
+    cn = _cjk_len(t)
+    # 分组标题口吻：…要求 / …情况（无序号、无金额的那一行）
+    if cn >= 6 and t.endswith(("要求", "情况", "信息", "说明", "披露", "构成")):
+        return True
+    return False
+
+
+def _looks_complete_standalone_label(label: str) -> bool:
+    """像完整指标名（非折行半截）。"""
+    t = str(label or "").strip()
+    if not t or _is_clear_wrap_fragment(t):
+        return False
+    cn = _cjk_len(t)
+    if cn < 4:
+        return False
+    return bool(t.endswith(("率", "额", "金", "值", "数", "量", "要求", "部分")))
+
+
+def _looks_serial_host_continuation(upper: str, lower: str) -> bool:
+    """无序号续行 → 邻行有序号宿主：允许下半为短续文（如「债务工具投资」）。
+
+    源表已是两行的完整短词（资产|现金）必须保留两行，禁止拼成「资产现金」。
+    仅当下行是明确续写碎片（的/及…）时才并。
+    """
     u = str(upper or "").strip()
     l = str(lower or "").strip()
     if not u or not l:
         return False
+    # 上行为短完整词、下行也以中文科目起笔 → 两行并列（保留原格式）
+    if (
+        _cjk_len(u) <= 3
+        and _CJK_RE.search(u)
+        and _CJK_RE.search(l[:1])
+        and not u.endswith(("的", "及", "与", "和", "或", "等", "、"))
+        and not l.startswith(("的", "及", "与", "和", "或", "等", "）", ")"))
+        and not _is_clear_wrap_fragment(l)
+    ):
+        return False
+    # 「股东权益」等 4 字分节标题：不得并进下行「股本」
+    if u in _BALANCE_SHEET_SECTION_LEADS:
+        return False
+    # 独立小节标题绝不是折行上半截
+    if _looks_like_section_title_label(u):
+        return False
+    if _looks_cjk_wrap_continuation(upper, lower):
+        return True
     if not (_CJK_RE.search(u[-1:]) and _CJK_RE.search(l[:1])):
+        return False
+    # 上下都是完整指标名 → 两行并列，不并
+    if _looks_complete_standalone_label(u) and _looks_complete_standalone_label(l):
         return False
     # 下半短续文，且不像独立完整科目句
     if len(l) <= 24 and not l.endswith(("。", "；", "：", ":")):
@@ -199,11 +278,20 @@ def _looks_like_external_narrative(label: str) -> bool:
             "最新规定",
             "填报说明",
             "评估指标披露",
+            "进行披露",
+            "对应关系",
+            "以下监管",
+            "除特别注明",
+            "货币单位均以",
+            "资本管理办法",
         )
     ):
         return True
     cn = len(_CJK_RE.findall(t))
     if t.endswith(("：", ":", "。", "；")) and cn >= 8:
+        return True
+    # 长通栏说明（法规依据/书名号）不得当折行并进科目；勿用纯字数误杀长科目
+    if cn >= 16 and ("《" in t or "依据" in t or "管理办法" in t or "进行披露" in t):
         return True
     return False
 
@@ -291,6 +379,147 @@ def _join_label_parts(a: str, b: str) -> str:
     return (" " * lead) + body if lead else body
 
 
+def _split_balance_section_lead_glued(label: str) -> Optional[Tuple[str, str]]:
+    """分节标题粘在科目前：拆成 (科目, 小节标题)。
+
+    例：股东权益股本 → (股本, 股东权益)
+    禁止：股东权益合计 / 负债合计 / 资产管理计划。
+    """
+    t = str(label or "").strip()
+    if not t:
+        return None
+    for lead in _BALANCE_SECTION_LEAD_ORDER:
+        if not t.startswith(lead) or len(t) <= len(lead):
+            continue
+        rest = t[len(lead) :].strip()
+        if not rest:
+            continue
+        if rest in ("合计", "总额", "总计") or rest.startswith(
+            ("合计", "总额", "总计", "及")
+        ):
+            continue
+        if lead == "资产" and rest.startswith(
+            ("管理", "支持", "负债表", "证券化", "减值", "质量", "组合", "处置")
+        ):
+            continue
+        if lead == "负债" and rest.startswith(("表",)):
+            continue
+        if not _CJK_RE.search(rest[:1]):
+            continue
+        return rest, lead
+    return None
+
+
+def _split_jammed_section_title(label: str) -> Optional[Tuple[str, str]]:
+    """科目与小节标题粘在同一格：拆成 (科目, 小节标题)。
+
+    例：扣除前的核心一级资本核心一级资本：扣除项
+    例：股东权益股本 → (股本, 股东权益)
+
+    禁止：从「资产管理计划」「资产支持证券」「资产证券化…」等一体核拆出「资产」——
+    那是连续文本凝结核，不是「分组标题+科目」粘连。
+    """
+    t = str(label or "").strip()
+    if not t:
+        return None
+    glued = _split_balance_section_lead_glued(t)
+    if glued is not None:
+        return glued
+    if "：" not in t and ":" not in t:
+        return None
+    # 右侧优先匹配已知小节，再退回「短标题：短后缀」
+    patterns = (
+        r"(核心一级资本：扣除项)$",
+        r"(其他一级资本：扣除项)$",
+        r"(二级资本：扣除项)$",
+        r"(核心一级资本：)$",
+        r"(其他一级资本：)$",
+        r"(二级资本：)$",
+        r"([\u4e00-\u9fff]{4,12}[：:][\u4e00-\u9fff]{1,12})$",
+    )
+    for pat in patterns:
+        m = re.search(pat, t)
+        if not m:
+            continue
+        title = m.group(1).strip()
+        head = t[: m.start()].strip()
+        if not head or not _looks_like_section_title_label(title):
+            continue
+        if _looks_like_section_title_label(head):
+            continue
+        if len(_CJK_RE.findall(head)) < 4:
+            continue
+        return head, title
+    return None
+
+
+def peel_inline_section_title_rows(
+    data: List[List[Any]],
+    *,
+    label_col: Optional[int] = None,
+) -> Tuple[List[List[Any]], Dict[str, Any]]:
+    """金额行里夹带的独立小节标题 → 拆成下一单独行（再由跨格标注处理）。"""
+    meta: Dict[str, Any] = {"peeled": []}
+    if not data:
+        return data, meta
+    working = [list(r) if isinstance(r, list) else [] for r in data]
+    lc = infer_label_col(working) if label_col is None else int(label_col)
+    n_cols = max((len(r) for r in working), default=0)
+    out: List[List[Any]] = []
+    for r_idx, row in enumerate(working):
+        while len(row) < n_cols:
+            row.append("")
+        statuses_amt = _is_value_anchor_status(_row_side_status(row, lc))
+        lab = _label_of(row, lc)
+        split = _split_jammed_section_title(lab) if lab else None
+        if split and statuses_amt:
+            head, title = split
+            new_row = list(row)
+            new_row[lc] = head
+            title_row = [""] * n_cols
+            title_row[lc] = title
+            # 标题粘在科目前 → 单独行插在金额行之前；粘在后 → 插在之后
+            if str(lab).strip().startswith(title):
+                out.append(title_row)
+                out.append(new_row)
+            else:
+                out.append(new_row)
+                out.append(title_row)
+            meta["peeled"].append(
+                {"after_row": r_idx, "title": title[:40], "from": "jammed_label"}
+            )
+            continue
+        # 同行其它格是小节标题、本行又是金额行 → 剥出
+        if statuses_amt:
+            peel_c = None
+            peel_t = ""
+            for c in range(n_cols):
+                if c == lc:
+                    continue
+                v = _strip_marks(str(row[c] or ""))
+                if _looks_like_section_title_label(v) and not _is_amount_cell(v):
+                    peel_c = c
+                    peel_t = v
+                    break
+            if peel_c is not None:
+                new_row = list(row)
+                new_row[peel_c] = ""
+                title_row = [""] * n_cols
+                title_row[lc] = peel_t
+                out.append(new_row)
+                out.append(title_row)
+                meta["peeled"].append(
+                    {
+                        "after_row": r_idx,
+                        "title": peel_t[:40],
+                        "from": f"col_{peel_c}",
+                    }
+                )
+                continue
+        out.append(row)
+    return out, meta
+
+
 def assemble_wrapped_label_rows(
     data: List[List[Any]],
     *,
@@ -305,7 +534,9 @@ def assemble_wrapped_label_rows(
     if not data or len(data) < 2:
         return data, meta
 
-    working = [list(r) if isinstance(r, list) else [] for r in data]
+    working, peel_meta = peel_inline_section_title_rows(data, label_col=label_col)
+    if peel_meta.get("peeled"):
+        meta["section_title_peeled"] = peel_meta["peeled"]
     lc = infer_label_col(working) if label_col is None else int(label_col)
     meta["label_col"] = lc
     sc = _infer_serial_col(lc)
@@ -347,6 +578,9 @@ def assemble_wrapped_label_rows(
                     }
                 )
                 continue
+            # 表内独立小节标题必须保留成行（不得并进下方 54/金额行）
+            if _looks_like_section_title_label(lab_i):
+                continue
 
             host: Optional[int] = None
             # 两价值锚之间：邻行优先；仅明确折行碎片可并远端；否则 ambiguous
@@ -371,8 +605,21 @@ def assemble_wrapped_label_rows(
                     )
                     continue
             elif down_amt is not None and up_amt is None:
+                # 仅下方有锚：禁止跨多行把长说明吸进金额行（凝结核不得被改写）
+                if down_amt - i > 1 and len(lab_i.strip()) >= 16:
+                    meta["ambiguous_rows"].append(
+                        {
+                            "row": i,
+                            "label": lab_i[:40],
+                            "reason": "distant_down_anchor_long_label",
+                            "down_amt": down_amt,
+                        }
+                    )
+                    continue
                 host = down_amt
             elif up_amt is not None and down_amt is None:
+                if i - up_amt > 1 and len(lab_i.strip()) >= 16:
+                    continue
                 host = up_amt
             else:
                 continue
@@ -381,6 +628,18 @@ def assemble_wrapped_label_rows(
             # 页眉/完整科目行不得因「旁列空」被吸进远端金额行。
             lab_h = _label_of(working[host], lc)
             adj = abs(host - i) == 1
+            # 未闭合括号 alone：邻行短续文允许（47a）；跨行禁止（表外长说明）
+            paren_unclosed = (
+                lab_i.count("（") > lab_i.count("）")
+                or lab_i.count("(") > lab_i.count(")")
+            )
+            weak_paren_only = (
+                paren_unclosed
+                and not lab_i.endswith(("的", "及", "与", "和", "或", "等", "、"))
+                and not lab_i.startswith(("的", "及", "与", "和", "或", "等", "）", ")"))
+            )
+            if weak_paren_only and not adj:
+                continue
             serial_wrap = (
                 adj
                 and host > i

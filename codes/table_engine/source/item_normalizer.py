@@ -156,7 +156,8 @@ def _merge_chinese_chars(items: List[dict]) -> List[dict]:
             merged.append(merged_item)
         i = j
 
-    merged.sort(key=lambda it: it["y_mid"])
+    # 保留左→右：不得仅按 y_mid 把同行右侧字排到左侧前
+    merged.sort(key=lambda it: (round(float(it.get("y_mid", 0)), 1), float(it.get("x0", 0))))
     return merged
 
 

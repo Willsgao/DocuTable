@@ -474,8 +474,26 @@ def row_looks_like_leading_non_table(row: Sequence[Any]) -> bool:
     """表顶行是否应剥离：页眉 / 表前说明 / 叙述残句。"""
     if row_looks_like_leading_page_chrome(row):
         return True
-    cells = [str(c or "").strip() for c in (row or []) if str(c or "").strip()]
+    try:
+        from codes.table_engine.split.row_classify import (
+            _cell_text_without_span_noise,
+            is_inter_table_narrative_row,
+        )
+
+        cells = [
+            _cell_text_without_span_noise(c)
+            for c in (row or [])
+            if _cell_text_without_span_noise(c)
+        ]
+    except Exception:
+        cells = [str(c or "").strip() for c in (row or []) if str(c or "").strip()]
+        is_inter_table_narrative_row = None  # type: ignore
     joined = "".join(cells)
+    # 报表页眉 / running header（常被 span 标成通栏）
+    if joined in {"财务报表附注"} or (
+        joined.startswith("财务报表附注") and len(re.findall(r"[\u4e00-\u9fff]", joined)) <= 8
+    ):
+        return True
     if any(m in joined for m in ("如下：", "如下:", "指标如下", "下表列", "具体如下", "本集团根据")):
         # 勿剥真正表头
         if not any(c in ("序号", "指标", "指标值", "项目") for c in cells):
@@ -483,12 +501,12 @@ def row_looks_like_leading_non_table(row: Sequence[Any]) -> bool:
     if any(m in joined for m in ("未经审计", "财务报表补充资料", "止年度", "评估指标披露")):
         if not any(c in ("序号", "指标", "指标值", "项目") for c in cells):
             return True
-    try:
-        from codes.table_engine.split.row_classify import is_inter_table_narrative_row
-
-        return is_inter_table_narrative_row(list(row))
-    except Exception:
-        return False
+    if is_inter_table_narrative_row is not None:
+        try:
+            return is_inter_table_narrative_row(list(row))
+        except Exception:
+            return False
+    return False
 
 
 def strip_leading_page_chrome_rows_from_data(
@@ -501,13 +519,29 @@ def strip_leading_page_chrome_rows_from_data(
 def strip_leading_non_table_rows_from_data(
     data: Sequence[Sequence[Any]],
 ) -> List[List[str]]:
-    """去掉表顶误入的页眉/叙述/「下表列出…」说明；至少保留一行。"""
+    """去掉表顶误入的页眉/叙述/「下表列出…」说明；至少保留一行。
+
+    额外：连续 ≥3 行通栏且无金额 → 整块当表外说明剥离（1～2 行通栏表头保留）。
+    """
     rows = [list(r) for r in (data or [])]
     if len(rows) < 2:
         return rows
     i = 0
     while i < len(rows) - 1 and row_looks_like_leading_non_table(rows[i]):
         i += 1
+
+    # 连续通栏说明块（讨论规则：多行跨列无金额 ≈ 非表格）
+    try:
+        from codes.table_engine.split.row_classify import leading_spanning_prose_run_end
+
+        run_end = leading_spanning_prose_run_end(rows, start=i, min_run=3)
+        if run_end > i:
+            i = run_end
+            while i < len(rows) - 1 and row_looks_like_leading_non_table(rows[i]):
+                i += 1
+    except Exception:
+        pass
+
     if i == 0:
         return rows
     kept = rows[i:]
@@ -567,6 +601,13 @@ def trim_leading_page_chrome_words(
                 )
             ):
                 continue
+            if text.strip() == "财务报表附注":
+                continue
+        # 页眉带外仍常见的 running header（附注页顶），勿进表
+        elif text.strip() == "财务报表附注" and y0 < page_height * 0.18:
+            continue
+        elif "止年度" in text and y0 < page_height * 0.18 and len(text) <= 28:
+            continue
         kept.append(w)
     return kept if kept else list(words or [])
 
@@ -628,7 +669,7 @@ def _is_strong_table_start_text(text: str) -> bool:
     if not t:
         return False
     if t in {
-        "序号", "指标", "指标值", "项目", "名称", "金额",
+        "序号", "指标", "指标值", "项目", "名称", "金额", "数额",
         "期末余额", "期初余额",
     }:
         return True
@@ -638,8 +679,27 @@ def _is_strong_table_start_text(text: str) -> bool:
 
 
 def _is_soft_table_start_text(text: str) -> bool:
-    """次强起点：年头 / (%) —— 无序号表时用。"""
+    """次强起点：年头 / (%) —— 无序号表时用。
+
+    排除页眉「…止年度」/「财务报表附注」：否则表前整段说明会被当成表内。
+    """
     t = str(text or "").strip()
+    if not t:
+        return False
+    if any(
+        m in t
+        for m in (
+            "止年度",
+            "财务报表附注",
+            "未经审计",
+            "补充资料",
+        )
+    ):
+        return False
+    # 列头「账面余额/数额」常见于权益表、资本构成披露
+    t_compact = t.replace(" ", "")
+    if t_compact in {"账面余额", "账面价值", "最大损失敞口", "数额"}:
+        return True
     if re.search(r"20\d{2}\s*年", t) and len(t) <= 24:
         return True
     return t in ("(%)", "%", "（%）")

@@ -713,11 +713,21 @@ def find_structure_break_row(
 def _peel_leading_narrative_rows(
     table: StructuredTable,
 ) -> Tuple[StructuredTable, Optional[TextBlock]]:
-    """拆分后子表首行若为表间叙述，剥为 TextBlock。"""
+    """拆分后子表首行若为表间叙述，剥为 TextBlock。
+
+    连续 ≥3 行通栏无金额一并剥（与 word_segment 表顶剥离一致）。
+    """
+    from codes.table_engine.split.row_classify import leading_spanning_prose_run_end
+
     rows = dense_rows(table)
     peel = 0
     while peel < len(rows) and is_inter_table_narrative_row(rows[peel]):
         peel += 1
+    run_end = leading_spanning_prose_run_end(rows, start=peel, min_run=3)
+    if run_end > peel:
+        peel = run_end
+        while peel < len(rows) and is_inter_table_narrative_row(rows[peel]):
+            peel += 1
     if peel <= 0:
         return table, None
     peeled = slice_structured_table(table, 0, peel)

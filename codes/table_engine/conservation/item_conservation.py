@@ -76,7 +76,10 @@ def _table_text_blob(table: StructuredTable) -> str:
 
 
 def _union_text_preserve(existing: str, incoming: str) -> str:
-    """合并单元格文本：只增不减，禁止静默丢字。"""
+    """合并单元格文本：只增不减，禁止静默丢字。
+
+    同词不同顺序时优先 incoming（应由阅读序拼出，如「注释 人民币」）。
+    """
     a = str(existing or "").strip()
     b = str(incoming or "").strip()
     if not a:
@@ -85,6 +88,10 @@ def _union_text_preserve(existing: str, incoming: str) -> str:
         return a
     if a == b:
         return a
+    a_toks = a.split()
+    b_toks = b.split()
+    if a_toks and sorted(a_toks) == sorted(b_toks):
+        return b
     ac = a.replace(" ", "")
     bc = b.replace(" ", "")
     if bc in ac:
@@ -92,6 +99,16 @@ def _union_text_preserve(existing: str, incoming: str) -> str:
     if ac in bc:
         return b
     return a if len(ac) >= len(bc) else b
+
+
+def _source_item_as_dict(it: SourceItem) -> dict:
+    return {
+        "text": str(it.text or "").strip(),
+        "x0": float(it.bbox.x0),
+        "x1": float(it.bbox.x1),
+        "y0": float(it.bbox.y0),
+        "y1": float(it.bbox.y1),
+    }
 
 
 def table_preserves_text_content(
@@ -183,7 +200,10 @@ def _text_from_source_items(
     source_ids: List[str],
     item_lookup: Dict[str, SourceItem],
 ) -> str:
-    parts: List[Tuple[float, str]] = []
+    """按 PDF 阅读序拼字；禁止 (y0,x0) 把左侧字排到右侧字后面。"""
+    from codes.table_engine.geometry.reading_order import join_texts_reading_order
+
+    dicts: List[dict] = []
     seen: Set[str] = set()
     for sid in source_ids:
         it = item_lookup.get(str(sid))
@@ -193,11 +213,8 @@ def _text_from_source_items(
         if not t or t in seen:
             continue
         seen.add(t)
-        parts.append((float(it.bbox.y0), float(it.bbox.x0), t))
-    if not parts:
-        return ""
-    parts.sort(key=lambda p: (p[0], p[1]))
-    return " ".join(t for _, _, t in parts)
+        dicts.append(_source_item_as_dict(it))
+    return join_texts_reading_order(dicts)
 
 
 def reconcile_cell_texts_from_sources(
@@ -508,8 +525,9 @@ def spill_uncovered_scope_items_to_text(
     orphans = [it for it in orphans if str(it.text or "").strip()]
     if not orphans:
         return entries
-    orphans.sort(key=lambda it: (it.bbox.y0, it.bbox.x0))
-    text = " ".join(str(it.text).strip() for it in orphans)
+    from codes.table_engine.geometry.reading_order import join_texts_reading_order
+
+    text = join_texts_reading_order([_source_item_as_dict(it) for it in orphans])
     y0 = min(it.bbox.y0 for it in orphans)
     y1 = max(it.bbox.y1 for it in orphans)
     max_eid = max((e.entry_id for e in entries), default=-1)

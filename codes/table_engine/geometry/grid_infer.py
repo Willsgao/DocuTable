@@ -13,6 +13,7 @@ from codes.table_engine.geometry.column_anchors import (
     col_index_by_anchor,
     col_index_by_x0,
     infer_numeric_data_column_splits,
+    is_entity_scope_label_text,
     is_stage_column_header_text,
     is_value_column_header_text,
     item_column_anchor,
@@ -623,7 +624,8 @@ def _ranges_from_numeric_gutters(
             # 地区分布表首个金额列常在 x≈130（营业收入下），勿用 140 阈值
             if is_numeric_data_cell(t) and float(it.get("x0", 0)) > 100:
                 num_x0.append(float(it.get("x0", 0)))
-    # 数值列表头（营业收入等）即使偏左，也要把标签列右界压到其左侧
+    # 数值列表头（营业收入等）即使偏左，也要把标签列右界压到其左侧。
+    # 「本集团/本行」是表题范围行，不是数值列，禁止用来挤压标签右界（否则会吞掉注释列）。
     value_header_x0: List[float] = []
     for row in rows[:10]:
         for it in row.get("items") or []:
@@ -631,6 +633,8 @@ def _ranges_from_numeric_gutters(
             if not t:
                 continue
             x0 = float(it.get("x0", 0))
+            if is_entity_scope_label_text(t):
+                continue
             if is_value_column_header_text(t, x0=x0) and x0 < 220:
                 value_header_x0.append(x0)
     if not num_x0 and not value_header_x0:
@@ -660,10 +664,16 @@ def _ranges_from_numeric_gutters(
     note_bounds = _infer_note_column_bounds(rows)
     if note_bounds:
         note_col_lo, note_col_hi = note_bounds
-        label_hi = min(label_hi, note_col_lo)
+        # 注释列左界必须成为列缝：不得被错误压低的 label_hi 抹掉
+        # （此前 min(label_hi, note_lo) 在 label_hi≪note_lo 时只留下 [压低界, note_hi]，
+        # 把「标签|注释」合成一列，表头变成「注释 不计息」且 (i) 并进科目）。
+        label_end = note_col_lo
+        lead_in_label = [b for b in left_lead_bounds if b < label_end - 1.0]
+        if not lead_in_label:
+            lead_in_label = [min(left_lead_bounds)] if left_lead_bounds else [x_lo]
         bounds = (
-            left_lead_bounds
-            + [label_hi, note_col_hi]
+            lead_in_label
+            + [label_end, note_col_hi]
             + [s for s in splits if note_col_hi < s < x_hi]
             + [x_hi]
         )

@@ -87,6 +87,10 @@ def dedupe_scope_row_duplicates(items: List[SourceItem]) -> List[SourceItem]:
     index_map = {it.item_index: it for it in items}
     seen: set[Tuple[str, Tuple[str, ...]]] = set()
     keep_ids: set[str] = set()
+    try:
+        from codes.table_engine.scope.header_scope import is_single_year_label_row
+    except ImportError:
+        is_single_year_label_row = None  # type: ignore
     for row in rows:
         row_items = sorted(
             [
@@ -107,7 +111,11 @@ def dedupe_scope_row_duplicates(items: List[SourceItem]) -> List[SourceItem]:
         for ci, it in enumerate(row_items[1:], start=1):
             if ci < len(pseudo):
                 pseudo[ci] = str(it.text).strip()
-        if _row_opens_new_table_header(pseudo):
+        # 新年头/列头：开启下一段表，指纹集合清空，避免「其中：」等被当重复丢掉
+        if _row_opens_new_table_header(pseudo) or (
+            is_single_year_label_row is not None and is_single_year_label_row(cells)
+        ):
+            seen.clear()
             for it in row_items:
                 keep_ids.add(it.item_index)
             continue

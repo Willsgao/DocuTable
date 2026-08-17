@@ -615,6 +615,9 @@ def _rule_missing_header(
     for c in range(ctx.n_cols):
         if ctx.serial_col == 0 and c == 0:
             continue
+        # 科目/标签列常见无列名（VaR「交易账簿…」左侧为空），不算缺表头
+        if c in ctx.label_cols:
+            continue
         if not _column_has_data(table, ctx, c):
             continue
         if not _column_has_header(table, ctx, c):

@@ -27,6 +27,16 @@ _DUAL_METRIC_HEADER_RE = re.compile(
 )
 
 
+# 两列数值粘连：1.92% 15,092,105 / 0.47% 37（PD% + 客户数）
+_DUAL_NUMERIC_VALUE_RE = re.compile(
+    r"^("
+    r"[-\d,]+(?:\.\d+)?[%％]?"
+    r")\s+("
+    r"[-\d,]+(?:\.\d+)?[%％]?"
+    r")$"
+)
+
+
 def split_glue_cell(text: str) -> Optional[Tuple[str, str]]:
     """拆成 (左=地区/表头1, 右=金额/表头2)。无法拆则 None。
 
@@ -48,6 +58,15 @@ def split_glue_cell(text: str) -> Optional[Tuple[str, str]]:
         a, b = m.group(1).strip(), m.group(2).strip()
         # 避免把长叙述当双表头
         if len(a) + len(b) <= 18:
+            return a, b
+
+    # PD% + 客户数等：两列数值被粘成一格（非金额+地区）
+    m_dual = _DUAL_NUMERIC_VALUE_RE.match(re.sub(r"\s+", " ", t))
+    if m_dual:
+        a, b = m_dual.group(1), m_dual.group(2)
+        if "%" in a or "%" in b or "％" in a or "％" in b:
+            return a, b
+        if ("," in a or "," in b) and len(a) >= 2 and len(b) >= 2:
             return a, b
 
     if not _looks_like_numeric_text_glue(t):

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from statistics import median
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from codes.reconstruct.grid_nucleus.types import Nucleus
 
@@ -274,6 +274,77 @@ def merge_currency_amount_nuclei(nuclei: List[Nucleus]) -> List[Nucleus]:
     return out
 
 
+# liteparse 常把两列数值粘成一框：如「1.92% 15,092,105」「0.47% 37」
+_GLUED_MULTI_VALUE_RE = re.compile(
+    r"^("
+    r"[-\d,]+(?:\.\d+)?[%％]?"
+    r")\s+("
+    r"[-\d,]+(?:\.\d+)?[%％]?"
+    r")$"
+)
+
+
+def _split_glued_multi_value_text(text: str) -> Optional[Tuple[str, str]]:
+    """空格分隔的双数值（PD%+客户数等）→ (左, 右)；否则 None。"""
+    t = re.sub(r"\s+", " ", str(text or "").strip())
+    m = _GLUED_MULTI_VALUE_RE.match(t)
+    if not m:
+        return None
+    a, b = m.group(1), m.group(2)
+    if "%" in a or "%" in b or "％" in a or "％" in b:
+        return a, b
+    # 「- 7,195」：空合成列短杠 + 小计金额
+    if a in {"-", "—", "–", "－"} or b in {"-", "—", "–", "－"}:
+        return a, b
+    if ("," in a or "," in b) and len(a) >= 2 and len(b) >= 2:
+        return a, b
+    return None
+
+
+# 序号与科目粘连：如「6 公司类合计」「10 其中：…」
+_GLUED_SERIAL_LABEL_RE = re.compile(
+    r"^(\d{1,3}[a-zA-Z]?)\s+([\u4e00-\u9fff].+)$"
+)
+
+
+def _split_glued_serial_label_text(text: str) -> Optional[Tuple[str, str]]:
+    t = re.sub(r"\s+", " ", str(text or "").strip())
+    m = _GLUED_SERIAL_LABEL_RE.match(t)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _split_nucleus_by_text_ratio(
+    n: Nucleus,
+    left_t: str,
+    right_t: str,
+    *,
+    flag: str = "glued_split",
+) -> Tuple[Nucleus, Nucleus]:
+    w = max(float(n.width or 0.0), 4.0)
+    ln = max(len(left_t), 1)
+    rn = max(len(right_t), 1)
+    split_x = float(n.x0) + w * (ln / (ln + rn))
+    left = Nucleus(
+        text=left_t,
+        x0=n.x0,
+        y0=n.y0,
+        x1=split_x,
+        y1=n.y1,
+        flags=set(n.flags) | {flag},
+    )
+    right = Nucleus(
+        text=right_t,
+        x0=split_x,
+        y0=n.y0,
+        x1=n.x1,
+        y1=n.y1,
+        flags=set(n.flags) | {flag},
+    )
+    return left, right
+
+
 def split_glue_nuclei(nuclei: List[Nucleus]) -> List[Nucleus]:
     try:
         from codes.v2_steps.table_glue_repair import split_glue_cell
@@ -282,6 +353,23 @@ def split_glue_nuclei(nuclei: List[Nucleus]) -> List[Nucleus]:
 
     out: List[Nucleus] = []
     for n in nuclei:
+        # 先拆「1.92% 15,092,105」类双数值粘连（split_glue_cell 只认金额+文本）
+        multi = _split_glued_multi_value_text(n.text)
+        if multi:
+            out.extend(
+                _split_nucleus_by_text_ratio(
+                    n, multi[0], multi[1], flag="glued_multi_value"
+                )
+            )
+            continue
+        serial_lab = _split_glued_serial_label_text(n.text)
+        if serial_lab:
+            out.extend(
+                _split_nucleus_by_text_ratio(
+                    n, serial_lab[0], serial_lab[1], flag="glued_serial_label"
+                )
+            )
+            continue
         if split_glue_cell is None:
             out.append(n)
             continue
@@ -290,22 +378,7 @@ def split_glue_nuclei(nuclei: List[Nucleus]) -> List[Nucleus]:
             out.append(n)
             continue
         left_t, right_t = parts
-        # 启发式：标签在左、金额在右（与 glue 模块一致）
-        w = max(n.width, 4.0)
-        # 按字符长度比例切
-        ln = max(len(left_t), 1)
-        rn = max(len(right_t), 1)
-        split_x = n.x0 + w * (ln / (ln + rn))
-        left = Nucleus(
-            text=left_t, x0=n.x0, y0=n.y0, x1=split_x, y1=n.y1,
-            flags=set(n.flags) | {"glued_split"},
-        )
-        right = Nucleus(
-            text=right_t, x0=split_x, y0=n.y0, x1=n.x1, y1=n.y1,
-            flags=set(n.flags) | {"glued_split"},
-        )
-        # 若右侧像金额，保持左右；若左侧像金额则对调几何但文本已按 glue 返回顺序
-        out.extend([left, right])
+        out.extend(_split_nucleus_by_text_ratio(n, left_t, right_t))
     return out
 
 

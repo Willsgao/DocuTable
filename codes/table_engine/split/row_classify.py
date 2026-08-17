@@ -69,11 +69,32 @@ def row_value_kinds(row: List[str], *, value_start: int = 1) -> List[ValueCellKi
     return [classify_value_cell(c) for c in vals]
 
 
+def _cell_text_without_span_noise(text: str) -> str:
+    """去掉跨格覆盖符后看是否还有实质内容。"""
+    t = str(text or "").strip()
+    if not t:
+        return ""
+    try:
+        from codes.reconstruct.grid_nucleus.span_mark import (
+            is_span_cover_mark,
+            strip_span_anchor_mark,
+        )
+
+        t = strip_span_anchor_mark(t).strip()
+        if is_span_cover_mark(t) or t == "⟦↔⟧":
+            return ""
+    except Exception:
+        t = re.sub(r"\s*⟦↔\d*⟧\s*", "", t).strip()
+        if t == "⟦↔⟧":
+            return ""
+    return t
+
+
 def row_values_all_empty(row: List[str], *, value_start: int = 1) -> bool:
     vals = row[value_start:] if len(row) > value_start else []
     if not vals:
         return True
-    return all(not str(c).strip() for c in vals)
+    return all(not _cell_text_without_span_noise(c) for c in vals)
 
 
 def cell_has_body_value_data(text: str) -> bool:
@@ -475,11 +496,154 @@ def row_is_table_intro_caption_row(row: List[str], *, value_start: int = 1) -> b
     return False
 
 
+def _row_looks_like_short_table_header(row: List[str], *, value_start: int = 1) -> bool:
+    """短列头/报告期：即使通栏也不算说明段（1～2 行真表头）。"""
+    if row_has_body_value_data(row, value_start=value_start):
+        return True
+    cells = [
+        _cell_text_without_span_noise(c)
+        for c in row
+        if _cell_text_without_span_noise(c)
+    ]
+    if not cells:
+        return False
+    joined = "".join(cells).replace(" ", "")
+    if joined in {
+        "序号", "指标", "指标值", "项目", "名称", "金额", "数额",
+        "账面余额", "账面价值", "最大损失敞口",
+        "期末余额", "期初余额",
+    }:
+        return True
+    if joined.startswith("单位：") or joined.startswith("单位:"):
+        return True
+    # 短报告期：2025年12月31日 / 2024年
+    if re.fullmatch(r"20\d{2}年(?:\d{1,2}月\d{1,2}日)?", joined) and len(joined) <= 16:
+        return True
+    if re.fullmatch(r"20\d{2}年", joined):
+        return True
+    return False
+
+
+def row_is_spanning_prose_candidate(row: List[str], *, value_start: int = 1) -> bool:
+    """单行是否像「通栏说明」候选（无金额、跨列或单格长文）。
+
+    单独 1～2 行可能是真表头；须与连续多行规则配合使用。
+    """
+    if _row_looks_like_short_table_header(row, value_start=value_start):
+        return False
+    if row_has_body_value_data(row, value_start=value_start):
+        return False
+    if not row_values_all_empty(row, value_start=value_start):
+        # 值列有非覆盖实质内容 → 多列表头碎片，不当说明
+        return False
+
+    raw = [str(c or "") for c in (row or [])]
+    has_span_mark = any("⟦↔" in s for s in raw)
+
+    cells = [
+        _cell_text_without_span_noise(c)
+        for c in row
+        if _cell_text_without_span_noise(c)
+    ]
+    if not cells:
+        return False
+    joined = "".join(cells)
+    cn = len(re.findall(r"[\u4e00-\u9fff]", joined))
+    if cn < 6:
+        return False
+    # 已有叙述判定
+    if is_inter_table_narrative_row(row, value_start=value_start):
+        return True
+    # 带跨格符的通栏中文
+    if has_span_mark and cn >= 6:
+        return True
+    # 仅一格有字、其余空/覆盖：通栏条带
+    if len(cells) == 1 and cn >= 10:
+        return True
+    return False
+
+
+def _row_looks_like_soft_prose_bridge(row: List[str], *, value_start: int = 1) -> bool:
+    """说明块中间的短标题桥（资本构成信息披露 / 附表一：…）：无金额、非列头。"""
+    if _row_looks_like_short_table_header(row, value_start=value_start):
+        return False
+    if row_has_body_value_data(row, value_start=value_start):
+        return False
+    if not row_values_all_empty(row, value_start=value_start):
+        return False
+    cells = [
+        _cell_text_without_span_noise(c)
+        for c in row
+        if _cell_text_without_span_noise(c)
+    ]
+    if len(cells) != 1:
+        return False
+    t = cells[0].strip()
+    cn = len(re.findall(r"[\u4e00-\u9fff]", t))
+    if cn < 4 or cn > 28:
+        return False
+    if t.startswith(("附表", "表 ")) or "信息披露" in t or t.endswith(("披露", "说明")):
+        return True
+    # 纯短中文标题（无句号）
+    if not re.search(r"[。；！]", t) and cn <= 16:
+        return True
+    return False
+
+
+def leading_spanning_prose_run_end(
+    rows: List[List[str]],
+    *,
+    start: int = 0,
+    min_run: int = 3,
+    value_start: int = 1,
+) -> int:
+    """从表顶 start 起，连续通栏说明块的结束下标（不含）；不足 min_run 则返回 start。
+
+    连续 ≥min_run 行通栏且无金额 → 整块视为表外；遇到短表头/金额行即停。
+    中间空行、短节标题桥不打断；真正列头（数额/账面余额）才截断。
+    """
+    if start < 0 or start >= len(rows):
+        return start
+    j = start
+    counted = 0
+    while j < len(rows) - 1:
+        row = list(rows[j]) if not isinstance(rows[j], list) else rows[j]
+        cells = [
+            _cell_text_without_span_noise(c)
+            for c in row
+            if _cell_text_without_span_noise(c)
+        ]
+        if not cells:
+            j += 1
+            continue
+        if _row_looks_like_short_table_header(row, value_start=value_start):
+            break
+        if row_has_body_value_data(row, value_start=value_start):
+            break
+        if row_is_spanning_prose_candidate(row, value_start=value_start):
+            counted += 1
+            j += 1
+            continue
+        # 说明块内短标题：计入连续，避免「资本构成信息披露」打断剥离
+        if counted >= 1 and _row_looks_like_soft_prose_bridge(row, value_start=value_start):
+            counted += 1
+            j += 1
+            continue
+        break
+    if counted >= min_run:
+        return j
+    return start
+
+
 def is_inter_table_narrative_row(row: List[str], *, value_start: int = 1) -> bool:
     """表间叙述/节标题：值列全空且非表内子节。"""
     from codes.table_engine.scope.header_scope import row_is_annual_header_wrap_fragment_row
 
-    cells = [str(c).strip() for c in row if str(c).strip()]
+    cells = [
+        _cell_text_without_span_noise(c)
+        for c in row
+        if _cell_text_without_span_noise(c)
+    ]
     if row_is_annual_header_wrap_fragment_row(cells):
         return False
     if row_is_table_intro_caption_row(row, value_start=value_start):
@@ -488,14 +652,14 @@ def is_inter_table_narrative_row(row: List[str], *, value_start: int = 1) -> boo
         return False
     if is_intra_table_section_row(row, value_start=value_start):
         return False
-    cells = [str(c).strip() for c in row if str(c).strip()]
     if not cells:
         return False
     joined = "".join(cells)
     if "下表列出" in joined or "下表列" in joined:
         return True
     cn = len(re.findall(r"[\u4e00-\u9fff]", joined))
-    if joined.endswith(("。", "；")) and cn >= 8:
+    # 句末残片：「值或两者兼具。」「权力影响其回报金额。」
+    if joined.endswith(("。", "；")) and cn >= 5:
         return True
     # 短句残片：「占比36.13%。」——上文句末被吸进表顶
     if joined.endswith(("。", "；", "！")) and cn >= 2 and re.search(r"\d", joined):
@@ -509,6 +673,20 @@ def is_inter_table_narrative_row(row: List[str], *, value_start: int = 1) -> boo
     ):
         return True
     if cn >= 6 and any(m in joined for m in ("分布情况", "划分的情况", "划分的发放", "损失准备")):
+        return True
+    # 通栏说明段/折行残片：长中文、无表体金额 → 表外叙述
+    if cn >= 16 and not row_has_body_value_data(row, value_start=value_start):
+        if not any(c in ("序号", "指标", "指标值", "项目", "账面余额") for c in cells):
+            return True
+    # 「…如下：」引导句（含折行「如下：」）
+    if joined.endswith(("如下：", "如下:", "如下")) and cn >= 2:
+        return True
+    # 节标题：「在未纳入合并…中的权益」
+    if (
+        cn >= 10
+        and ("中的权益" in joined or joined.endswith(("权益", "权益 - 续", "权益-续")))
+        and not any(re.search(r"20\d{2}", c) for c in cells)
+    ):
         return True
     return False
 

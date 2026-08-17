@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from codes.reconstruct.grid_nucleus.assign_cells import assign_to_grid
 from codes.reconstruct.grid_nucleus.column_infer import (
     assign_nuclei_to_slots,
+    compact_unused_column_ids,
     compute_column_bands,
     fix_column_crossings,
     infer_column_slots,
@@ -41,7 +42,8 @@ def _apply_soft_pass(
         if e.startswith("cover_low"):
             continue
         if e.startswith("value_col_type_break"):
-            if float(metrics.get("value_col_amt_ratio") or 0) >= 0.55:
+            # SEC1 等多层表头：金额列含「传统型」时 ratio 常≈0.5，仍可软过
+            if float(metrics.get("value_col_amt_ratio") or 0) >= 0.50:
                 metrics["value_col_soft_pass"] = True
                 continue
         # glue_residual：不软过，交给粘连专项
@@ -101,24 +103,57 @@ def prune_empty_columns(
     *,
     min_fill: float = 0.02,
 ) -> Tuple[List[List[str]], List[float]]:
-    """去掉几乎全空的列，避免槽位过碎（如 a/b/c 之间的空槽）。"""
+    """去掉全空/近空列。
+
+    铁律：拆出一列却通列无实质内容（仅空白或 ⟦↔⟧）→ 拆错了，必须收回。
+    「⟦↔⟧」覆盖标记不算实质内容——否则跨格标注会把空白缝列撑住删不掉。
+    """
     if not data:
         return data, col_lines
     n_cols = max((len(r) for r in data), default=0)
     if n_cols <= 1:
         return data, col_lines
+
+    try:
+        from codes.reconstruct.grid_nucleus.span_mark import (
+            is_span_anchor_mark,
+            is_span_cover_mark,
+            strip_span_anchor_mark,
+        )
+    except Exception:
+        def is_span_cover_mark(text: str) -> bool:  # type: ignore
+            return False
+
+        def is_span_anchor_mark(text: str) -> bool:  # type: ignore
+            return False
+
+        def strip_span_anchor_mark(text: str) -> str:  # type: ignore
+            return str(text or "").strip()
+
+    def _has_real_content(val: Any) -> bool:
+        t = str(val or "").strip()
+        if not t:
+            return False
+        if is_span_cover_mark(t):
+            return False
+        # 仅跨格符号、无正文 → 仍视作空
+        if is_span_anchor_mark(t) and not strip_span_anchor_mark(t):
+            return False
+        return True
+
     n_rows = len(data)
     keep: List[int] = []
     for c in range(n_cols):
         filled = sum(
             1 for r in data
-            if c < len(r) and str(r[c] or "").strip()
+            if c < len(r) and _has_real_content(r[c])
         )
+        # 通列无实质内容 → 拆错，不保留
+        if filled < 1:
+            continue
         if filled / max(n_rows, 1) >= min_fill or filled >= 1:
-            # 至少有一格非空即保留（表头字母列可能很稀）
-            if filled >= 1:
-                keep.append(c)
-    if len(keep) < 2 or len(keep) == n_cols:
+            keep.append(c)
+    if len(keep) == n_cols or len(keep) < 2:
         return data, col_lines
     new_data = [[(row[c] if c < len(row) else "") for c in keep] for row in data]
     new_lines: List[float] = []
@@ -234,6 +269,7 @@ def restore_table_grid(
             return result
 
         assign_nuclei_to_slots(rows, centers)
+        n_cols = compact_unused_column_ids(rows, n_cols)
         mark_abnormal_rows(
             rows, n_cols,
             count_ratio=float(cfg["abnormal_count_ratio"]),
@@ -496,18 +532,35 @@ def apply_grid_to_table(
     table["data"] = after
     table["rows"] = len(after)
     table["cols"] = max((len(r) for r in after), default=0)
-    # 次：行列已由凝结核定稿 → 仅标注跨格，不得再改列结构
+    # 次：行列已由凝结核定稿 → 标注跨格；再删「仅覆盖符」空缝列并重标
     try:
         from codes.reconstruct.grid_nucleus.span_mark import apply_span_marks_to_table
 
         n_cols_before_span = max((len(r) for r in (table.get("data") or [])), default=0)
         spans = apply_span_marks_to_table(table, col_lines=result.col_lines)
         after = table.get("data") or after
+        # 跨格写入 ⟦↔⟧ 后：仅含覆盖符的缝列应删掉，再按新列界重标
+        pruned, new_lines = prune_empty_columns(
+            after, list(result.col_lines or []),
+        )
+        if new_lines and len(pruned) and max(len(r) for r in pruned) < n_cols_before_span:
+            table["data"] = pruned
+            result.col_lines = new_lines
+            result.n_cols = max(0, len(new_lines) - 1) if new_lines else max(
+                (len(r) for r in pruned), default=0
+            )
+            result.metrics["prune_after_span"] = (
+                f"{n_cols_before_span}->{result.n_cols}"
+            )
+            spans = apply_span_marks_to_table(table, col_lines=result.col_lines)
+            after = table.get("data") or pruned
         n_cols_after_span = max((len(r) for r in after), default=0)
         if n_cols_before_span and n_cols_after_span != n_cols_before_span:
             result.metrics["span_mark_cols_guard"] = (
                 f"{n_cols_before_span}->{n_cols_after_span}"
             )
+        table["rows"] = len(after)
+        table["cols"] = n_cols_after_span
         result.data = after
         result.metrics["span_marks"] = len(spans)
         if spans:
