@@ -501,10 +501,62 @@ def test_p10_cc1() -> None:
         flat = _flat_table(t)
         check("row1 amount", "385,621" in flat)
         check("no 3.1 in table", "国家金融监督管理总局" not in flat)
+        expected_rows = {
+            "1": ("实收资本和资本公积可计入部分", "385,621", "e+g"),
+            "2": ("留存收益", "2,718,849", ""),
+            "2a": ("盈余公积", "402,196", "h"),
+            "2b": ("一般风险准备", "534,151", "i"),
+            "2c": ("未分配利润", "1,782,502", "j"),
+            "3": ("累计其他综合收益", "65,136", ""),
+            "4": ("少数股东资本可计入部分", "3,703", ""),
+            "5": ("扣除前的核心一级资本", "3,173,309", ""),
+            "6": ("审慎估值调整", "-", ""),
+            "7": ("商誉", "2,170", "a-c"),
+            "8": ("其他无形资产", "5,009", "b-d"),
+            "9": ("依赖未来盈利", "-", ""),
+            "10": ("现金流储备", "581", ""),
+            "11": ("损失准备缺口", "-", ""),
+            "12": ("资产证券化销售利得", "-", ""),
+            "13": ("未实现损益", "-", ""),
+            "14": ("养老金资产净额", "-", ""),
+            "15": ("持有本银行的股票", "-", ""),
+            "16": ("核心一级资本", "-", ""),
+            "17": ("核心一级资本中应扣除金额", "-", ""),
+            "18": ("核心一级资本中应扣除金额", "-", ""),
+            "19": ("其他依赖于银行未来盈利", "-", ""),
+            "20": ("超过核心一级资本 15%", "-", ""),
+            "21": ("其中：对金融机构大额少数资本投资", "-", ""),
+        }
+        for serial, (label_part, amount, code) in expected_rows.items():
+            ri = find_row_index(t, serial)
+            check(f"row{serial} present", ri is not None)
+            if ri is None:
+                continue
+            cells = [cell_text(t, ri, ci).strip() for ci in range(4)]
+            check(
+                f"row{serial} columns",
+                cells[0] == serial
+                and label_part in cells[1]
+                and cells[2] == amount
+                and cells[3] == code,
+                repr(cells),
+            )
+        orphan_wraps = {
+            "一级资本",
+            "应扣除金额",
+            "过核心一级资本 15%的应扣除金额",
+        }
+        check(
+            "P10 no orphan label continuations",
+            not any(
+                not cell_text(t, ri, 0).strip()
+                and cell_text(t, ri, 1).strip() in orphan_wraps
+                for ri in range(len(t.rows))
+            ),
+        )
         check("row21 present", find_row_index(t, "21") is not None)
         ri21 = find_row_index(t, "21")
         if ri21 is not None:
-            from codes.table_engine.table_access import cell_text
             dash_cols = [
                 cell_text(t, ri21, i)
                 for i in range(len(t.rows[ri21]))
@@ -525,6 +577,51 @@ def test_p11_continuation() -> None:
         check("layout cc1", t.layout_id == "pillar_cc1")
         check("row 22", find_row_index(t, "22") is not None)
         check("no 232425 glue", "232425" not in _flat_table(t))
+
+
+def test_p12_cc1_header_body_single_table() -> None:
+    print("--- P12 CC1 表头/表体合并 ---")
+    result = test_page_entries(12, max_text=2, max_table=1)
+    tables = _table_entries(result)
+    texts = _text_entries(result)
+    if not tables or not tables[0].table:
+        return
+
+    table = tables[0].table
+    rows = dense_rows(table)
+    check("P12 layout cc1", table.layout_id == "pillar_cc1", table.layout_id)
+    check(
+        "P12 header retained",
+        any("人民币百万元" in "".join(row) for row in rows[:5])
+        and any("2024年12月31日" in "".join(row) for row in rows[:5]),
+        repr(rows[:5]),
+    )
+    for serial, label_part, amount in (
+        ("54", "核心一级资本充足率", "14.48"),
+        ("60", "全球系统重要性银行", "1.50"),
+        ("65a", "TLAC 非资本债务工具", "14,657"),
+        ("71", "可计入二级资本超额损失准备", "307,950"),
+    ):
+        ri = find_row_index(table, serial)
+        check(f"P12 row{serial} present", ri is not None)
+        if ri is None:
+            continue
+        check(
+            f"P12 row{serial} columns",
+            label_part in cell_text(table, ri, 1)
+            and cell_text(table, ri, 2).strip() == amount,
+            repr([cell_text(table, ri, ci) for ci in range(4)]),
+        )
+    duplicate = "\n".join(
+        entry.text_block.text
+        for entry in texts
+        if entry.text_block is not None
+    )
+    check(
+        "P12 no table rows duplicated as text",
+        all(token not in duplicate for token in ("60 其中", "65a 对未并表", "117,516")),
+        duplicate,
+    )
 
 
 def test_p13_cc2_serial_label_columns() -> None:
@@ -1007,6 +1104,133 @@ def test_p25_ccrf_serial_label_wrap() -> None:
             and cell_text(t, 4, 3).strip() == "暴露",
             [cell_text(t, 4, j) for j in range(5)],
         )
+
+
+def test_role_driven_serial_and_wrap_merge() -> None:
+    print("--- 通用 row_no 序号保护与标签折行 ---")
+    from codes.table_engine.geometry.cell_builder import _assign_item_to_columns
+    from codes.table_engine.geometry.data_column_assign import (
+        reconcile_col_items_by_anchor,
+    )
+    from codes.table_engine.geometry.row_refiner import (
+        LayoutAnchors,
+        _can_merge_label_with_numbered,
+    )
+
+    ranges = [(0.0, 40.0), (40.0, 70.0), (70.0, 180.0), (180.0, 240.0)]
+    serial = {"text": "2", "x0": 48.0, "x1": 60.0}
+    value = {"text": "3", "x0": 205.0, "x1": 214.0}
+    assigned = reconcile_col_items_by_anchor(
+        [[], [serial], [], [value]],
+        ranges,
+        layout_id="future_serial_layout",
+        value_cols=[3],
+        serial_col=1,
+    )
+    check("row_no role protects nonzero serial col", serial in assigned[1])
+    check("short value outside row_no remains value", value in assigned[3])
+
+    unprotected = reconcile_col_items_by_anchor(
+        [[], [serial], [], []],
+        ranges,
+        layout_id="future_serial_layout",
+        value_cols=[3],
+    )
+    check("no row_no role means no serial exemption", serial in unprotected[3])
+
+    typed_ranges = [(38.0, 86.0), (86.0, 206.0), (206.0, 270.0)]
+    typed_buckets = [[] for _ in typed_ranges]
+    _assign_item_to_columns(
+        {"text": "32", "x0": 53.0, "x1": 64.0},
+        typed_ranges,
+        typed_buckets,
+        len(typed_ranges),
+        "constraint_grid",
+        serial_col=0,
+        label_col=1,
+    )
+    _assign_item_to_columns(
+        {"text": "表外项目", "x0": 86.3, "x1": 128.0},
+        typed_ranges,
+        typed_buckets,
+        len(typed_ranges),
+        "constraint_grid",
+        serial_col=0,
+        label_col=1,
+    )
+    check("typed row_no keeps serial only", [x["text"] for x in typed_buckets[0]] == ["32"])
+    check("typed label column keeps text", [x["text"] for x in typed_buckets[1]] == ["表外项目"])
+
+    layout = LayoutAnchors(
+        row_num_x_max=84.0,
+        label_x_min=84.0,
+        label_x_max=170.0,
+        value_x_min=200.0,
+    )
+    numbered = {
+        "items": [
+            {"text": "7", "x0": 70.0, "x1": 78.0, "y0": 108.0, "y1": 122.0},
+            {"text": "1,234", "x0": 210.0, "x1": 238.0, "y0": 108.0, "y1": 122.0},
+        ]
+    }
+    overlapping_label = {
+        "items": [
+            {"text": "通用风险计量方法", "x0": 90.0, "x1": 160.0, "y0": 99.0, "y1": 111.0},
+        ]
+    }
+    section_label = {
+        "items": [
+            {"text": "通用风险计量方法", "x0": 90.0, "x1": 160.0, "y0": 75.0, "y1": 87.0},
+        ]
+    }
+    check(
+        "overlapping label joins numbered row",
+        _can_merge_label_with_numbered(overlapping_label, numbered, layout),
+    )
+    check(
+        "separate section label stays independent",
+        not _can_merge_label_with_numbered(section_label, numbered, layout),
+    )
+
+
+def test_p22_cr6_footer_note_not_in_last_cell() -> None:
+    print("--- P22 CR6 表尾脚注不混入最后数值格 ---")
+    from codes.table_engine.pipeline import primary_table
+    from codes.table_engine.split.boundary_overlap import (
+        row_is_address_column_wrap_fragment,
+    )
+    from codes.table_engine.table_access import cell_text
+
+    result = build_page(load_page(CACHE, 22))
+    t = primary_table(result)
+    check("P22 built", t is not None)
+    if not t:
+        return
+    last_row = t.rows[-1]
+    last_text = cell_text(t, len(t.rows) - 1, len(last_row) - 1)
+    check(
+        "P22 last numeric cell clean",
+        "501,689" in last_text and "表内资产余额" not in last_text,
+        repr(last_text),
+    )
+    note_text = "\n".join(
+        e.text_block.text
+        for e in result.entries
+        if e.kind == "text" and e.text_block is not None
+    )
+    check("P22 footer note remains text", "表内资产余额" in note_text, repr(note_text[-100:]))
+    check(
+        "footnote is not address continuation",
+        not row_is_address_column_wrap_fragment(
+            ["", "", "1．表内资产余额和表外转换前资产均未考虑风险缓释。", ""],
+        ),
+    )
+    check(
+        "real address continuation remains supported",
+        row_is_address_column_wrap_fragment(
+            ["", "", "北京市西城区金融大街25号", ""],
+        ),
+    )
 
 
 def test_p19_cr5_serial_label_columns() -> None:
@@ -2325,11 +2549,45 @@ def test_p14_financial_summary() -> None:
 
 def test_p37_leverage_tail() -> None:
     print("--- P37 杠杆率续行 ---")
+    from codes.table_engine.geometry.grid_infer import _merged_numeric_violations
+
+    synthetic_rows = [{
+        "row_phase": "body",
+        "items": [
+            {"text": "425,464", "x0": 376.8, "x1": 410.9},
+            {"text": "319,349", "x0": 479.5, "x1": 513.7},
+        ],
+    }]
+    check(
+        "right-aligned periods are separate columns",
+        _merged_numeric_violations(
+            synthetic_rows,
+            [(60.0, 95.0), (96.0, 260.0), (260.0, 413.6), (413.6, 540.0)],
+        ) == 0,
+    )
     result = test_page_entries(37, max_text=2, max_table=1, min_table=1)
     texts = _text_entries(result)
     tables = _table_entries(result)
     if tables and tables[0].table:
         t = tables[0].table
+        check("P37 no ghost value column", len(t.grid.ranges) == 4, len(t.grid.ranges))
+        ri15 = find_row_index(t, "15")
+        check("row 15", ri15 is not None)
+        if ri15 is not None:
+            check(
+                "row 15 two periods",
+                cell_text(t, ri15, 2).strip() == "47,997"
+                and cell_text(t, ri15, 3).strip() == "1,982",
+                [cell_text(t, ri15, ci) for ci in range(len(t.rows[ri15]))],
+            )
+        ri19 = find_row_index(t, "19")
+        if ri19 is not None:
+            check(
+                "long amounts stay in same period columns",
+                cell_text(t, ri19, 2).strip() == "(5,754,628)"
+                and cell_text(t, ri19, 3).strip() == "(5,535,401)",
+                [cell_text(t, ri19, ci) for ci in range(len(t.rows[ri19]))],
+            )
         check("row 27", find_row_index(t, "27") is not None)
         check("row 27a values", "607,773" in _flat_table(t))
         check("row 28a values", "43,213,494" in _flat_table(t))
@@ -2351,7 +2609,22 @@ def test_p42_liq2_tail() -> None:
     tables = _table_entries(result)
     if tables and tables[0].table:
         t = tables[0].table
-        check("row 34 nsfr", find_row_index(t, "34") is not None)
+        expected = {
+            "32": ("表外项目", "7,516,665", "201,910"),
+            "33": ("所需的稳定资金合计", "", "21,027,700"),
+            "34": ("净稳定资金比例（%）", "", "133.91"),
+        }
+        for serial, (label, col5, col6) in expected.items():
+            ri = find_row_index(t, serial)
+            check(f"row {serial} serial split", ri is not None)
+            if ri is not None:
+                check(f"row {serial} row_no only", cell_text(t, ri, 0) == serial, cell_text(t, ri, 0))
+                check(f"row {serial} label column", cell_text(t, ri, 1) == label, cell_text(t, ri, 1))
+                check(
+                    f"row {serial} values preserved",
+                    cell_text(t, ri, 5) == col5 and cell_text(t, ri, 6) == col6,
+                    [cell_text(t, ri, ci) for ci in range(len(t.rows[ri]))],
+                )
         check("row 34 value", "133.91" in _flat_table(t))
         flat = _flat_table(t)
         check("no footnote in table", "满足监管要求" not in flat and "1．折算" not in flat)
@@ -2467,7 +2740,7 @@ def test_split_y_from_bbox() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", default="5,6,9,10,11,13,29,34,36,41,44,104,106,229,254,268,271,275,293,301,312,314,320,322,325,328,330,331,335,340,345,356,361,363", help="逗号分隔页码")
+    parser.add_argument("--pages", default="5,6,9,10,11,12,13,22,29,34,36,41,42,44,104,106,229,254,268,271,275,293,301,312,314,320,322,325,328,330,331,335,340,345,356,361,363", help="逗号分隔页码")
     args = parser.parse_args()
     pages = [int(x.strip()) for x in args.pages.split(",") if x.strip()]
 
@@ -2485,6 +2758,8 @@ def main() -> None:
         test_p10_cc1()
     if 11 in pages:
         test_p11_continuation()
+    if 12 in pages:
+        test_p12_cc1_header_body_single_table()
     if 13 in pages:
         test_p13_cc2_serial_label_columns()
     if 14 in pages:
@@ -2493,11 +2768,14 @@ def main() -> None:
         test_p19_cr5_serial_label_columns()
     if 21 in pages:
         test_p21_cr6_multi_value_columns()
+    if 22 in pages:
+        test_p22_cr6_footer_note_not_in_last_cell()
     if 33 in pages:
         test_p33_irrbb_footer_no_split()
     if 35 in pages:
         test_p35_dsib_indicator_columns()
     if 25 in pages:
+        test_role_driven_serial_and_wrap_merge()
         test_p25_ccrf_serial_label_wrap()
     if 27 in pages:
         test_p27_sec1_header_rows_separate()

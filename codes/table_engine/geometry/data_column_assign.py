@@ -15,6 +15,7 @@ _RISK_WEIGHT_LABEL_RE = re.compile(
     re.I,
 )
 _SIMPLE_PCT_LABEL_RE = re.compile(r"^\d+%$")
+_ROW_NUMBER_RE = re.compile(r"^\d+[a-z]?$", re.I)
 
 
 def is_row_label_zone_item(
@@ -47,6 +48,21 @@ def is_row_label_zone_item(
 def is_data_value_item(text: str) -> bool:
     t = str(text or "").strip()
     return bool(t) and (is_numeric_data_cell(t) or t in _DASH_VALUES)
+
+
+def is_pillar_serial_item(
+    it: dict,
+    col_ranges: List[Tuple[float, float]],
+    *,
+    serial_col: Optional[int] = None,
+) -> bool:
+    """row_no 列带内的短编号不得按数值锚点搬到金额列。"""
+    if serial_col is None or not 0 <= serial_col < len(col_ranges):
+        return False
+    text = str(it.get("text", "")).strip()
+    x0 = float(it.get("x0", 0))
+    lo, hi = col_ranges[serial_col]
+    return bool(_ROW_NUMBER_RE.match(text)) and lo - 12.0 <= x0 <= hi + 10.0
 
 
 def assign_data_value_column(
@@ -100,6 +116,7 @@ def reconcile_col_items_by_anchor(
     *,
     layout_id: str = "",
     value_cols: Optional[List[int]] = None,
+    serial_col: Optional[int] = None,
 ) -> List[List[dict]]:
     """落列后校验：所有数值项强制按 anchor 归位，标签项保持原列。"""
     n = len(col_ranges)
@@ -108,9 +125,17 @@ def reconcile_col_items_by_anchor(
     for ci, items in enumerate(col_items):
         for it in items:
             text = str(it.get("text", "")).strip()
-            if is_data_value_item(text) and not is_row_label_zone_item(
-                it, col_ranges, value_cols=value_cols,
-            ):
+            is_pillar_serial = ci == serial_col and is_pillar_serial_item(
+                it, col_ranges, serial_col=serial_col,
+            )
+            should_realign_value = (
+                not is_pillar_serial
+                and is_data_value_item(text)
+                and not is_row_label_zone_item(
+                    it, col_ranges, value_cols=value_cols,
+                )
+            )
+            if should_realign_value:
                 target = assign_data_value_column(
                     it, col_ranges, layout_id=layout_id, value_cols=value_cols,
                 )
@@ -128,11 +153,17 @@ def row_value_anchor_conflicts(
     *,
     layout_id: str = "",
     value_cols: Optional[List[int]] = None,
+    serial_col: Optional[int] = None,
 ) -> bool:
     """当前落列与 anchor 不一致，或单格内多数值跨沟道。"""
     for ci, items in enumerate(col_items):
         value_items = [
-            it for it in items if is_data_value_item(str(it.get("text", "")).strip())
+            it for it in items
+            if is_data_value_item(str(it.get("text", "")).strip())
+            and not (
+                ci == serial_col
+                and is_pillar_serial_item(it, col_ranges, serial_col=serial_col)
+            )
         ]
         if not value_items:
             continue

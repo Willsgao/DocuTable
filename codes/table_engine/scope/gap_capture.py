@@ -1116,6 +1116,21 @@ def _region_is_award_list_block(page: PageSource, region: RegionBox) -> bool:
     )
     if len(items) < 6:
         return False
+    rows = cluster_items_by_y(
+        source_items_to_dicts(items),
+        use_dynamic_threshold=True,
+    )
+    for row in rows:
+        cells = [
+            str(it.get("text", "")).strip()
+            for it in row.get("items") or []
+            if str(it.get("text", "")).strip()
+        ]
+        if (
+            is_rmb_unit_lead_row(cells)
+            or has_letter_column_header_row(cells)
+        ):
+            return False
     for it in items:
         t = str(it.text or "").strip().replace("，", ",")
         if re.match(r"^-?\d{1,3}(?:,\d{3}){2,}", t):

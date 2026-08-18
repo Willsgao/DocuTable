@@ -17,6 +17,7 @@ class Nucleus:
     row_id: int = -1
     col_id: int = -1
     flags: Set[str] = field(default_factory=set)
+    source_ids: Set[str] = field(default_factory=set)
 
     @property
     def cx(self) -> float:
@@ -41,6 +42,7 @@ class Nucleus:
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["flags"] = sorted(self.flags)
+        d["source_ids"] = sorted(self.source_ids)
         d["cx"] = self.cx
         d["cy"] = self.cy
         return d

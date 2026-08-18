@@ -215,6 +215,22 @@ def _label_below_overlaps_value_band(
     return y0_lbl <= y1_val + tol
 
 
+def _label_above_overlaps_value_band(
+    label_row: dict,
+    data_row: dict,
+    layout: _LayoutAnchors,
+    *,
+    tol: float = _LABEL_BELOW_VALUE_TOL,
+) -> bool:
+    """上方标签与下一编号行的数据带实际相交，说明是同一视觉行的错位聚类。"""
+    val_items = _value_items(data_row, layout)
+    if not val_items:
+        return False
+    y0_val, _ = _items_span(val_items)
+    _, y1_lbl = _label_row_span(label_row, layout)
+    return y1_lbl >= y0_val - tol
+
+
 def _items_share_x_band(it_a: dict, it_b: dict, tol: float = _X_BAND_TOL) -> bool:
     x0_a = float(it_a.get("x0", 0))
     x0_b = float(it_b.get("x0", 0))
@@ -520,6 +536,29 @@ def _row_is_continuation_fragment(row: dict, layout: _LayoutAnchors) -> bool:
     if text.endswith((")", "）")):
         return True
     return False
+
+
+def _row_is_overlapping_numbered_wrap_tail(
+    data_row: dict,
+    label_row: dict,
+    layout: _LayoutAnchors,
+) -> bool:
+    """紧贴序号数据行的同列文本是折行尾片，不是新的小节标题。"""
+    if not _row_has_body_signature(data_row, layout):
+        return False
+    if not _row_is_label_only(label_row, layout):
+        return False
+    if not _label_items_share_x_band(data_row, label_row, layout):
+        return False
+    if not _label_below_overlaps_value_band(data_row, label_row, layout):
+        return False
+    if _y_gap_value_anchored(data_row, label_row, layout) > _Y_MERGE_MAX_GAP:
+        return False
+    text = "".join(
+        str(it.get("text", "")).strip()
+        for it in label_row.get("items") or []
+    )
+    return bool(text) and ":" not in text and "：" not in text
 
 
 def _row_is_mid_column_wrap_fragment(row: dict, layout: _LayoutAnchors) -> bool:
@@ -862,11 +901,18 @@ def _can_merge_label_with_numbered(
     layout: _LayoutAnchors,
 ) -> bool:
     """上方仅标签行 → 并入下方数据行（允许往上并，不往下并）。"""
-    if _row_is_preserved_intra_table_label(label_row, layout):
-        return False
     if not _row_is_label_only(label_row, layout):
         return False
     if not _row_has_body_signature(numbered_row, layout):
+        return False
+    numbered_lacks_label = _numbered_row_lacks_label(numbered_row, layout)
+    if (
+        _row_is_preserved_intra_table_label(label_row, layout)
+        and not (
+            numbered_lacks_label
+            and _label_above_overlaps_value_band(label_row, numbered_row, layout)
+        )
+    ):
         return False
     label_text = "".join(
         str(it.get("text", "")).strip()
@@ -878,7 +924,7 @@ def _can_merge_label_with_numbered(
         return False
     if label_text.endswith((")", "）")):
         return False
-    if not _numbered_row_lacks_label(numbered_row, layout):
+    if not numbered_lacks_label:
         if not _label_items_share_x_band(label_row, numbered_row, layout):
             return False
         frag = "".join(
@@ -1363,7 +1409,12 @@ def _refine_body_band(rows: List[dict], layout: _LayoutAnchors) -> List[dict]:
     while i < len(rows) - 1:
         if (
             _row_has_body_signature(rows[i], layout)
-            and _row_is_continuation_fragment(rows[i + 1], layout)
+            and (
+                _row_is_continuation_fragment(rows[i + 1], layout)
+                or _row_is_overlapping_numbered_wrap_tail(
+                    rows[i], rows[i + 1], layout
+                )
+            )
             and _label_below_overlaps_value_band(rows[i], rows[i + 1], layout)
             and _y_gap_value_anchored(rows[i], rows[i + 1], layout) <= _Y_MERGE_MAX_GAP
         ):

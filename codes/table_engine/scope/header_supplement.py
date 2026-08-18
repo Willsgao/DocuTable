@@ -19,6 +19,7 @@ from codes.table_engine.scope.header_scope import (
     is_pre_table_header_band_row,
     is_single_year_label_row,
     is_stats_column_header_row,
+    row_is_footnote_prose_row,
 )
 from codes.table_engine.split.boundary_overlap import row_content_fingerprint
 from codes.table_engine.split.row_classify import (
@@ -472,6 +473,9 @@ def supplement_scope_missing_intra_label_rows(
     extra: List[SourceItem] = []
     for row_items in _cluster_item_rows(band_items):
         cells = _row_cells_from_items(row_items)
+        # 表格下方的脚注可能落在 region 下沿附近，但不能作为表内小节补回。
+        if row_is_footnote_prose_row(row_items):
+            continue
         if not row_is_intra_table_label_row(cells):
             continue
         if row_content_fingerprint(cells) in existing_fps:

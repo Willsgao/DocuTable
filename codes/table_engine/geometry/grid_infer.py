@@ -12,6 +12,7 @@ from codes.table_engine.geometry.layout_rows import body_rows_for_layout, is_poi
 from codes.table_engine.geometry.column_anchors import (
     col_index_by_anchor,
     col_index_by_x0,
+    col_index_by_x1,
     infer_numeric_data_column_splits,
     is_entity_scope_label_text,
     is_stage_column_header_text,
@@ -705,11 +706,15 @@ def _merged_numeric_violations(
             if not t:
                 continue
             x0 = float(it.get("x0", 0))
-            ci = col_index_by_anchor(
-                x0,
-                float(it.get("x1", 0)),
-                t,
-                col_ranges,
+            ci = (
+                col_index_by_x1(float(it.get("x1", 0)), col_ranges)
+                if is_numeric_data_cell(t)
+                else col_index_by_anchor(
+                    x0,
+                    float(it.get("x1", 0)),
+                    t,
+                    col_ranges,
+                )
             )
             if ci < 0 or ci >= len(col_ranges):
                 continue

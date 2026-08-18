@@ -85,7 +85,7 @@ def dedupe_scope_row_duplicates(items: List[SourceItem]) -> List[SourceItem]:
     dicts = source_items_to_dicts(items)
     rows = cluster_items_by_y(dicts, use_dynamic_threshold=True)
     index_map = {it.item_index: it for it in items}
-    seen: set[Tuple[str, Tuple[str, ...]]] = set()
+    seen: dict[Tuple[str, Tuple[str, ...]], List[float]] = {}
     keep_ids: set[str] = set()
     try:
         from codes.table_engine.scope.header_scope import is_single_year_label_row
@@ -120,13 +120,14 @@ def dedupe_scope_row_duplicates(items: List[SourceItem]) -> List[SourceItem]:
                 keep_ids.add(it.item_index)
             continue
         fp = row_content_fingerprint(pseudo)
-        if fp in seen:
+        row_y = sum(float(it.y_mid) for it in row_items) / len(row_items)
+        if any(abs(row_y - prior_y) <= 4.0 for prior_y in seen.get(fp, [])):
             continue
         if not row_has_body_value_data(pseudo) and not fp[0]:
             for it in row_items:
                 keep_ids.add(it.item_index)
             continue
-        seen.add(fp)
+        seen.setdefault(fp, []).append(row_y)
         for it in row_items:
             keep_ids.add(it.item_index)
     if not keep_ids:

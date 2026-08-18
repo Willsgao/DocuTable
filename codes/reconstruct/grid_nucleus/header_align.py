@@ -84,6 +84,22 @@ def _is_amount(text: str) -> bool:
     return is_amount_nucleus(Nucleus(text=text, x0=0, y0=0, x1=1, y1=1))
 
 
+_SHORT_INTEGER_RE = re.compile(r"^[（(]?[-+]?\d{1,3}[）)]?$")
+
+
+def _is_short_integer_value(text: str) -> bool:
+    """严格短整数主体值。
+
+    ``is_amount_nucleus`` 有意忽略 1~3 位整数，避免把左侧行号当金额；
+    但同一非首列连续出现多个短整数时，它们是很强的数据列证据。
+    """
+    t = str(text or "").strip().replace(" ", "")
+    if not t or not _SHORT_INTEGER_RE.fullmatch(t):
+        return False
+    plain = t.strip("（()）+-")
+    return bool(plain) and not (len(plain) == 4 and plain.startswith(("19", "20")))
+
+
 def _is_date_header(text: str) -> bool:
     return bool(_DATE_RE.search(text or ""))
 
@@ -221,6 +237,7 @@ def _col_stats(
         h_fill = 0
         b_fill = 0
         b_amt = 0
+        b_short_integer = 0
         b_placeholder = 0  # "-" 等占位也算有数据列
         body_vals: List[str] = []
         for i, row in enumerate(data):
@@ -236,6 +253,8 @@ def _col_stats(
                 body_vals.append(v)
                 if _is_amount(v):
                     b_amt += 1
+                elif _is_short_integer_value(v):
+                    b_short_integer += 1
                 elif v in {"-", "－", "—", "–", "n/a", "N/A"}:
                     b_placeholder += 1
         letter = _header_col_code(data, c, body_start)
@@ -275,7 +294,14 @@ def _col_stats(
             c <= 2 and b_amt == 0 and not is_code and not is_serial
             and b_fill >= max(2, int(n_body * 0.3))
         )
-        is_amt_col = b_amt >= 2
+        # 非首列连续短整数也是数值列；首列仍保留给序号判定。
+        is_amt_col = b_amt >= 2 or (
+            c > 0
+            and b_short_integer >= 2
+            and b_short_integer >= max(2, int(len(body_vals) * 0.6))
+            and not letter
+            and not is_code
+        )
         is_note_col = note_hdr or footnote_marks >= 1
         is_body_col = (
             is_amt_col or is_code or is_note_col
@@ -293,6 +319,7 @@ def _col_stats(
             "header_fill": h_fill,
             "body_fill": b_fill,
             "body_amt": b_amt,
+            "body_short_integer": b_short_integer,
             "body_fill_ratio": b_fill / n_body,
             "header_code": letter,
             "is_serial": is_serial,

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from statistics import median
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from codes.reconstruct.grid_nucleus.preprocess import (
     is_amount_nucleus,
@@ -1646,6 +1646,108 @@ def assign_nuclei_to_slots(rows: List[RowCluster], slot_centers: List[float]) ->
     _snap_change_header_desc_peers(rows, n_cols)
     # —— 8) 凝结核铁律：左右边界实质相同 → 必须同列 ——
     _lock_same_bound_nuclei(rows)
+    # —— 9) 左侧短分组标题的字框仍完整落在序号带时，恢复序号列 ——
+    _restore_section_leads_to_serial_cols(rows, centers, serial_cols)
+
+
+def _restore_section_leads_to_serial_cols(
+    rows: Sequence[RowCluster],
+    slot_centers: Sequence[float],
+    serial_cols: set,
+) -> None:
+    """同界/垂直吸附不得把几何上属于序号带的分组标题拖到科目列。"""
+    if not serial_cols or len(slot_centers) < 2:
+        return
+    centers = [float(x) for x in slot_centers]
+    for row in rows:
+        for nucleus in row.nuclei:
+            if str(nucleus.text or "").strip() not in _SECTION_LEAD_KEEP_IN_SERIAL:
+                continue
+            target = min(serial_cols, key=lambda c: abs(float(nucleus.cx) - centers[c]))
+            right_centers = [centers[c] for c in range(len(centers)) if c > target]
+            if not right_centers:
+                continue
+            boundary = (centers[target] + min(right_centers)) / 2.0
+            # 右缘只允许字形毛刺越界；真正伸入科目列的文本不强拉。
+            if (
+                abs(float(nucleus.cx) - centers[target]) <= 24.0
+                and float(nucleus.x1) <= boundary + 6.0
+            ):
+                nucleus.col_id = int(target)
+
+
+def absorb_header_only_slots_into_body(
+    rows: List[RowCluster],
+    slot_centers: Sequence[float],
+) -> List[Dict[str, Any]]:
+    """把无表体证据的跨列表头槽吸附到最近真实数据列。
+
+    列槽由表体决定。完整日期、跨列标题或指标头若独占一槽，而该槽在
+    表体中全空，它只是表头左缘/中心造成的缝，不应成为输出列。列码、
+    期限分档等即使当前页表体为空也有独立列身份，必须保留。
+    """
+    centers = [float(x) for x in slot_centers]
+    n_cols = len(centers)
+    if n_cols < 2 or not rows:
+        return []
+
+    members: Dict[int, List[Nucleus]] = {
+        c: [n for r in rows for n in r.nuclei if int(n.col_id) == c]
+        for c in range(n_cols)
+    }
+    body_cols = {
+        c for c, ns in members.items()
+        if any(_is_body_data_nucleus(n) for n in ns)
+    }
+    if not body_cols:
+        return []
+
+    def _has_independent_empty_identity(ns: Sequence[Nucleus]) -> bool:
+        for n in ns:
+            t = str(n.text or "").strip().replace(" ", "")
+            if is_code_nucleus(n) or _SERIAL_HEADER_RE.match(t):
+                return True
+            if _PERIOD_COL_HEADER_RE.match(t):
+                return True
+        return False
+
+    def _is_absorbable_header(n: Nucleus) -> bool:
+        return bool(
+            _is_cross_column_header_nucleus(n)
+            or _is_date_header_nucleus(n)
+            or _looks_like_metric_header(n)
+            or _looks_like_value_column_header(n)
+        )
+
+    actions: List[Dict[str, Any]] = []
+    for c in range(n_cols):
+        ns = members.get(c) or []
+        if c in body_cols or not ns or _has_independent_empty_identity(ns):
+            continue
+        if not all(_is_absorbable_header(n) for n in ns):
+            continue
+
+        for n in ns:
+            # 指标头优先按右缘贴金额列；跨列日期按中心贴最近表体列，
+            # 后续 span_mark 再根据原始核宽标注真实 colspan。
+            if _looks_like_metric_header(n):
+                target = min(
+                    body_cols,
+                    key=lambda k: (
+                        abs(float(n.x1) - centers[k]),
+                        abs(float(n.cx) - centers[k]),
+                    ),
+                )
+            else:
+                target = min(body_cols, key=lambda k: abs(float(n.cx) - centers[k]))
+            n.col_id = int(target)
+            actions.append({
+                "from": c,
+                "to": int(target),
+                "text": str(n.text or "")[:40],
+                "reason": "header_only_without_body",
+            })
+    return actions
 
 
 def _metric_header_amount_same_column(
@@ -1733,6 +1835,12 @@ def _lock_same_bound_nuclei(
         ai = nuclei[i]
         for j in range(i + 1, len(nuclei)):
             bj = nuclei[j]
+            ai_section = str(ai.text or "").strip() in _SECTION_LEAD_KEEP_IN_SERIAL
+            bj_section = str(bj.text or "").strip() in _SECTION_LEAD_KEEP_IN_SERIAL
+            # CC2 短分组标题的几何带属于序号列；不得与普通科目核组队后
+            # 被科目列多数票拖走。「资产管理计划」等不在精确集合内。
+            if ai_section != bj_section:
+                continue
             # 真两列金额：中心分叉且右缘不同 → 不锁
             if is_amount_nucleus(ai) and is_amount_nucleus(bj):
                 if abs(float(ai.cx) - float(bj.cx)) > 18.0 and abs(

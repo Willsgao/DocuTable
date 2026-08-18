@@ -9,6 +9,7 @@ from typing import List, Optional, Sequence, Tuple
 from codes.table_engine.geometry.data_column_assign import (
     assign_data_value_column,
     is_data_value_item,
+    is_pillar_serial_item,
     reconcile_col_items_by_anchor,
 )
 from codes.table_engine.geometry.column_anchors import is_item_in_label_column_zone
@@ -757,6 +758,7 @@ def rebuild_row_col_items_by_anchor(
     *,
     layout_id: str = "",
     value_cols: Optional[List[int]] = None,
+    serial_col: Optional[int] = None,
     assign_label_fn,
 ) -> List[List[dict]]:
     """按 anchor 重落一整行：数值权威分列，标签走原标签规则。"""
@@ -765,7 +767,9 @@ def rebuild_row_col_items_by_anchor(
         text = str(it.get("text", "")).strip()
         if not text:
             continue
-        if is_data_value_item(text):
+        if is_pillar_serial_item(it, col_ranges, serial_col=serial_col):
+            ci = serial_col
+        elif is_data_value_item(text):
             ci = assign_data_value_column(
                 it, col_ranges, layout_id=layout_id, value_cols=value_cols,
             )
@@ -819,6 +823,7 @@ def repair_row_if_needed(
     *,
     layout_id: str = "",
     value_cols: Optional[List[int]] = None,
+    serial_col: Optional[int] = None,
     cell_text_fn,
     assign_label_fn,
 ) -> Tuple[List[List[dict]], List[Optional[Cell]], bool]:
@@ -841,6 +846,7 @@ def repair_row_if_needed(
         n_cols,
         layout_id=layout_id,
         value_cols=value_cols,
+        serial_col=serial_col,
         assign_label_fn=assign_label_fn,
     )
     repaired = reconcile_col_items_by_anchor(
@@ -848,6 +854,7 @@ def repair_row_if_needed(
         col_ranges,
         layout_id=layout_id,
         value_cols=value_cols,
+        serial_col=serial_col,
     )
     cells = col_items_to_cells(repaired, row_idx, cell_text_fn)
     return repaired, cells, True

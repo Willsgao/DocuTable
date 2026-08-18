@@ -86,6 +86,64 @@ def validate_grid(
     if total and cover < cover_thresh:
         errors.append(f"cover_low:{cover:.3f}")
 
+    # 阅读序守恒：同行内从左到右的核，最终列号不得回退。
+    # 跨列表头仍只落一个主列，因此也应满足单调性。
+    order_inversions = 0
+    order_examples: List[dict] = []
+    for row in rows:
+        ordered = sorted(
+            (n for n in row.nuclei if 0 <= int(n.col_id) < n_cols),
+            key=lambda n: (float(n.x0), float(n.x1)),
+        )
+        for left, right in zip(ordered, ordered[1:]):
+            if int(left.col_id) <= int(right.col_id):
+                continue
+            order_inversions += 1
+            if len(order_examples) < 4:
+                order_examples.append({
+                    "row": int(row.row_id),
+                    "left": str(left.text or "")[:30],
+                    "left_col": int(left.col_id),
+                    "right": str(right.text or "")[:30],
+                    "right_col": int(right.col_id),
+                })
+    metrics["reading_order_inversions"] = order_inversions
+    if order_examples:
+        metrics["reading_order_examples"] = order_examples
+    if order_inversions:
+        errors.append(f"reading_order_inversions:{order_inversions}")
+
+    # 源词身份守恒：合并可共享多个 source_id；只有显式粘连拆分允许
+    # 同一个 source_id 出现在两个核中，其余重复消费直接阻断写回。
+    source_owners: dict = {}
+    legal_split_flags = {
+        "glued_split",
+        "glued_multi_value",
+        "glued_serial_label",
+    }
+    for row in rows:
+        for nucleus in row.nuclei:
+            for source_id in nucleus.source_ids:
+                source_owners.setdefault(str(source_id), []).append(nucleus)
+    illegal_duplicate_sources: List[str] = []
+    synthetic_split_sources = 0
+    for source_id, owners in source_owners.items():
+        if len(owners) <= 1:
+            continue
+        if all(set(n.flags) & legal_split_flags for n in owners):
+            synthetic_split_sources += 1
+            continue
+        illegal_duplicate_sources.append(source_id)
+    metrics["source_fidelity"] = {
+        "unique_source_words": len(source_owners),
+        "synthetic_split_sources": synthetic_split_sources,
+        "illegal_duplicate_sources": illegal_duplicate_sources[:8],
+    }
+    if illegal_duplicate_sources:
+        errors.append(
+            f"source_duplicate_consumption:{len(illegal_duplicate_sources)}"
+        )
+
     # 列宽：财务表常见「窄序号 + 宽科目 + 金额」，放宽到相对中位 >5 且异常列≥3 才报
     if n_cols >= 2:
         widths = [col_lines[i + 1] - col_lines[i] for i in range(n_cols)]

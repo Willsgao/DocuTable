@@ -473,7 +473,7 @@ def _column_role_map(
                 roles["serial"] = i
             elif r == "label":
                 roles["label"] = i
-            elif r in ("col_a", "value") and "amount_current" not in roles:
+            elif r in ("col_a", "value", "amount") and "amount_current" not in roles:
                 roles["amount_current"] = i
             elif r in ("col_b",) and "amount_prior" not in roles:
                 roles["amount_prior"] = i

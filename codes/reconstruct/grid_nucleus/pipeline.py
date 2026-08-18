@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from codes.reconstruct.grid_nucleus.assign_cells import assign_to_grid
 from codes.reconstruct.grid_nucleus.column_infer import (
+    absorb_header_only_slots_into_body,
     assign_nuclei_to_slots,
     compact_unused_column_ids,
     compute_column_bands,
@@ -57,6 +58,64 @@ def _apply_soft_pass(
         metrics["soft_pass"] = True
         return True, []
     return False, errs
+
+
+def _assess_grid_confidence(
+    metrics: Dict[str, Any],
+    *,
+    method: str,
+) -> Dict[str, Any]:
+    """把结构信号收敛成可解释置信度；低置信度不得自动写回。"""
+    score = 1.0
+    reasons: List[str] = []
+    critical: List[str] = []
+
+    cover_geo = float(metrics.get("cover_geo") or 0.0)
+    if cover_geo and cover_geo < 0.75:
+        score -= 0.12
+        reasons.append(f"geometry_cover_low:{cover_geo:.3f}")
+    cross_ratio = float(metrics.get("cross_ratio") or 0.0)
+    if cross_ratio > 0.4:
+        score -= min(0.2, (cross_ratio - 0.4) * 0.5 + 0.08)
+        reasons.append(f"column_cross_high:{cross_ratio:.3f}")
+    if metrics.get("soft_pass"):
+        score -= 0.12
+        reasons.append("validation_soft_pass")
+    if method != "nucleus":
+        score -= 0.15
+        reasons.append(f"fallback_method:{method}")
+
+    header = metrics.get("header_align") or {}
+    if header.get("bottom_header_ok") is False:
+        missing = header.get("bottom_header_missing_amt_cols") or []
+        score -= 0.18
+        reasons.append(f"bottom_header_missing:{len(missing)}")
+    if metrics.get("logical_rows_needs_review"):
+        score -= 0.45
+        reason = "logical_rows_ambiguous"
+        reasons.append(reason)
+        critical.append(reason)
+    inversions = int(metrics.get("reading_order_inversions") or 0)
+    if inversions:
+        score -= 0.5
+        reason = f"reading_order_inversions:{inversions}"
+        reasons.append(reason)
+        critical.append(reason)
+
+    score = round(max(0.0, min(1.0, score)), 3)
+    if critical or score < 0.55:
+        level = "low"
+    elif score < 0.8:
+        level = "medium"
+    else:
+        level = "high"
+    return {
+        "score": score,
+        "level": level,
+        "reasons": reasons,
+        "critical": critical,
+        "auto_apply": level != "low",
+    }
 
 
 def _postprocess_ok_grid(
@@ -114,39 +173,12 @@ def prune_empty_columns(
     if n_cols <= 1:
         return data, col_lines
 
-    try:
-        from codes.reconstruct.grid_nucleus.span_mark import (
-            is_span_anchor_mark,
-            is_span_cover_mark,
-            strip_span_anchor_mark,
-        )
-    except Exception:
-        def is_span_cover_mark(text: str) -> bool:  # type: ignore
-            return False
-
-        def is_span_anchor_mark(text: str) -> bool:  # type: ignore
-            return False
-
-        def strip_span_anchor_mark(text: str) -> str:  # type: ignore
-            return str(text or "").strip()
-
-    def _has_real_content(val: Any) -> bool:
-        t = str(val or "").strip()
-        if not t:
-            return False
-        if is_span_cover_mark(t):
-            return False
-        # 仅跨格符号、无正文 → 仍视作空
-        if is_span_anchor_mark(t) and not strip_span_anchor_mark(t):
-            return False
-        return True
-
     n_rows = len(data)
     keep: List[int] = []
     for c in range(n_cols):
         filled = sum(
             1 for r in data
-            if c < len(r) and _has_real_content(r[c])
+            if c < len(r) and _cell_has_real_content(r[c])
         )
         # 通列无实质内容 → 拆错，不保留
         if filled < 1:
@@ -169,6 +201,32 @@ def prune_empty_columns(
             mono.append(x)
         new_lines = mono
     return new_data, new_lines
+
+
+def _cell_has_real_content(val: Any) -> bool:
+    """跨格覆盖符不算列内容；带正文的跨格锚仍算内容。"""
+    try:
+        from codes.reconstruct.grid_nucleus.span_mark import (
+            is_span_anchor_mark,
+            is_span_cover_mark,
+            strip_span_anchor_mark,
+        )
+    except Exception:
+        return bool(str(val or "").strip())
+    text = str(val or "").strip()
+    if not text or is_span_cover_mark(text):
+        return False
+    if is_span_anchor_mark(text) and not strip_span_anchor_mark(text):
+        return False
+    return True
+
+
+def _empty_column_indices(data: List[List[str]]) -> set:
+    n_cols = max((len(r) for r in data), default=0)
+    return {
+        c for c in range(n_cols)
+        if not any(c < len(row) and _cell_has_real_content(row[c]) for row in data)
+    }
 
 
 def restore_table_grid(
@@ -268,8 +326,26 @@ def restore_table_grid(
             result.method = "fallback_keep"
             return result
 
+        decision_trace: List[Dict[str, Any]] = [{
+            "stage": "infer_slots",
+            "n_cols": n_cols,
+            "centers": [round(float(x), 3) for x in centers],
+        }]
         assign_nuclei_to_slots(rows, centers)
+        absorbed_headers = absorb_header_only_slots_into_body(rows, centers)
+        if absorbed_headers:
+            decision_trace.append({
+                "stage": "absorb_header_only_slots",
+                "actions": absorbed_headers,
+            })
+        n_cols_before_compact = n_cols
         n_cols = compact_unused_column_ids(rows, n_cols)
+        decision_trace.append({
+            "stage": "compact_slots",
+            "before": n_cols_before_compact,
+            "after": n_cols,
+        })
+        result.metrics["decision_trace"] = decision_trace
         mark_abnormal_rows(
             rows, n_cols,
             count_ratio=float(cfg["abnormal_count_ratio"]),
@@ -299,6 +375,14 @@ def restore_table_grid(
             max_cols=int(cfg["max_cols"]),
         )
         result.metrics.update(metrics)
+        decision_trace.append({
+            "stage": "validate_grid",
+            "ok": bool(ok),
+            "errors": list(errs),
+            "cover": metrics.get("cover"),
+            "cover_geo": metrics.get("cover_geo"),
+            "reading_order_inversions": metrics.get("reading_order_inversions", 0),
+        })
         result.rows_meta = [r.to_dict() for r in rows]
         result.columns_meta = [b.to_dict() for b in bands]
 
@@ -381,6 +465,17 @@ def restore_table_grid(
                 result.metrics["logical_rows_needs_review"] = True
             if cross_ratio > float(cfg["cross_ratio_fallback"]):
                 result.metrics["cross_high_but_kept"] = True
+            decision_trace.append({
+                "stage": "postprocess",
+                "rows": result.n_rows,
+                "cols": result.n_cols,
+                "header_actions": len(ha.get("bottom_actions") or []),
+                "logical_row_merges": len(lr.get("merges") or []),
+                "logical_rows_needs_review": bool(lr.get("needs_review")),
+            })
+            result.metrics["confidence"] = _assess_grid_confidence(
+                result.metrics, method=result.method,
+            )
             return result
 
         # 验证失败 → 退化；退化失败则保留本次 nucleus 结果供诊断（不写回）
@@ -455,6 +550,15 @@ def apply_grid_to_table(
         return result
 
     if not result.ok or not result.data:
+        return result
+
+    confidence = result.metrics.get("confidence") or {}
+    if confidence.get("auto_apply") is False:
+        result.metrics["skipped"] = "low_confidence"
+        result.errors.append("low_confidence_block")
+        result.method = "fallback_keep"
+        result.ok = False
+        table["_grid_nucleus"] = result.to_dict()
         return result
 
     if not cfg.get("allow_overwrite_data", True):
@@ -537,13 +641,26 @@ def apply_grid_to_table(
         from codes.reconstruct.grid_nucleus.span_mark import apply_span_marks_to_table
 
         n_cols_before_span = max((len(r) for r in (table.get("data") or [])), default=0)
+        pre_span_data = [list(r) for r in (table.get("data") or [])]
+        pre_span_empty_cols = _empty_column_indices(pre_span_data)
         spans = apply_span_marks_to_table(table, col_lines=result.col_lines)
         after = table.get("data") or after
-        # 跨格写入 ⟦↔⟧ 后：仅含覆盖符的缝列应删掉，再按新列界重标
+        # 跨格只能标注，不得因移动表头文字而反向删除主体列。
+        # 仅允许清理跨格前就已经全空的列。
         pruned, new_lines = prune_empty_columns(
             after, list(result.col_lines or []),
         )
-        if new_lines and len(pruned) and max(len(r) for r in pruned) < n_cols_before_span:
+        post_span_empty_cols = _empty_column_indices(after)
+        removable_cols = post_span_empty_cols & pre_span_empty_cols
+        introduced_empty_cols = post_span_empty_cols - pre_span_empty_cols
+        can_prune = bool(post_span_empty_cols) and not introduced_empty_cols
+        if (
+            can_prune
+            and removable_cols
+            and new_lines
+            and len(pruned)
+            and max(len(r) for r in pruned) < n_cols_before_span
+        ):
             table["data"] = pruned
             result.col_lines = new_lines
             result.n_cols = max(0, len(new_lines) - 1) if new_lines else max(
@@ -554,6 +671,11 @@ def apply_grid_to_table(
             )
             spans = apply_span_marks_to_table(table, col_lines=result.col_lines)
             after = table.get("data") or pruned
+        elif introduced_empty_cols:
+            result.metrics["post_span_prune_blocked"] = {
+                "introduced_empty_cols": sorted(introduced_empty_cols),
+                "reason": "span_annotation_must_not_change_grid",
+            }
         n_cols_after_span = max((len(r) for r in after), default=0)
         if n_cols_before_span and n_cols_after_span != n_cols_before_span:
             result.metrics["span_mark_cols_guard"] = (

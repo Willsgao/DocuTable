@@ -157,8 +157,7 @@ def assign_pillar_row_to_columns(
         x1 = float(it.get("x1", 0))
 
         if _is_serial_item(it, anchors):
-            ci = _serial_col_index(x0, col_ranges, anchors)
-            col_items[ci].append(it)
+            col_items[row_no_col].append(it)
             continue
         if pd_col is not None and is_pd_range_cell_text(t) and float(x0) < col_ranges[2][0]:
             col_items[pd_col].append(it)

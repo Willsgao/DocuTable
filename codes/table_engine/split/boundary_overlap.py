@@ -13,6 +13,7 @@ from codes.table_engine.geometry.row_dict import cluster_items_by_y
 from codes.table_engine.models import DocumentEntry, PageSource, RegionBox, SourceItem, StructuredTable
 from codes.table_engine.split.row_classify import (
     is_likely_next_table_header_row,
+    is_tail_annotation_row,
     row_has_body_value_data,
     row_has_value_data,
     row_is_intra_table_label_row,
@@ -272,6 +273,9 @@ def row_is_address_column_wrap_fragment(row: List[str]) -> bool:
 
     nonempty = [(i, str(c).strip()) for i, c in enumerate(row) if str(c).strip()]
     if len(nonempty) != 1:
+        return False
+    # 句号结尾的脚注/说明可能只有一个宽文本单元，不能当作地址续行。
+    if is_tail_annotation_row(row, len(row)):
         return False
     ci, text = nonempty[0]
     if ci == 0:

@@ -65,7 +65,7 @@ def _is_amount_like(text: str) -> bool:
 
 def words_to_nuclei(words: Sequence[Dict[str, Any]]) -> List[Nucleus]:
     out: List[Nucleus] = []
-    for w in words or []:
+    for source_pos, w in enumerate(words or []):
         if not isinstance(w, dict):
             continue
         text = str(w.get("text") or "").strip()
@@ -88,7 +88,15 @@ def words_to_nuclei(words: Sequence[Dict[str, Any]]) -> List[Nucleus]:
         if (x1 - x0) * (y1 - y0) <= 0 and len(text) > 0:
             x1 = x0 + max(2.0, len(text) * 4.0)
             y1 = y0 + 8.0
-        out.append(Nucleus(text=text, x0=x0, y0=y0, x1=x1, y1=y1))
+        source_key = w.get("item_index")
+        if source_key is None:
+            source_key = source_pos
+        source_page = w.get("page", w.get("page_number", ""))
+        source_id = f"{source_page}:{source_key}"
+        out.append(Nucleus(
+            text=text, x0=x0, y0=y0, x1=x1, y1=y1,
+            source_ids={source_id},
+        ))
     return out
 
 
@@ -121,6 +129,7 @@ def merge_cjk_singles(nuclei: List[Nucleus], *, y_tol: Optional[float] = None) -
             buf = Nucleus(
                 text=n.text, x0=n.x0, y0=n.y0, x1=n.x1, y1=n.y1,
                 flags=set(n.flags) | {"cjk_merged"},
+                source_ids=set(n.source_ids),
             )
             continue
         same_line = abs(buf.cy - n.cy) <= tol
@@ -131,11 +140,13 @@ def merge_cjk_singles(nuclei: List[Nucleus], *, y_tol: Optional[float] = None) -
             buf.y0 = min(buf.y0, n.y0)
             buf.y1 = max(buf.y1, n.y1)
             buf.flags.add("cjk_merged")
+            buf.source_ids.update(n.source_ids)
         else:
             flush()
             buf = Nucleus(
                 text=n.text, x0=n.x0, y0=n.y0, x1=n.x1, y1=n.y1,
                 flags=set(n.flags) | {"cjk_merged"},
+                source_ids=set(n.source_ids),
             )
     flush()
     return merged
@@ -198,6 +209,7 @@ def merge_split_decimal_nuclei(nuclei: List[Nucleus]) -> List[Nucleus]:
                 x1=max(left.x1, n.x1),
                 y1=max(left.y1, n.y1),
                 flags=set(left.flags) | set(n.flags) | {"decimal_merged"},
+                source_ids=set(left.source_ids) | set(n.source_ids),
             )
         )
 
@@ -265,6 +277,7 @@ def merge_currency_amount_nuclei(nuclei: List[Nucleus]) -> List[Nucleus]:
                     x1=max(n.x1, nxt.x1),
                     y1=max(n.y1, nxt.y1),
                     flags=set(n.flags) | set(nxt.flags) | {"currency_amount_merged"},
+                    source_ids=set(n.source_ids) | set(nxt.source_ids),
                 )
             )
             i += 2
@@ -333,6 +346,7 @@ def _split_nucleus_by_text_ratio(
         x1=split_x,
         y1=n.y1,
         flags=set(n.flags) | {flag},
+        source_ids=set(n.source_ids),
     )
     right = Nucleus(
         text=right_t,
@@ -341,6 +355,7 @@ def _split_nucleus_by_text_ratio(
         x1=n.x1,
         y1=n.y1,
         flags=set(n.flags) | {flag},
+        source_ids=set(n.source_ids),
     )
     return left, right
 

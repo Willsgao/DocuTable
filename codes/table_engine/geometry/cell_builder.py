@@ -59,11 +59,23 @@ def _assign_item_to_columns(
     layout_id: str = "",
     *,
     mid_label_x0s: Optional[Sequence[float]] = None,
+    serial_col: Optional[int] = None,
+    label_col: Optional[int] = None,
 ) -> None:
     """按坐标锚点分列（数值看 x1，表头看 x0）；layout 插件可覆盖 CC1 等特例。"""
     text = str(it.get("text", "")).strip()
     x0 = float(it.get("x0", 0))
     x1 = float(it.get("x1", 0))
+    has_distinct_typed_label_col = (
+        label_col is not None
+        and label_col != serial_col
+        and 0 <= label_col < len(col_ranges)
+    )
+    in_typed_label_band = False
+    if has_distinct_typed_label_col:
+        label_lo, label_hi = col_ranges[label_col]
+        in_typed_label_band = label_lo - 6.0 <= x0 <= label_hi + 8.0
+
     if (
         n_cols >= 4
         and looks_like_change_reason_description_not_label(text)
@@ -73,6 +85,17 @@ def _assign_item_to_columns(
         return
     if col_ranges and text and _ROW_NUMBER_RE.match(text) and x0 <= col_ranges[0][1] + 10:
         ci = 0
+    elif (
+        in_typed_label_band
+        and _is_label_like_text(text)
+        and not is_report_period_cell(text)
+        and not is_value_column_header_text(
+            text, x0=x0, mid_label_x0s=mid_label_x0s,
+        )
+    ):
+        # constraint_grid 也可能继承明确的 row_no/label 角色。
+        # 中文项目已落在 label 带时，不得再被通用“标签进 col0”规则吞回序号列。
+        ci = label_col
     elif layout_id and uses_pillar_row_assignment(layout_id):
         # CC1/CC2 等：col0=序号、col1=项目。禁止再走「中文标签→ci=0」
         # （会与序号列角色冲突，并把科目挤进第一列）。
@@ -464,6 +487,30 @@ def assign_rows_to_columns(
         if pillar_mode and anchors
         else None
     )
+    serial_col = next(
+        (p.col_index for p in profiles or [] if p.role == "row_no"),
+        None,
+    )
+    if serial_col is None and layout_roles:
+        serial_col = next(
+            (
+                i for i, role in enumerate(layout_roles)
+                if str(role or "").strip().lower() in ("row_no", "serial")
+            ),
+            None,
+        )
+    label_col = next(
+        (p.col_index for p in profiles or [] if p.role == "label"),
+        None,
+    )
+    if label_col is None and layout_roles:
+        label_col = next(
+            (
+                i for i, role in enumerate(layout_roles)
+                if str(role or "").strip().lower() == "label"
+            ),
+            None,
+        )
 
     for row_idx, row in enumerate(rows):
         row_items = row.get("items") or []
@@ -529,6 +576,8 @@ def assign_rows_to_columns(
                     _assign_item_to_columns(
                         it, col_ranges, col_items, n_cols, layout_id,
                         mid_label_x0s=mid_label_x0s,
+                        serial_col=serial_col,
+                        label_col=label_col,
                     )
 
         is_body_row = (
@@ -545,6 +594,7 @@ def assign_rows_to_columns(
                 col_ranges,
                 layout_id=layout_id,
                 value_cols=value_cols,
+                serial_col=serial_col,
             )
 
         col_items, col_cells, _repaired = repair_row_if_needed(
@@ -555,9 +605,13 @@ def assign_rows_to_columns(
             n_cols,
             layout_id=layout_id,
             value_cols=value_cols,
+            serial_col=serial_col,
             cell_text_fn=_cell_text_from_items,
             assign_label_fn=lambda it, cr, ci, nc, lid="": _assign_item_to_columns(
-                it, cr, ci, nc, lid, mid_label_x0s=mid_label_x0s,
+                it, cr, ci, nc, lid,
+                mid_label_x0s=mid_label_x0s,
+                serial_col=serial_col,
+                label_col=label_col,
             ),
         )
 

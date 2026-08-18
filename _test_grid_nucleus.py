@@ -51,6 +51,12 @@ def test_glue_split_in_preprocess():
     assert len(nuclei) >= 2
     texts = " ".join(n.text for n in nuclei)
     assert "成都" in texts
+    shared_ids = set.intersection(*(set(n.source_ids) for n in nuclei))
+    assert shared_ids, [n.to_dict() for n in nuclei]
+    assert all(
+        set(n.flags) & {"glued_split", "glued_multi_value", "glued_serial_label"}
+        for n in nuclei
+    ), [n.to_dict() for n in nuclei]
 
 
 def test_cjk_merge():
@@ -1528,6 +1534,12 @@ def test_balance_header_not_split_from_short_integer_amounts():
     res = apply_grid_to_table(table)
     assert res.ok and res.metrics.get("overwrote_data"), res.to_dict()
     assert res.n_cols in (5, 6), (res.n_cols, table["data"])
+    trace = res.metrics.get("decision_trace") or []
+    assert any(x.get("stage") == "absorb_header_only_slots" for x in trace), trace
+    fidelity = res.metrics.get("source_fidelity") or {}
+    assert not fidelity.get("illegal_duplicate_sources"), fidelity
+    confidence = res.metrics.get("confidence") or {}
+    assert confidence.get("auto_apply") is True, confidence
 
     # 找含「交易余额」的表头行；150/186 必须落在对应列，不得落到空头邻列
     bal_cols = []
