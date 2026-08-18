@@ -574,6 +574,78 @@ def test_wrapped_change_header_same_column_as_desc():
     assert any("12月31日" in str(c) for r in data[:2] for c in r)
 
 
+def test_change_rate_and_desc_share_single_header_column():
+    """同一增减列的右对齐小数与左对齐百分点描述不得拆成互斥双列。"""
+    words = [
+        _word("本集团", 85.04, 365.05, 112.54, 373.78),
+        _word("2025年", 332.37, 384.14, 362.83, 394.81),
+        _word("2024年", 417.42, 384.41, 447.88, 394.86),
+        _word("本年末比", 496.18, 384.78, 532.93, 393.51),
+        _word("（人民币百万元，百分比除外）", 81.54, 400.96, 182.09, 407.76),
+        _word("12月31日", 322.40, 398.15, 362.84, 408.81),
+        _word("12月31日", 407.45, 398.42, 447.89, 408.87),
+        _word("上年末增减(%)", 471.90, 398.42, 532.93, 408.87),
+        _word("权重法（注）下资本充足率情况", 85.04, 415.73, 198.80, 424.46),
+    ]
+    body = [
+        ("核心一级资本净额", "1,067,560", "1,023,048", "4.35"),
+        ("一级资本净额", "1,245,017", "1,203,494", "3.45"),
+        ("资本净额", "1,343,023", "1,293,801", "3.80"),
+        ("风险加权资产", "8,954,305", "8,227,390", "8.84"),
+    ]
+    for i, (label, cur, prev, change) in enumerate(body):
+        y = 429.15 + i * 14.0
+        words.extend([
+            _word(label, 85.04, y, 168.10, y + 10.72),
+            _word(cur, 320.80, y, 362.89, y + 10.72),
+            _word(prev, 405.84, y, 447.94, y + 10.72),
+            _word(change, 514.65, y, 519.68, y + 10.72),
+        ])
+    desc_rows = [
+        ("核心一级资本充足率", "11.92%", "12.43%", "下降0.51个百分点"),
+        ("一级资本充足率", "13.90%", "14.63%", "下降0.73个百分点"),
+        ("资本充足率", "15.00%", "15.73%", "下降0.73个百分点"),
+    ]
+    for i, (label, cur, prev, change) in enumerate(desc_rows):
+        y = 485.15 + i * 14.0
+        words.extend([
+            _word(label, 85.04, y, 168.10, y + 10.72),
+            _word(cur, 330.12, y, 362.89, y + 10.72),
+            _word(prev, 415.16, y, 447.94, y + 10.72),
+            _word(change, 458.47, y, 482.26, y + 10.72),
+        ])
+
+    original = [
+        ["本集团", "", "", ""],
+        ["", "2025年", "2024年", "本年末比"],
+        ["（人民币百万元，百分比除外）", "12月31日", "12月31日", "上年末增减(%)"],
+        ["权重法（注）下资本充足率情况", "", "", ""],
+        *[list(row) for row in body],
+        *[list(row) for row in desc_rows],
+    ]
+    table = {
+        "type": "table",
+        "data": original,
+        "rows": len(original),
+        "cols": 4,
+        "_source_words": words,
+        "_table_kind": {"kind": "data"},
+        "_data_body": {"start_row": 4, "end_row": 11, "n_cols": 4},
+    }
+    res = apply_grid_to_table(table)
+    assert res.ok and res.metrics.get("overwrote_data"), res.to_dict()
+    assert table["cols"] == 4, table["data"]
+    assert all(len(row) == 4 for row in table["data"]), table["data"]
+    change_col = next(
+        ci for row in table["data"] for ci, cell in enumerate(row)
+        if "上年末增减" in str(cell)
+    )
+    for expected in ("4.35", "3.45", "3.80", "8.84", "下降0.51个百分点"):
+        assert any(str(row[change_col]).strip() == expected for row in table["data"]), (
+            expected, change_col, table["data"]
+        )
+
+
 def test_assign_uses_both_edges_overlap():
     """落列看 [x0,x1] 与列带双边重叠，而非只比单侧点。"""
     from codes.reconstruct.grid_nucleus.column_infer import (
@@ -3742,6 +3814,7 @@ if __name__ == "__main__":
     test_assign_rejects_single_edge_only()
     test_change_phrase_in_gutter_goes_to_right_column()
     test_wrapped_change_header_same_column_as_desc()
+    test_change_rate_and_desc_share_single_header_column()
     test_wide_amount_and_narrow_rate_same_column()
     test_glue_audit_on_validate_fail_repairs_numeric_text()
     test_profit_dist_bottom_header_year_and_units()

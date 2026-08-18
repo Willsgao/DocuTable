@@ -469,6 +469,10 @@ def split_label_trailing_amount(text: str) -> tuple[str, str] | None:
     if not m:
         return None
     label, amount = m.group(1).strip(), m.group(2).strip()
+    # 中文项目名后的短括号整数通常是脚注引用，如“贷款损失准备(3)”。
+    # 只有带千分位、四位以上或小数等强金额形态才允许从标签尾部拆出。
+    if re.fullmatch(r"\(\d{1,3}\)", amount):
+        return None
     if len(label) < 4 or not is_numeric_data_cell(amount):
         return None
     return label, amount

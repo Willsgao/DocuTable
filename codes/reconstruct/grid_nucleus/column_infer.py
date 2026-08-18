@@ -639,6 +639,56 @@ def _provisional_bands(
     return bands
 
 
+def _is_complementary_change_column_pair(
+    rows: Sequence[RowCluster],
+    left_col: int,
+    right_col: int,
+    left_ns: Sequence[Nucleus],
+    right_ns: Sequence[Nucleus],
+    bands: Sequence[Tuple[float, float]],
+) -> bool:
+    """增减列因数值右对齐、描述左对齐而过拆时，识别为同一物理列。"""
+    orientations = (
+        (left_col, left_ns, right_col, right_ns),
+        (right_col, right_ns, left_col, left_ns),
+    )
+    for desc_col, desc_ns, rate_col, rate_ns in orientations:
+        desc_items = [n for n in desc_ns if _is_change_desc_text(n.text)]
+        rate_items = [n for n in rate_ns if _is_change_rate_amount(n)]
+        headers = [n for n in rate_ns if _is_change_col_header_text(n.text)]
+        if not desc_items or len(rate_items) < 2 or not headers:
+            continue
+
+        # 同槽若还有年份/日期等独立列头，说明它是相邻数据列，不能借增减表头并入。
+        independent = _slot_independent_header_labels(rate_ns)
+        if any(not _is_change_col_header_text(text) for text in independent):
+            continue
+
+        # 两种表现只能交替出现；同行同时有描述和小数即是两个真实字段。
+        desc_rows = {
+            ri for ri, row in enumerate(rows)
+            if any(n.col_id == desc_col and _is_change_desc_text(n.text) for n in row.nuclei)
+        }
+        rate_rows = {
+            ri for ri, row in enumerate(rows)
+            if any(n.col_id == rate_col and _is_change_rate_amount(n) for n in row.nuclei)
+        }
+        if not desc_rows or not rate_rows or desc_rows & rate_rows:
+            continue
+
+        # 表头必须横跨两个候选列的交界，证明两种对齐都受同一表头约束。
+        desc_band = bands[desc_col]
+        rate_band = bands[rate_col]
+        header_covers_both = any(
+            _h_overlap(h, desc_band[0], desc_band[1]) >= 2.0
+            and _h_overlap(h, rate_band[0], rate_band[1]) >= 2.0
+            for h in headers
+        )
+        if header_covers_both:
+            return True
+    return False
+
+
 def _merge_overlapping_slots(
     rows: List[RowCluster],
     slot_centers: List[float],
@@ -704,6 +754,11 @@ def _merge_overlapping_slots(
         right_ns = [n for r in rows for n in r.nuclei if n.col_id == j]
         # 各有不同独立表头 → 禁止并槽（正常表每列一头；合并单元格跨列标题另论）
         if _slots_have_distinct_independent_headers(left_ns, right_ns):
+            continue
+        if _is_complementary_change_column_pair(
+            rows, i, j, left_ns, right_ns, bands,
+        ):
+            union(i, j)
             continue
         left_code = sum(1 for n in left_ns if is_code_nucleus(n))
         right_code = sum(1 for n in right_ns if is_code_nucleus(n))

@@ -34,7 +34,11 @@ _VALUE_LAYOUT_ROLES = frozenset({"amount", "col_a", "col_b", "col_c", "col_d"})
 
 def _normalize_layout_role(role: str) -> str:
     r = str(role or "").strip()
-    if r in _VALUE_LAYOUT_ROLES or re.match(r"^col_[a-z]$", r):
+    if (
+        r in _VALUE_LAYOUT_ROLES
+        or re.match(r"^col_[a-z]$", r)
+        or re.match(r"^period_\d+$", r)
+    ):
         return "value"
     if r in ("row_no", "label", "code", "value", "header", "category", "pd_range", "level1", "indicator"):
         return r
@@ -173,8 +177,7 @@ def assign_pillar_row_to_columns(
             col_items[ci].append(it)
             continue
         if _is_label_item(it, anchors):
-            ci = _label_col_index(x0, col_ranges, anchors)
-            col_items[ci].append(it)
+            col_items[label_col].append(it)
             continue
         if is_report_period_cell(t) or is_year_cell(t):
             ci = col_index_by_anchor(x0, x1, t, col_ranges)

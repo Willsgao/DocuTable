@@ -10,6 +10,8 @@ from codes.table_engine.geometry.column_anchors import (
     col_index_by_anchor,
     infer_numeric_data_column_splits,
 )
+from codes.table_engine.geometry.layout_rows import body_rows_for_layout
+from codes.table_engine.geometry.numeric import is_numeric_data_cell
 from codes.table_engine.layout.base import LayoutContext, LayoutSelection
 from codes.table_engine.scope.header_scope import is_rmb_unit_lead_row
 
@@ -86,6 +88,15 @@ class DisclosureLayoutPlugin:
                 col_ranges=ov1,
                 confidence=0.91,
                 roles=["row_no", "label", "col_a", "col_b", "col_c"],
+            )
+
+        period = _infer_no_serial_period_grid_ranges(ctx.rows)
+        if period:
+            return LayoutSelection(
+                layout_id=self.layout_id,
+                col_ranges=period,
+                confidence=0.86,
+                roles=["label", "period_1", "period_2", "period_3", "period_4"],
             )
 
         period = _infer_period_grid_ranges(ctx.items, y0)
@@ -229,4 +240,58 @@ def _infer_period_grid_ranges(
         (310.0, 410.0),
         (410.0, 510.0),
         (510.0, 540.0),
+    ]
+
+
+def _infer_no_serial_period_grid_ranges(
+    rows: List[dict],
+) -> List[Tuple[float, float]] | None:
+    """无序号多期表：项目列 + 四个稳定数值沟道。"""
+    body = body_rows_for_layout(rows) or rows
+    if not body:
+        return None
+
+    serial_hits = sum(
+        1
+        for row in body
+        if any(
+            _ROW_NUMBER_RE.match(str(it.get("text", "")).strip())
+            and float(it.get("x0", 0)) < 120.0
+            for it in row.get("items") or []
+        )
+    )
+    if serial_hits:
+        return None
+
+    value_items = [
+        it
+        for row in body
+        for it in row.get("items") or []
+        if is_numeric_data_cell(str(it.get("text", "")).strip())
+        and float(it.get("x0", 0)) >= 180.0
+    ]
+    splits = infer_numeric_data_column_splits(rows, min_clusters=4)
+    if not splits or len(splits) < 3 or not value_items:
+        return None
+
+    first_value_x0 = min(float(it.get("x0", 0)) for it in value_items)
+    label_x1s = [
+        float(it.get("x1", 0))
+        for row in body
+        for it in row.get("items") or []
+        if re.search(r"[\u4e00-\u9fff]", str(it.get("text", "")))
+        and not is_numeric_data_cell(str(it.get("text", "")).strip())
+        and float(it.get("x0", 0)) < first_value_x0
+    ]
+    label_x1 = max(label_x1s, default=first_value_x0 - 40.0)
+    label_hi = max(120.0, min(first_value_x0 - 8.0, (label_x1 + first_value_x0) / 2.0))
+    s0, s1, s2 = splits[:3]
+    if not (label_hi < s0 < s1 < s2):
+        return None
+    return [
+        (60.0, label_hi),
+        (label_hi, s0),
+        (s0, s1),
+        (s1, s2),
+        (s2, 540.0),
     ]

@@ -1,28 +1,16 @@
 # 复制本文件为 anomaly-change-scope.txt 后填写（每次修改任务一份）
 # verify 会据此检查改动范围
 
-task: 通用修复稳定序号列和项目列中序号文本混合单元格的问题
+task: 修复同一增减列因纯数值右对齐与下降百分点文本左对齐而被拆成两列的问题；使用表头、互斥占用和已有列数进行通用约束
 
 allowed:
   - codes/v2_steps/table_anomaly_rules.py
-  - codes/table_engine/geometry/grid_infer.py
-  - codes/table_engine/geometry/data_column_assign.py
-  - codes/table_engine/geometry/cell_decomposition.py
-  - codes/table_engine/geometry/cell_numeric_repair.py
-  - codes/table_engine/geometry/cell_builder.py
-  - codes/table_engine/geometry/column_profile.py
-  - codes/table_engine/geometry/row_refiner.py
-  - codes/table_engine/conservation/item_conservation.py
-  - codes/table_engine/scope/region_scope.py
-  - codes/table_engine/scope/gap_capture.py
-  - codes/table_engine/scope/header_supplement.py
-  - codes/table_engine/split/boundary_overlap.py
   - codes/reconstruct/grid_nucleus/column_infer.py
-  - codes/reconstruct/grid_nucleus/header_align.py
   - codes/reconstruct/grid_nucleus/pipeline.py
-  - codes/reconstruct/grid_nucleus/preprocess.py
-  - codes/reconstruct/grid_nucleus/types.py
-  - codes/reconstruct/grid_nucleus/validate.py
+  - codes/table_engine/geometry/column_profile.py
+  - codes/table_engine/geometry/numeric.py
+  - codes/table_engine/layout/pillar_disclosure.py
+  - codes/table_engine/table_builder.py
   - _test_te_step4_split.py
   - _test_grid_nucleus.py
   - anomaly-change-scope.txt
@@ -37,6 +25,6 @@ must_pass:
   - unit
 
 notes: |
-  本次不修改质检规则契约。修复发生在 Table Engine 的序号列/项目列类型一致性与文本守恒阶段。
-  规则必须依赖稳定列角色与通用序号形态，禁止针对页码、具体序号或中文项目名特判。
+  本次不修改质检契约。修复凝结核重建将同一增减列按左右对齐方式过度拆分的问题。
+  合并必须同时依赖表头归属、相邻列互斥占用、增减语义兼容和已有可靠列数，禁止针对页码或具体文本特判。
   保留工作区已有 Table Engine 与 grid_nucleus 改动，防止 scope 检查误判既有修改。

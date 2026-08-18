@@ -2522,6 +2522,66 @@ def test_p15_financial_summary_2024_values() -> None:
     _check_page_source_conservation(page, result.entries)
 
 
+def test_p15_cmb_numeric_footnotes_keep_five_columns() -> None:
+    print("--- 招商 P15 数字脚注不拆列 ---")
+    from copy import deepcopy
+    from pathlib import Path
+
+    from codes.table_engine.export.legacy_adapter import to_legacy_table
+    from codes.table_engine.geometry.numeric import split_label_trailing_amount
+    from codes.v2_steps.table_glue_repair import repair_table_numeric_text_glue
+
+    check(
+        "short parenthesized suffix is a footnote",
+        split_label_trailing_amount("贷款损失准备(3)") is None,
+    )
+    check(
+        "strong parenthesized amount still splits",
+        split_label_trailing_amount("应收账款余额(1,234)") == ("应收账款余额", "(1,234)"),
+    )
+
+    cache = Path("data/mid_cache/2025A-招商银行股份有限公司-报告-2026-04-01/liteparse/pages.json")
+    if not cache.exists():
+        print("  [SKIP] CMB annual report cache missing")
+        return
+    result = build_page(load_page(cache, 15))
+    table = next(
+        (
+            e.table
+            for e in _table_entries(result)
+            if e.table and "贷款损失准备" in _flat_table(e.table)
+        ),
+        None,
+    )
+    check("CMB P15 summary table", table is not None)
+    if table is None:
+        return
+
+    check("CMB P15 exactly five columns", table.grid.col_count == 5, table.grid.col_count)
+    check(
+        "CMB P15 roles match no-serial table",
+        [r.role for r in table.grid.ranges]
+        == ["label", "period_1", "period_2", "period_3", "period_4"],
+        [r.role for r in table.grid.ranges],
+    )
+    expected = {
+        "贷款和垫款总额(2)": ["7,258,058", "6,888,315", "5.37", "6,508,865"],
+        "贷款损失准备(3)": ["267,222", "270,301", "-1.14", "269,534"],
+        "客户存款总额(2)": ["9,836,130", "9,096,587", "8.13", "8,155,438"],
+    }
+    rows = dense_rows(table)
+    for label, values in expected.items():
+        row = next((r for r in rows if r and r[0].strip() == label), None)
+        check(f"{label} preserved", row is not None)
+        if row is not None:
+            check(f"{label} values", row[1:] == values, row)
+
+    legacy = deepcopy(to_legacy_table(table))
+    notes = repair_table_numeric_text_glue(legacy)
+    check("footnotes do not trigger glue split", not notes, notes)
+    check("glue repair keeps five columns", legacy.get("cols") == 5, legacy.get("cols"))
+
+
 def test_p14_financial_summary() -> None:
     print("--- P14 财务摘要 ---")
     from pathlib import Path
@@ -2740,7 +2800,7 @@ def test_split_y_from_bbox() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", default="5,6,9,10,11,12,13,22,29,34,36,41,42,44,104,106,229,254,268,271,275,293,301,312,314,320,322,325,328,330,331,335,340,345,356,361,363", help="逗号分隔页码")
+    parser.add_argument("--pages", default="5,6,9,10,11,12,13,15,22,29,34,36,41,42,44,104,106,229,254,268,271,275,293,301,312,314,320,322,325,328,330,331,335,340,345,356,361,363", help="逗号分隔页码")
     args = parser.parse_args()
     pages = [int(x.strip()) for x in args.pages.split(",") if x.strip()]
 
@@ -2850,6 +2910,7 @@ def main() -> None:
         test_p14_financial_summary()
     if 15 in pages:
         test_p15_financial_summary_2024_values()
+        test_p15_cmb_numeric_footnotes_keep_five_columns()
     if 28 in pages:
         test_p28_fee_income()
     if 29 in pages:
